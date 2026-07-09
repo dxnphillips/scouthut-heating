@@ -36,6 +36,8 @@ original YAML is preserved under [`reference/`](reference).
 | W6 Nightly off | Implicit: no calendar/motion/override → off. |
 | W7 Startup init | Covered by the startup reconcile. |
 | W8 / W9 Alarm set/cleared | `both_alarms` branch in `_desired_water`; alarm changes trigger a reconcile. |
+| Frost protection (new) | The Speedflow's own frost stat only works while powered, so `_desired_water` powers the tank while the coldest shared-zone room is ≤3 °C (releasing at 5 °C), overriding the alarms. |
+| Weekly hygiene heat-up (new) | If the tank has gone 7 days without power, `_desired_water` runs it for 45 min (a full 15 L reheat is ~30 min at 2 kW) so stored water never sits lukewarm indefinitely; also overrides the alarms. Any normal use restarts the clock. |
 
 ## Ceiling fans (new — no original automation)
 
