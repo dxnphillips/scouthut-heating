@@ -117,7 +117,7 @@ Three regimes, chosen by the **Summer cooling mode** switch:
 
 **When the ceiling / floor sensor is lost**, the behaviour is a tunable choice.
 By default (*Fans run when sensor lost* on) it **assumes stratification and keeps
-the winter fans running** while heat is being produced and the hall is occupied,
+the winter fans running** while heat is being produced,
 and raises a *sensor lost* notification. Turn that switch off to fail-safe to
 fans-off instead. Either way the Shelly still owns motor safety, and a genuine
 Shelly fault still forces the fans off.
@@ -151,7 +151,8 @@ this priority (highest wins):
 6. **Booking or pre-heat window** → `comfort`, dropping to `eco` while
    unoccupied; events matching an ECO keyword stay on the lower `eco` setpoint.
 7. **Occupied override or recent motion** → `eco`.
-8. **Building empty** → `ice`.
+8. **Zone empty** → `eco` while someone is still elsewhere in the building,
+   `ice` once the building is empty.
 
 The **shared zone** follows either calendar / any motion / boost, and the
 **water heater** turns on for its own pre-heat window, kitchen/toilet motion

@@ -15,11 +15,13 @@ Priority (highest wins), per heated zone:
     6. Calendar booking / pre-heat window -> comfort (eco for ECO-keyword events);
                                              drops to eco while unoccupied
     7. Occupied override / recent motion  -> eco
-    8. Building empty                      -> ice
+    8. Zone empty                          -> eco while someone is elsewhere in
+                                             the building, ice once it is empty
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -93,6 +95,15 @@ from .const import (
 # the fans during this window, and must not mistake the dwell for a fault.
 FAN_REVERSE_GRACE = 70  # seconds
 FAN_FAULT_GRACE = 70  # seconds a master may be unexpectedly off before we latch
+# Pause between presetting the direction relay and closing the master, so the
+# Finder contactor has finished travelling before the load is applied (the
+# Shelly script uses the same settle inside its own reversal sequence).
+FAN_DIRECTION_SETTLE = 1.5  # seconds
+
+# Hysteresis on the seasonal lockout: engage at avg >= threshold, release only
+# once the 3-day average drops this far below it (or on a cold-snap RealFeel),
+# so a forecast hovering at the threshold cannot flap the lockout hourly.
+SEASONAL_RELEASE_BAND = 0.5  # °C
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -488,7 +499,10 @@ class ScoutController:
         than requiring every high AND every low to clear the threshold — means a
         warm season still locks out even when nights dip, which is both the
         sensible real-world behaviour and what the control has always been
-        labelled ("3-day average"). Returns (avg, engage?, release?).
+        labelled ("3-day average"). Release requires the average to fall
+        SEASONAL_RELEASE_BAND below the threshold (or a cold-snap RealFeel), so
+        the lockout cannot flap while the forecast hovers at the threshold.
+        Returns (avg, engage?, release?).
         """
 
         def _f(value: Any) -> float | None:
@@ -512,7 +526,8 @@ class ScoutController:
         if not means:
             return None, False, False
         avg = sum(means) / len(means)
-        return avg, avg >= threshold, (avg < threshold or realfeel < threshold)
+        release = avg <= threshold - SEASONAL_RELEASE_BAND or realfeel < threshold
+        return avg, avg >= threshold, release
 
     # ------------------------------------------------------------------
     # Boost API (called by the button platform)
@@ -596,8 +611,10 @@ class ScoutController:
             return PRESET_ECO
         if not self._motion_recent_any(timeout):
             return PRESET_ICE
-        # Zone quiet but someone is elsewhere in the building: leave as is.
-        return None
+        # Zone quiet but someone is elsewhere in the building: rest at eco rather
+        # than leaving a stale comfort preset running (e.g. the hall after a
+        # booking ends while a cleaner is still in the kitchen).
+        return PRESET_ECO
 
     def _desired_shared(self) -> str | None:
         if not self.config.get(CONF_SHARED_CLIMATES):
@@ -1288,7 +1305,9 @@ class ScoutController:
         # ---- ON with a target direction ----
         if not master_on:
             # Presetting the direction relay directly is allowed only while the
-            # master is off (no load on the coil switching).
+            # master is off (no load on the coil switching). Give the contactor
+            # time to finish travelling before energising, mirroring the settle
+            # the Shelly script uses in its own sequence.
             if direction and cur_dir != want_direction:
                 await self.hass.services.async_call(
                     "switch",
@@ -1296,6 +1315,7 @@ class ScoutController:
                     {"entity_id": direction},
                     blocking=False,
                 )
+                await asyncio.sleep(FAN_DIRECTION_SETTLE)
             await self.hass.services.async_call(
                 "switch", "turn_on", {"entity_id": master}, blocking=False
             )
@@ -1309,9 +1329,16 @@ class ScoutController:
             return
 
         # master already on
-        if cur_dir == want_direction:
+        # Without a mapped direction relay the running direction is unknowable
+        # (cur_dir would be a guess), and without the reverse button a live
+        # change is impossible. Either way, never attempt a live reversal —
+        # blind re-pressing would otherwise cycle the motor through a full
+        # reversal sequence on every reconcile. Keep the fans running as they
+        # are instead.
+        if not direction or not reverse or cur_dir == want_direction:
             self.fan_on = True
-            self.fan_direction = cur_dir
+            if direction:
+                self.fan_direction = cur_dir
             self.fan_master_expected = True
             persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_DIAL)
             return

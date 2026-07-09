@@ -151,8 +151,11 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     "door_ice_minutes": (2, 30, 1, 10, "min"),
     "window_ice_minutes": (5, 60, 5, 10, "min"),
     "seasonal_lockout_temp": (10, 20, 0.5, 15, "°C"),
-    "hall_comfort_temp": (16, 24, 0.5, 22, "°C"),
-    "hall_eco_temp": (10, 20, 0.5, 18, "°C"),
+    # Hall setpoint sliders are bounded to what the Rointe number entities
+    # accept (comfort 19-30 °C, eco 7.5-18.5 °C per the official manuals), so a
+    # slider value can never be silently rejected by the heater.
+    "hall_comfort_temp": (19, 24, 0.5, 22, "°C"),
+    "hall_eco_temp": (10, 18.5, 0.5, 18, "°C"),
     "hall_eco_low_temp": (8, 18, 0.5, 14, "°C"),
     "water_preheat_minutes": (5, 30, 5, 15, "min"),
     "water_motion_keepalive_minutes": (15, 120, 15, 60, "min"),
@@ -214,8 +217,8 @@ SWITCH_DEFS: dict[str, bool] = {
     # until deliberately enabled.
     "summer_mode": False,
     # When the ceiling/floor sensor is lost, assume stratification is present and
-    # keep running the winter fans (still gated by heat demand + occupancy) rather
-    # than failing to off. Default ON per site preference; turn off to fail-safe
+    # keep running the winter fans (still gated by heat demand) rather than
+    # failing to off. Default ON per site preference; turn off to fail-safe
     # to fans-off instead. The Shelly still owns all motor safety either way.
     "fans_run_on_sensor_loss": True,
 }

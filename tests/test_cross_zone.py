@@ -75,15 +75,15 @@ def test_hall_booking_drives_shared_eco():
 
 
 def test_kitchen_motion_multi_zone_effect():
-    # Kitchen motion: shared -> eco, water -> on, but the empty heated zones
-    # are left alone (someone is in the building, just not the hall/office).
+    # Kitchen motion: shared -> eco, water -> on, and the empty heated zones
+    # rest at eco (someone is in the building, just not the hall/office).
     ctrl, _ = make_controller()
     motion(ctrl, "kitchen")
     run(ctrl.async_reconcile())
     assert ctrl.applied["shared"] == PRESET_ECO
     assert ctrl.water_on is True
-    assert ctrl.applied[ZA] is None
-    assert ctrl.applied[ZB] is None
+    assert ctrl.applied[ZA] == PRESET_ECO
+    assert ctrl.applied[ZB] == PRESET_ECO
 
 
 def test_partial_alarm_keeps_other_zone_heating():

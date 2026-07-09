@@ -101,10 +101,12 @@ def test_occupied_override_is_eco():
     assert ctrl._desired_zone(ZA) == PRESET_ECO
 
 
-def test_someone_elsewhere_leaves_hall_alone():
+def test_someone_elsewhere_rests_hall_at_eco():
+    # The hall itself is quiet, but the building is not empty: rest at eco
+    # rather than leaving a stale (possibly comfort) preset running.
     ctrl, _ = make_controller()
     motion(ctrl, "office")  # not the hall
-    assert ctrl._desired_zone(ZA) is None
+    assert ctrl._desired_zone(ZA) == PRESET_ECO
 
 
 def test_preheat_window_without_motion_is_eco():

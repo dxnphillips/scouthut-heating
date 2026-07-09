@@ -83,3 +83,7 @@ to the climate entity's own availability when no connectivity sensor exists.
   the heaters.
 - Motion is tracked with in-memory "last seen" timestamps (equivalent to the
   original `input_datetime` helpers) so pulse sensors work correctly.
+- A zone with no booking, override or motion of its own rests at `eco` while
+  people remain elsewhere in the building (the original left the last preset —
+  possibly `comfort` — running), dropping to `ice` only when the building
+  empties.
