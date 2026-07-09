@@ -1,0 +1,31 @@
+name: Release
+
+# Publishes a GitHub Release whenever a version tag (v*) is pushed.
+# HACS installs the integration from the release's source archive.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: |
+            **Scout Hut Heating ${{ github.ref_name }}** — Home Assistant custom integration.
+
+            Install through HACS as a custom repository (category **Integration**),
+            download, then restart Home Assistant and add **Scout Hut Heating**
+            from *Settings → Devices & Services*.
+
+            See the README for the full entity list and behaviour notes.
