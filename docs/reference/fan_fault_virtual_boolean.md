@@ -1,62 +1,46 @@
 # Publishing the Shelly fan fault as a virtual boolean
 
-The supervision script
-([`fan_reverse_supervised.js`](../../)) latches its fault in a script variable
-(`fault`) and is **not** currently exposed to Home Assistant. Until it is, this
-integration *infers* a fault from an unexpected master-off. That works, but a
-real published flag is cleaner and unambiguous.
+The supervision script latches its fault in a script variable (`fault`). The
+version shipped here — [`fan_reverse_supervised.js`](fan_reverse_supervised.js)
+— **already mirrors that fault to a virtual boolean** so Home Assistant can read
+it as an entity instead of inferring it from an unexpected master-off.
 
-Add a **virtual boolean** to the Shelly and keep it in step with `fault`. Then
-map it in the integration's *Ceiling fans & cooling* step (the **Fan fault**
-field) and the inference is bypassed.
+## Flashing
 
-## Script changes
+Copy [`fan_reverse_supervised.js`](fan_reverse_supervised.js) into the Shelly Pro
+2PM (Scripts → the existing fan script → replace the contents → Save → Start, or
+enable "Run on startup"). On first run it creates two virtual components:
 
-Create the boolean once at start-up (id 200 is free on a Pro 2PM; pick another
-if it clashes) and push the fault to it wherever `fault` changes:
+- **`button:200`** "Reverse fans" — the safe-reversal trigger.
+- **`boolean:201`** "Fan fault" — mirrors the latched fault.
+
+Remember to set the three `*_W` commissioning thresholds before trusting the
+supervision.
+
+## What was added (vs. the plain reversal script)
 
 ```js
-// ---- add near the other config ----
-var FAULT_BOOL_ID = 200;   // virtual boolean component id
+var FAULT_BOOL_ID = 201;                 // virtual boolean id (button is 200)
 
-// ---- add this helper ----
-function publishFault(v) {
+function publishFault(v) {               // mirror the latch to the boolean
   Shelly.call("Boolean.Set", { id: FAULT_BOOL_ID, value: v });
 }
-
-// ---- create the boolean at start-up (put beside the button bootstrap) ----
-Shelly.call("Boolean.GetStatus", { id: FAULT_BOOL_ID }, function (r, err) {
-  if (err !== 0) {
-    Shelly.call("Virtual.Add", {
-      type: "boolean", id: FAULT_BOOL_ID,
-      config: { name: "Fan fault", meta: { ui: { view: "label" } } }
-    });
-  }
-  publishFault(fault);   // reflect current state on boot
-});
 ```
 
-Then set it in the two places the fault flips:
+- `tripFault()` calls `publishFault(true)` when it latches.
+- The status handler calls `publishFault(false)` when O1 is turned back on (the
+  rearm), so the boolean clears itself the moment the fault is cleared.
+- A boot block creates `boolean:201` if missing and publishes the current state.
 
-```js
-function tripFault(reason) {
-  fault = true;
-  publishFault(true);                 // <-- add
-  log("FAULT LATCHED: " + reason + " O1 opened. Investigate, then switch O1 on to rearm.");
-  Shelly.call("Switch.Set", { id: MASTER_ID, on: false });
-}
-```
-
-```js
-// inside the status handler, where the fault is cleared on O1 turning on:
-if (fault) { fault = false; publishFault(false); log("Rearmed by O1 on."); }
-```
+The boolean is created read-only (`meta.ui.view: "label"`), so pick an id that is
+free on your device (201 by default; change `FAULT_BOOL_ID` if it clashes).
 
 ## In Home Assistant
 
-The Shelly integration surfaces a virtual boolean as a `binary_sensor` (with the
-read-only `view: "label"` above) or as a `switch`. Either can be mapped in the
-**Fan fault** field — the integration reads any `on`/`off` entity the same way.
-Once mapped, a published `on` latches the integration's fault, refuses to run the
-fans and notifies; re-arm as usual (turn the Shelly master on, then toggle
-*Ceiling fans enabled* off→on).
+The Shelly integration surfaces this virtual boolean as a `binary_sensor` (or a
+`switch`, depending on firmware). Map it in the integration's **Ceiling fans &
+cooling** step under **Fan fault** — the integration reads any `on`/`off` entity
+the same way. Once mapped, a published `on` latches the integration's fault,
+refuses to run the fans and notifies; re-arm as usual (turn the Shelly master on,
+then toggle *Ceiling fans enabled* off→on). Until you map it, the integration
+falls back to inferring a fault from an unexpected master-off.

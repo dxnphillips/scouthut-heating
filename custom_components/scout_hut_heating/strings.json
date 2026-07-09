@@ -59,8 +59,7 @@
           "rointe_power_sensors": "Rointe Effective Power sensors (heat-demand; auto-detected from the heaters if blank)",
           "fan_o1_power": "Fan O1 power (transformer + fans)",
           "fan_o2_power": "Fan O2 power (direction coil)",
-          "fan_fault": "Fan fault (Shelly latched fault, if published)",
-          "hall_ac": "Air conditioning (future, optional)"
+          "fan_fault": "Fan fault (Shelly latched fault, if published)"
         }
       }
     },
@@ -126,8 +125,7 @@
           "rointe_power_sensors": "Rointe Effective Power sensors (heat-demand; auto-detected from the heaters if blank)",
           "fan_o1_power": "Fan O1 power (transformer + fans)",
           "fan_o2_power": "Fan O2 power (direction coil)",
-          "fan_fault": "Fan fault (Shelly latched fault, if published)",
-          "hall_ac": "Air conditioning (future, optional)"
+          "fan_fault": "Fan fault (Shelly latched fault, if published)"
         }
       }
     }

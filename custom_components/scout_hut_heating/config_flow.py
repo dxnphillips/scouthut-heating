@@ -28,7 +28,6 @@ from .const import (
     CONF_FAN_O2_POWER,
     CONF_FAN_REVERSE,
     CONF_FLOOR_TEMP,
-    CONF_HALL_AC,
     CONF_HALL_CLIMATES,
     CONF_HALL_COMFORT_NUMBERS,
     CONF_HALL_ECO_NUMBERS,
@@ -139,7 +138,6 @@ def _fans_schema(d: dict[str, Any]) -> vol.Schema:
     # input_boolean works for manual testing; the fault reader treats any on/off
     # entity the same.
     _add(s, CONF_FAN_FAULT, False, _sel([*BINARY, "switch"]), d)
-    _add(s, CONF_HALL_AC, False, _sel("climate"), d)
     return vol.Schema(s)
 
 

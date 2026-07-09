@@ -49,7 +49,6 @@ from .const import (
     CONF_FAN_MASTER,
     CONF_FAN_REVERSE,
     CONF_FLOOR_TEMP,
-    CONF_HALL_AC,
     CONF_HALL_CLIMATES,
     CONF_HALL_COMFORT_NUMBERS,
     CONF_HALL_ECO_NUMBERS,
@@ -245,7 +244,6 @@ class ScoutController:
             CONF_FAN_MASTER,
             CONF_FAN_DIRECTION,
             CONF_FAN_FAULT,
-            CONF_HALL_AC,
         ):
             if ent := self.config.get(key):
                 watched.append(ent)
@@ -1096,16 +1094,6 @@ class ScoutController:
         climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
         return bool(climates) and all(self._climate_online(c) for c in climates)
 
-    def _ac_cooling(self, ac: str) -> bool:
-        """True if the (optional) AC is actively cooling."""
-        st = self.hass.states.get(ac)
-        if st is None or st.state in ("off", "unavailable", "unknown"):
-            return False
-        action = (st.attributes.get("hvac_action") or "").lower()
-        if action:
-            return action == "cooling"
-        return st.state == "cool"
-
     @property
     def fan_fault_effective(self) -> bool:
         """Read-only fault state for diagnostics (never mutates the latch).
@@ -1189,13 +1177,6 @@ class ScoutController:
         demand = self._heat_demand()
         self.heat_demand = demand
         currently_winter = bool(self.fan_on) and self.fan_mode == "winter"
-
-        # Optional AC assist: even just below the warm threshold, run the forward
-        # breeze while the AC is actively cooling so its setpoint can sit higher.
-        if summer and warm is False and occupied:
-            ac = self.config.get(CONF_HALL_AC)
-            if ac and self._ac_cooling(ac):
-                return True, "forward", "summer"
 
         return fan_decision(
             summer=summer,

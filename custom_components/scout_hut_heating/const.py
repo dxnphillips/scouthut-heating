@@ -75,7 +75,6 @@ CONF_FAN_O1_POWER = "fan_o1_power"          # O1 power (transformer + 3 fans)
 CONF_FAN_O2_POWER = "fan_o2_power"          # O2 power (direction coil)
 CONF_FAN_FAULT = "fan_fault"                # Shelly latched fault (if published)
 CONF_ROINTE_POWER = "rointe_power_sensors"  # Rointe Effective Power sensors
-CONF_HALL_AC = "hall_ac"                    # future air-conditioning climate
 
 # Every mapping key, grouped for the config flow / options flow.
 MULTI_ENTITY_KEYS = (
@@ -114,7 +113,6 @@ SINGLE_ENTITY_KEYS = (
     CONF_FAN_O1_POWER,
     CONF_FAN_O2_POWER,
     CONF_FAN_FAULT,
-    CONF_HALL_AC,
 )
 
 # Optional single-entity keys (setup can complete without them).
@@ -141,7 +139,6 @@ OPTIONAL_KEYS = (
     CONF_FAN_O2_POWER,
     CONF_FAN_FAULT,
     CONF_ROINTE_POWER,
-    CONF_HALL_AC,
 )
 
 # ---------------------------------------------------------------------------
