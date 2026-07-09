@@ -30,6 +30,7 @@ NAMES: dict[str, str] = {
     "fan_sensor_stale_minutes": "Fan: sensor stale after",
     "cooling_temp_high": "Cooling: warm-enough temperature",
     "heat_demand_watts": "Fan: heat-demand power threshold",
+    "fan_recirc_max_floor_temp": "Fan: recirculate until floor reaches",
 }
 
 HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp", "hall_eco_low_temp")

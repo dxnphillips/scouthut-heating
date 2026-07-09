@@ -1180,6 +1180,9 @@ class ScoutController:
             self.fan_dt = dt
 
         warm = None if ft is None else ft > self.number("cooling_temp_high")
+        # Recirculate residual / leaked ceiling heat while the occupied zone is
+        # still below the cap, decoupled from whether a heater is drawing power.
+        recirc_ok = ft is not None and ft < self.number("fan_recirc_max_floor_temp")
         timeout = self.number("motion_timeout_minutes")
         occupied = self._motion_recent("hall", timeout) or self._cal_active(ZONE_A)
         summer = self.switch_on("summer_mode", default=False)
@@ -1202,6 +1205,7 @@ class ScoutController:
             dt_on=self.number("fan_dt_on"),
             dt_off=self.number("fan_dt_off"),
             demand=demand,
+            recirc_ok=recirc_ok,
             currently_winter=currently_winter,
             run_on_loss=self.switch_on("fans_run_on_sensor_loss", default=True),
         )
