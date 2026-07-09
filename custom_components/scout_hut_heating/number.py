@@ -13,7 +13,9 @@ from .coordinator import ScoutController
 from .entity import ScoutEntity
 
 NAMES: dict[str, str] = {
-    "preheat_minutes": "Pre-heat lead time",
+    "preheat_minutes": "Pre-heat lead time (max)",
+    "zone_a_warmup_rate": "Hall learned warm-up rate",
+    "zone_b_warmup_rate": "Office learned warm-up rate",
     "motion_timeout_minutes": "No-motion eco timeout",
     "door_ice_minutes": "Door: drop to ice after",
     "window_ice_minutes": "Window: drop to ice after",
@@ -77,6 +79,15 @@ class ScoutNumber(ScoutEntity, RestoreNumber):
     def restore_default(self) -> None:
         """Reset to the built-in default (used by the reset button)."""
         self._attr_native_value = float(NUMBER_DEFS[self._key][3])
+        self.async_write_ha_state()
+
+    def write_value(self, value: float) -> None:
+        """Quietly store a controller-computed value (learning updates).
+
+        Unlike async_set_native_value this triggers no side effects and no
+        reconcile — the caller is the reconciler itself.
+        """
+        self._attr_native_value = float(value)
         self.async_write_ha_state()
 
     async def async_set_native_value(self, value: float) -> None:

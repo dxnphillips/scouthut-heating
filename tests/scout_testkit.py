@@ -113,6 +113,9 @@ class FakeNum:
     def restore_default(self):
         self.native_value = self._default
 
+    def write_value(self, value):
+        self.native_value = value
+
 
 class FakeSwitch:
     def __init__(self, is_on):
@@ -225,6 +228,9 @@ def advance(ctrl, minutes):
             ctrl.boost_until[zone] = ts - delta
     for zone in list(ctrl._last_apply):
         ctrl._last_apply[zone] = ctrl._last_apply[zone] - delta
+    for zone, sample in ctrl._warmup_start.items():
+        if sample is not None:
+            ctrl._warmup_start[zone] = (sample[0] - delta, sample[1])
     if ctrl.water_on_since is not None:
         ctrl.water_on_since = ctrl.water_on_since - delta
     if ctrl.water_last_hot is not None:

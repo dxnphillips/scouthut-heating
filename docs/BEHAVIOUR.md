@@ -7,7 +7,7 @@ original YAML is preserved under [`reference/`](reference).
 
 | Original | Reconciler equivalent |
 | --- | --- |
-| A1 / A2 Calendar pre-heat (Hall / Office) | `_async_refresh_calendars` caches an in-window flag + event title per zone; `_desired_zone` treats the pre-heat window like an active booking. |
+| A1 / A2 Calendar pre-heat (Hall / Office) | `_async_refresh_calendars` caches an in-window flag + event title per zone; `_desired_zone` treats the pre-heat window like an active booking. The window length is adaptive (optimum start): `_zone_preheat_minutes` = learned warm-up rate × temperature deficit + cold-weather margin, clamped to the pre-heat max slider; `_update_warmup_learning` times real comfort warm-ups and updates the per-zone rate (EWMA, `preheat.py`). |
 | A3 Shared-zone pre-heat | `_desired_shared` → `eco` when either calendar is in window. |
 | A4 / A5 Event ended → revert | Falls out of `_desired_zone` automatically once the calendar is `off`. |
 | A6 / A7 / A9 / A10 Door/Window held open → ice | `_evaluate_openings` tracks per-group "open since" and trips `opening_ice[zone]` after the door/window delay. |
@@ -89,3 +89,7 @@ to the climate entity's own availability when no connectivity sensor exists.
   people remain elsewhere in the building (the original left the last preset —
   possibly `comfort` — running), dropping to `ice` only when the building
   empties.
+- The pre-heat lead time is adaptive (optimum start) instead of the original
+  fixed 120 minutes; the slider is now the maximum. Fall-back behaviour when
+  the room temperature is unreadable is the cap, i.e. exactly the original
+  fixed-lead behaviour.

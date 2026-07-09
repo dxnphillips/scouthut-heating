@@ -163,7 +163,15 @@ OPTIONAL_KEYS = (
 # ---------------------------------------------------------------------------
 # key: (min, max, step, default, unit)
 NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
+    # Maximum pre-heat lead. The actual lead is computed adaptively per zone
+    # (learned warm-up rate x temperature deficit, with a cold-weather margin)
+    # and clamped to this — the optimum-start cap, like Rointe's own 2 h limit.
     "preheat_minutes": (0, 120, 5, 120, "min"),
+    # Learned warm-up rates (minutes per °C), one per zone. Updated
+    # automatically from every completed comfort warm-up; adjustable to
+    # re-seed the learning after building changes (insulation, extra heaters).
+    "zone_a_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
+    "zone_b_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
     "motion_timeout_minutes": (5, 60, 5, 15, "min"),
     "door_ice_minutes": (2, 30, 1, 10, "min"),
     "window_ice_minutes": (5, 60, 5, 10, "min"),
@@ -186,8 +194,10 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # Anti-short-cycle timers.
     "fan_min_run_minutes": (0, 60, 1, 10, "min"),
     "fan_min_off_minutes": (0, 60, 1, 10, "min"),
-    # Ceiling/floor reading older than this (no report) counts as lost.
-    "fan_sensor_stale_minutes": (5, 120, 5, 30, "min"),
+    # Ceiling/floor reading older than this (no report) counts as lost. The
+    # default suits a battery Shelly H&T, which sleeps aggressively and can go
+    # well over an hour between reports when the temperature is steady.
+    "fan_sensor_stale_minutes": (5, 240, 5, 120, "min"),
     # Summer: floor temperature above this is "warm enough" to want a breeze.
     "cooling_temp_high": (18, 30, 0.5, 24, "°C"),
     # A Rointe Effective Power reading above this means that heater is calling.
@@ -201,6 +211,8 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
 
 NUMBER_ICONS: dict[str, str] = {
     "preheat_minutes": "mdi:radiator",
+    "zone_a_warmup_rate": "mdi:chart-line",
+    "zone_b_warmup_rate": "mdi:chart-line",
     "motion_timeout_minutes": "mdi:timer-outline",
     "door_ice_minutes": "mdi:door-open",
     "window_ice_minutes": "mdi:window-open",

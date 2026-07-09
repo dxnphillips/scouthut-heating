@@ -40,6 +40,7 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .fan_logic import fan_decision
+from .preheat import required_lead_minutes, updated_rate
 from .const import (
     CONF_ALARM_MAIN,
     CONF_ALARM_OFFICE,
@@ -186,6 +187,16 @@ class ScoutController:
         self.cal_window: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self.cal_title: dict[str, str] = {ZONE_A: "", ZONE_B: ""}
         self.water_window = False
+
+        # Optimum-start learning: an in-flight warm-up sample per zone
+        # (started-at, start temperature), and the last comfort target seen on
+        # the zone's own heater (used as the office target, which the
+        # integration does not otherwise know).
+        self._warmup_start: dict[str, tuple[datetime, float] | None] = {
+            ZONE_A: None,
+            ZONE_B: None,
+        }
+        self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
 
         self._unsubs: list = []
         self._started = False
@@ -401,13 +412,14 @@ class ScoutController:
     # Calendar / weather refresh
     # ------------------------------------------------------------------
     async def _async_refresh_calendars(self) -> None:
-        preheat = int(self.number("preheat_minutes"))
         water_preheat = int(self.number("water_preheat_minutes"))
         for zone in (ZONE_A, ZONE_B):
             cal = self.config.get(ZONE_CALENDAR[zone])
             if not cal:
                 continue
-            in_window, title = await self._async_calendar_window(cal, preheat)
+            in_window, title = await self._async_calendar_window(
+                cal, self._zone_preheat_minutes(zone)
+            )
             self.cal_window[zone] = in_window or self._is_on(cal)
             if self._is_on(cal):
                 state = self.hass.states.get(cal)
@@ -447,6 +459,122 @@ class ScoutController:
         if events:
             return True, events[0].get("summary", "") or ""
         return False, ""
+
+    # ------------------------------------------------------------------
+    # Adaptive pre-heat (optimum start)
+    # ------------------------------------------------------------------
+    def _zone_room_temp(self, zone: str) -> float | None:
+        """Average room temperature reported by a zone's own heaters."""
+        if zone == ZONE_A:
+            # The hall shares the fan logic's floor reading (explicit floor
+            # sensor if mapped, else the hall Rointes' average).
+            return self._floor_temp()
+        vals: list[float] = []
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+            st = self.hass.states.get(climate)
+            if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            temp = st.attributes.get("current_temperature")
+            try:
+                if temp is not None:
+                    vals.append(float(temp))
+            except (TypeError, ValueError):
+                continue
+        return sum(vals) / len(vals) if vals else None
+
+    def _outdoor_temp(self) -> float | None:
+        weather = self.config.get(CONF_WEATHER)
+        if not weather:
+            return None
+        st = self.hass.states.get(weather)
+        if st is None:
+            return None
+        try:
+            temp = st.attributes.get("temperature")
+            return float(temp) if temp is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _zone_target(self, zone: str) -> float:
+        """The comfort temperature a pre-heat is aiming for.
+
+        The hall target is the integration's own slider (it is pushed onto the
+        heaters). The office comfort setpoint lives on the Rointe itself, so
+        the last target seen while the office was actually in comfort is
+        cached and used; until one has been seen, the hall slider is the
+        best available proxy.
+        """
+        if zone == ZONE_A:
+            return self.number("hall_comfort_temp")
+        cached = self._zone_comfort_target.get(zone)
+        return cached if cached is not None else self.number("hall_comfort_temp")
+
+    def _zone_preheat_minutes(self, zone: str) -> int:
+        """Adaptive pre-heat lead: learned rate x deficit, capped by the slider."""
+        minutes = required_lead_minutes(
+            rate=self.number(f"{zone}_warmup_rate"),
+            indoor=self._zone_room_temp(zone),
+            target=self._zone_target(zone),
+            outdoor=self._outdoor_temp(),
+            max_minutes=self.number("preheat_minutes"),
+        )
+        return int(round(minutes))
+
+    def _update_warmup_learning(self) -> None:
+        """Time real comfort warm-ups and fold them into the learned rates.
+
+        A sample starts when a zone enters comfort while measurably below
+        target, and ends when the target is reached or comfort ends; the
+        observed minutes-per-degree updates the zone's learned rate (EWMA,
+        clamped — see preheat.py). Aborted warm-ups with too little rise are
+        ignored, so an opening pause or a cloud blip cannot poison the rate.
+        """
+        now = self._now()
+        for zone in (ZONE_A, ZONE_B):
+            comfort = (
+                self.applied[zone] == PRESET_COMFORT
+                and not self.opening_ice[zone]
+                and self.switch_on(f"{zone}_automation_enabled", default=True)
+            )
+            temp = self._zone_room_temp(zone)
+
+            # Cache the zone's real comfort target from its own heater while
+            # it is actually in comfort (needed for the office, see _zone_target).
+            if comfort:
+                climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
+                if climates and (st := self.hass.states.get(climates[0])) is not None:
+                    try:
+                        target_attr = st.attributes.get("temperature")
+                        if target_attr is not None and 15.0 <= float(target_attr) <= 30.0:
+                            self._zone_comfort_target[zone] = float(target_attr)
+                    except (TypeError, ValueError):
+                        pass
+
+            target = self._zone_target(zone)
+            sample = self._warmup_start[zone]
+
+            if sample is None:
+                if comfort and temp is not None and temp < target - 0.5:
+                    self._warmup_start[zone] = (now, temp)
+                continue
+
+            done = comfort and temp is not None and temp >= target
+            if comfort and not done:
+                continue  # still warming (or temp reading lost: wait)
+
+            # Warm-up finished (target reached) or ended early (preset left
+            # comfort): fold the observation in and clear the sample.
+            self._warmup_start[zone] = None
+            if temp is None:
+                continue
+            started, start_temp = sample
+            minutes = (now - started).total_seconds() / 60
+            rate_key = f"{zone}_warmup_rate"
+            new_rate = updated_rate(self.number(rate_key), minutes, temp - start_temp)
+            entity = self._numbers.get(rate_key)
+            write = getattr(entity, "write_value", None)
+            if write is not None and new_rate != self.number(rate_key):
+                write(new_rate)
 
     async def _async_seasonal_check(self) -> None:
         weather = self.config.get(CONF_WEATHER)
@@ -752,6 +880,7 @@ class ScoutController:
             self._refresh_motion_from_states()
             await self._evaluate_openings()
             await self._reconcile_zones()
+            self._update_warmup_learning()
             await self._reconcile_shared()
             await self._reconcile_water()
             await self._reconcile_fans()

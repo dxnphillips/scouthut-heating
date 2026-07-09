@@ -55,7 +55,8 @@ You can re-map any of these later via the integration's **Configure** button.
 The integration creates its own helper entities — put them on a dashboard, no
 restart needed to change them:
 
-- **Numbers:** pre-heat lead time, no-motion eco timeout, door/window ice
+- **Numbers:** pre-heat lead time (the *maximum* — see optimum start below),
+  hall/office learned warm-up rates, no-motion eco timeout, door/window ice
   delays, seasonal-lockout threshold, hall comfort/eco/eco-low temperatures,
   water pre-heat lead time, water keep-on-after-motion.
 - **Select:** boost duration (30/60/90 min).
@@ -153,11 +154,25 @@ this priority (highest wins):
 4. **Seasonal lockout** (3-day *average* forecast temperature at/above the
    threshold; releases on a cold snap or low RealFeel) → `ice`.
 5. **Alarm set with no booking** → `ice` and clears the occupied override.
-6. **Booking or pre-heat window** → `comfort`, dropping to `eco` while
+6. **Booking or pre-heat window** (optimum start — see below) → `comfort`,
+   dropping to `eco` while
    unoccupied; events matching an ECO keyword stay on the lower `eco` setpoint.
 7. **Occupied override or recent motion** → `eco`.
 8. **Zone empty** → `eco` while someone is still elsewhere in the building,
    `ice` once the building is empty.
+
+**Optimum start.** The pre-heat lead is not a fixed number: each zone computes
+it as *learned warm-up rate × how far the room is below its comfort target*,
+with a small extra margin when it is cold outside, clamped between 15 minutes
+and the **Pre-heat lead time (max)** slider (the safety cap — a room with no
+readable temperature also falls back to the cap, so a cold start is never
+missed). The warm-up rate (min/°C) is learned automatically: every real
+comfort warm-up from cold is timed, and the observed minutes-per-degree is
+folded into the zone's **learned warm-up rate** number (exponentially
+smoothed and clamped, so one door-open disaster can't poison it). Insulation,
+the destratification fans, and the seasons are all absorbed into that observed
+rate. The learned numbers are visible and adjustable — re-seed them after any
+building change.
 
 The **shared zone** follows either calendar / any motion / boost, and the
 **water heater** turns on for its own pre-heat window, kitchen/toilet motion
