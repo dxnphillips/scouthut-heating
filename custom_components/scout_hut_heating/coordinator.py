@@ -919,12 +919,16 @@ class ScoutController:
     def _ceiling_temp(self) -> float | None:
         return self._num_state(self.config.get(CONF_CEILING_TEMP))
 
-    def _floor_temp(self) -> float | None:
+    def _floor_temp(self, stale_min: float | None = None) -> float | None:
         """Floor / occupant temperature.
 
         Uses an explicit floor sensor if mapped, otherwise the average
         ``current_temperature`` of the hall heaters (the Rointe climates report
-        the room temperature at floor level).
+        the room temperature at floor level). Because the Rointe integration is
+        cloud based, a heater that is offline (``unavailable``) or has stopped
+        updating (frozen cloud) is dropped from the average, so a stale reading is
+        never trusted; if that leaves nothing, this returns None and the caller
+        treats the floor as lost.
         """
         override = self.config.get(CONF_FLOOR_TEMP)
         if override:
@@ -932,8 +936,12 @@ class ScoutController:
         vals: list[float] = []
         for climate in self._as_list(self.config.get(CONF_HALL_CLIMATES)):
             st = self.hass.states.get(climate)
-            if st is None:
+            if st is None or st.state in ("unavailable", "unknown"):
                 continue
+            if stale_min is not None:
+                ts = getattr(st, "last_reported", None) or st.last_updated
+                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
+                    continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:
@@ -951,11 +959,15 @@ class ScoutController:
         sensors are auto-detected from the mapped heater devices, so nothing extra
         needs mapping; an explicit mapping overrides the auto-detection. If none
         can be read it falls back to whether any hall/office zone is on a heating
-        preset.
+        preset. A power sensor that is offline or has stopped updating (frozen
+        cloud) is ignored rather than trusted at its last value.
         """
         threshold = self.number("heat_demand_watts")
+        stale_min = self.number("fan_sensor_stale_minutes")
         seen_value = False
         for power in self._power_sensors():
+            if self._stale(power, stale_min):
+                continue
             value = self._num_state(power)
             if value is not None:
                 seen_value = True
@@ -1084,7 +1096,7 @@ class ScoutController:
         ceiling_id = self.config.get(CONF_CEILING_TEMP)
         floor_id = self.config.get(CONF_FLOOR_TEMP)
         ct = self._ceiling_temp()
-        ft = self._floor_temp()
+        ft = self._floor_temp(stale_min)
         ceiling_bad = ct is None or self._stale(ceiling_id, stale_min)
         floor_bad = ft is None or (bool(floor_id) and self._stale(floor_id, stale_min))
         sensors_bad = ceiling_bad or floor_bad
