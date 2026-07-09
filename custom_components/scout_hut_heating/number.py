@@ -23,6 +23,13 @@ NAMES: dict[str, str] = {
     "hall_eco_low_temp": "Hall eco-low temperature",
     "water_preheat_minutes": "Water heater pre-heat lead time",
     "water_motion_keepalive_minutes": "Water heater keep-on after motion",
+    "fan_dt_on": "Fan: ceiling-floor ΔT to start",
+    "fan_dt_off": "Fan: ceiling-floor ΔT to stop",
+    "fan_min_run_minutes": "Fan: minimum run time",
+    "fan_min_off_minutes": "Fan: minimum off time",
+    "fan_sensor_stale_minutes": "Fan: sensor stale after",
+    "cooling_temp_high": "Cooling: warm-enough temperature",
+    "heat_demand_watts": "Fan: heat-demand power threshold",
 }
 
 HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp", "hall_eco_low_temp")

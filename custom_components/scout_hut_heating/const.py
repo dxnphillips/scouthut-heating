@@ -60,6 +60,23 @@ CONF_ALARM_OFFICE = "alarm_office"
 # Water heater switch
 CONF_WATER_SWITCH = "water_switch"
 
+# ---------------------------------------------------------------------------
+# Destratification / cooling fan mappings (Shelly Pro 2PM + ceiling sensor)
+# ---------------------------------------------------------------------------
+# The Shelly script owns ALL fan timing and safety. Home Assistant only decides
+# when the fans are wanted and in which direction; it never reproduces the dwell
+# or the interlock. See docs/BEHAVIOUR.md.
+CONF_CEILING_TEMP = "ceiling_temp"          # local ceiling temperature sensor
+CONF_FLOOR_TEMP = "floor_temp"              # optional floor-temp override sensor
+CONF_FAN_MASTER = "fan_master"              # Shelly O1 master (feeds transformer)
+CONF_FAN_DIRECTION = "fan_direction"        # Shelly O2 direction coil
+CONF_FAN_REVERSE = "fan_reverse"            # virtual reverse button (id 200)
+CONF_FAN_O1_POWER = "fan_o1_power"          # O1 power (transformer + 3 fans)
+CONF_FAN_O2_POWER = "fan_o2_power"          # O2 power (direction coil)
+CONF_FAN_FAULT = "fan_fault"                # Shelly latched fault (if published)
+CONF_ROINTE_POWER = "rointe_power_sensors"  # Rointe Effective Power sensors
+CONF_HALL_AC = "hall_ac"                    # future air-conditioning climate
+
 # Every mapping key, grouped for the config flow / options flow.
 MULTI_ENTITY_KEYS = (
     CONF_HALL_CLIMATES,
@@ -72,6 +89,7 @@ MULTI_ENTITY_KEYS = (
     CONF_ZONE_B_DOORS,
     CONF_ZONE_B_WINDOWS,
     CONF_SHARED_WINDOWS,
+    CONF_ROINTE_POWER,
 )
 
 SINGLE_ENTITY_KEYS = (
@@ -88,6 +106,15 @@ SINGLE_ENTITY_KEYS = (
     CONF_ALARM_MAIN,
     CONF_ALARM_OFFICE,
     CONF_WATER_SWITCH,
+    CONF_CEILING_TEMP,
+    CONF_FLOOR_TEMP,
+    CONF_FAN_MASTER,
+    CONF_FAN_DIRECTION,
+    CONF_FAN_REVERSE,
+    CONF_FAN_O1_POWER,
+    CONF_FAN_O2_POWER,
+    CONF_FAN_FAULT,
+    CONF_HALL_AC,
 )
 
 # Optional single-entity keys (setup can complete without them).
@@ -103,6 +130,18 @@ OPTIONAL_KEYS = (
     CONF_MOTION_KITCHEN,
     CONF_MOTION_GENTS,
     CONF_MOTION_FEMALE,
+    # Fan / cooling mappings are all additive and guarded, so the whole feature
+    # is absent-safe: an entry made before the fans step existed keeps working.
+    CONF_CEILING_TEMP,
+    CONF_FLOOR_TEMP,
+    CONF_FAN_MASTER,
+    CONF_FAN_DIRECTION,
+    CONF_FAN_REVERSE,
+    CONF_FAN_O1_POWER,
+    CONF_FAN_O2_POWER,
+    CONF_FAN_FAULT,
+    CONF_ROINTE_POWER,
+    CONF_HALL_AC,
 )
 
 # ---------------------------------------------------------------------------
@@ -120,6 +159,20 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     "hall_eco_low_temp": (8, 18, 0.5, 14, "°C"),
     "water_preheat_minutes": (5, 30, 5, 15, "min"),
     "water_motion_keepalive_minutes": (15, 120, 15, 60, "min"),
+    # --- Destratification / cooling fan tunables ---
+    # Ceiling-minus-floor difference to start (dt_on) and stop (dt_off) the
+    # winter fans. The gap between them is the hysteresis band.
+    "fan_dt_on": (0.5, 10, 0.5, 3, "°C"),
+    "fan_dt_off": (0, 5, 0.5, 1, "°C"),
+    # Anti-short-cycle timers.
+    "fan_min_run_minutes": (0, 60, 1, 10, "min"),
+    "fan_min_off_minutes": (0, 60, 1, 10, "min"),
+    # Ceiling/floor reading older than this (no report) counts as lost.
+    "fan_sensor_stale_minutes": (5, 120, 5, 30, "min"),
+    # Summer: floor temperature above this is "warm enough" to want a breeze.
+    "cooling_temp_high": (18, 30, 0.5, 24, "°C"),
+    # A Rointe Effective Power reading above this means that heater is calling.
+    "heat_demand_watts": (0, 200, 5, 20, "W"),
 }
 
 NUMBER_ICONS: dict[str, str] = {
@@ -133,6 +186,13 @@ NUMBER_ICONS: dict[str, str] = {
     "hall_eco_low_temp": "mdi:thermometer-minus",
     "water_preheat_minutes": "mdi:water-boiler",
     "water_motion_keepalive_minutes": "mdi:timer-outline",
+    "fan_dt_on": "mdi:fan-plus",
+    "fan_dt_off": "mdi:fan-minus",
+    "fan_min_run_minutes": "mdi:timer-play",
+    "fan_min_off_minutes": "mdi:timer-off",
+    "fan_sensor_stale_minutes": "mdi:timer-alert",
+    "cooling_temp_high": "mdi:thermometer-high",
+    "heat_demand_watts": "mdi:flash",
 }
 
 BOOST_OPTIONS = ["30 min", "60 min", "90 min"]
@@ -145,6 +205,16 @@ SWITCH_DEFS: dict[str, bool] = {
     "zone_a_occupied_override": False,
     "zone_b_occupied_override": False,
     "water_manual_override": False,
+    # Master enable for the destratification fans (winter). Default on.
+    "fans_enabled": True,
+    # Summer cooling regime. Default OFF so the forward-air branch stays dormant
+    # until deliberately enabled.
+    "summer_mode": False,
+    # When the ceiling/floor sensor is lost, assume stratification is present and
+    # keep running the winter fans (still gated by heat demand + occupancy) rather
+    # than failing to off. Default ON per site preference; turn off to fail-safe
+    # to fans-off instead. The Shelly still owns all motor safety either way.
+    "fans_run_on_sensor_loss": True,
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -153,6 +223,9 @@ SWITCH_ICONS: dict[str, str] = {
     "zone_a_occupied_override": "mdi:account-check",
     "zone_b_occupied_override": "mdi:account-check",
     "water_manual_override": "mdi:water-boiler-alert",
+    "fans_enabled": "mdi:ceiling-fan",
+    "summer_mode": "mdi:weather-sunny",
+    "fans_run_on_sensor_loss": "mdi:fan-alert",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"
@@ -173,3 +246,6 @@ NOTIFY_ZONE_HOLD = {
 NOTIFY_SHARED_OPENING = "scout_shared_opening_ice"
 NOTIFY_INTERNAL_DOOR = "scout_internal_door_exterior_open"
 NOTIFY_SEASONAL = "scout_seasonal_lockout"
+NOTIFY_FAN_FAULT = "scout_fan_fault"
+NOTIFY_FAN_DIAL = "scout_fan_dial_high"
+NOTIFY_FAN_SENSOR_LOST = "scout_fan_sensor_lost"
