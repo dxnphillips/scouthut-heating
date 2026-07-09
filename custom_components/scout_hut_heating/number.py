@@ -65,8 +65,19 @@ class ScoutNumber(ScoutEntity, RestoreNumber):
         await super().async_added_to_hass()
         data = await self.async_get_last_number_data()
         if data is not None and data.native_value is not None:
-            self._attr_native_value = data.native_value
+            # Clamp into the current bounds: an upgrade may have tightened them
+            # (e.g. to the ranges the Rointe number entities accept) and a
+            # restored out-of-range value would otherwise survive untouched.
+            self._attr_native_value = min(
+                self._attr_native_max_value,
+                max(self._attr_native_min_value, float(data.native_value)),
+            )
         self._controller.register_number(self._key, self)
+
+    def restore_default(self) -> None:
+        """Reset to the built-in default (used by the reset button)."""
+        self._attr_native_value = float(NUMBER_DEFS[self._key][3])
+        self.async_write_ha_state()
 
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = value

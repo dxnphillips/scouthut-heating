@@ -49,6 +49,15 @@ class ScoutSwitch(ScoutEntity, RestoreEntity, SwitchEntity):
             self._attr_is_on = last.state == "on"
         self._controller.register_switch(self._key, self)
 
+    def restore_default(self) -> None:
+        """Reset to the built-in default (used by the reset button).
+
+        Deliberately does NOT go through async_turn_on: resetting fans_enabled
+        must not act as the fault re-arm gesture.
+        """
+        self._attr_is_on = SWITCH_DEFS[self._key]
+        self.async_write_ha_state()
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         self._attr_is_on = True
         self.async_write_ha_state()

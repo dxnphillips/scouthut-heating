@@ -40,6 +40,11 @@ class ScoutBoostDuration(ScoutEntity, RestoreEntity, SelectEntity):
             self._attr_current_option = last.state
         self._controller.register_select(self._key, self)
 
+    def restore_default(self) -> None:
+        """Reset to the built-in default (used by the reset button)."""
+        self._attr_current_option = BOOST_DEFAULT
+        self.async_write_ha_state()
+
     async def async_select_option(self, option: str) -> None:
         self._attr_current_option = option
         self.async_write_ha_state()
