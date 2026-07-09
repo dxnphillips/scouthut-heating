@@ -4,13 +4,13 @@
     "step": {
       "user": {
         "title": "Heated zones",
-        "description": "Map the Rointe climate entities for each zone. Shared-zone and hall temperature number entities are optional.",
+        "description": "Map the Rointe climate entities for each zone. The hall comfort/eco temperature number entities are auto-detected from the hall heaters if left blank; only set them to override that.",
         "data": {
           "hall_climates": "Hall (Zone A) heaters",
           "office_climates": "Office (Zone B) heaters",
           "shared_climates": "Shared zone heaters (toilets / kitchen)",
-          "hall_comfort_numbers": "Hall comfort-temperature number entities",
-          "hall_eco_numbers": "Hall eco-temperature number entities"
+          "hall_comfort_numbers": "Hall comfort-temperature numbers (auto-detected if blank)",
+          "hall_eco_numbers": "Hall eco-temperature numbers (auto-detected if blank)"
         }
       },
       "motion": {
@@ -63,8 +63,8 @@
           "hall_climates": "Hall (Zone A) heaters",
           "office_climates": "Office (Zone B) heaters",
           "shared_climates": "Shared zone heaters (toilets / kitchen)",
-          "hall_comfort_numbers": "Hall comfort-temperature number entities",
-          "hall_eco_numbers": "Hall eco-temperature number entities"
+          "hall_comfort_numbers": "Hall comfort-temperature numbers (auto-detected if blank)",
+          "hall_eco_numbers": "Hall eco-temperature numbers (auto-detected if blank)"
         }
       },
       "motion": {
