@@ -186,6 +186,36 @@ def on(hass, entity_id, attrs=None):
     hass.states.set(entity_id, "on", attrs)
 
 
+def off(hass, entity_id, attrs=None):
+    hass.states.set(entity_id, "off", attrs)
+
+
+def advance(ctrl, minutes):
+    """Simulate `minutes` of elapsed time by rewinding every stored timestamp.
+
+    Moving the remembered instants further into the past is equivalent to the
+    clock moving forward, which lets sequence tests age motion, open-since,
+    boost and last-apply timers deterministically without real waits.
+    """
+    delta = timedelta(minutes=minutes)
+    for area, ts in ctrl.last_motion.items():
+        if ts is not None:
+            ctrl.last_motion[area] = ts - delta
+    for key, ts in ctrl.open_since.items():
+        if ts is not None:
+            ctrl.open_since[key] = ts - delta
+    for zone, ts in ctrl.boost_until.items():
+        if ts is not None:
+            ctrl.boost_until[zone] = ts - delta
+    for zone in list(ctrl._last_apply):
+        ctrl._last_apply[zone] = ctrl._last_apply[zone] - delta
+
+
+def set_preset_state(hass, entity_id, preset):
+    """Simulate a heater currently reporting a preset (e.g. changed in the app)."""
+    hass.states.set(entity_id, "heat", {"preset_mode": preset})
+
+
 def booking(ctrl, zone, title=""):
     """Simulate an active booking / pre-heat window for a zone."""
     ctrl.cal_window[zone] = True
