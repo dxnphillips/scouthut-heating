@@ -37,13 +37,16 @@ def fan_decision(
 
     Arguments:
         summer: the summer-cooling regime is enabled.
-        occupied: the hall is occupied or within a pre-heat window.
+        occupied: the hall is occupied or within a pre-heat window. Only gates the
+            summer breeze; winter destratification runs regardless of occupancy so
+            it can knock down the hot ceiling layer and cut roof heat-loss even
+            when people are only in the office.
         warm: floor temperature is above the cooling threshold; ``None`` when the
             floor temperature is unavailable.
         dt: ceiling minus floor temperature; ``None`` when either reading is
             unavailable or stale.
         dt_on / dt_off: hysteresis band for winter start / stop.
-        demand: at least one radiator is actively producing heat.
+        demand: at least one radiator (any zone) is actively producing heat.
         currently_winter: the fans are already running in winter mode (so the
             stop thresholds apply instead of the start thresholds).
         run_on_loss: when the ceiling / floor reading is lost, assume
@@ -59,22 +62,23 @@ def fan_decision(
             return True, "forward", "summer"
         return False, None, "off"
 
-    # Winter destratification.
+    # Winter destratification. This runs for loss reduction as well as comfort, so
+    # it is gated only on real stratification and heat being produced somewhere in
+    # the building — not on hall occupancy.
     if dt is None:
         # Ceiling / floor lost. Optionally assume stratification and keep running,
-        # still gated on heat being produced and the hall occupied.
-        if run_on_loss and demand and occupied:
+        # still gated on heat being produced.
+        if run_on_loss and demand:
             return True, "reverse", "winter"
         return False, None, "off"
 
     if currently_winter:
-        # Stop on any of: the difference collapsed, heat stopped, hall emptied.
-        if dt <= dt_off or not demand or not occupied:
+        # Stop on either: the difference collapsed, or the heat stopped.
+        if dt <= dt_off or not demand:
             return False, None, "off"
         return True, "reverse", "winter"
 
-    # Start only when the difference is real, heat is being produced and the hall
-    # is occupied (or in a pre-heat window).
-    if dt > dt_on and demand and occupied:
+    # Start when the difference is real and heat is being produced anywhere.
+    if dt > dt_on and demand:
         return True, "reverse", "winter"
     return False, None, "off"

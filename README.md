@@ -92,12 +92,15 @@ direction relay directly while the master is off, and never while it is running.
 
 Three regimes, chosen by the **Summer cooling mode** switch:
 
-- **Winter destratification** (default) → fans **reverse (up air)** when *all*
-  hold: ceiling-minus-floor ΔT above the start threshold (default 3 °C), a
-  radiator is actually drawing power (so office heat leaking into the hall counts
-  too, not just the hall calling), and the hall is occupied or in a pre-heat
-  window. It stops when the ΔT falls to the stop threshold (default 1 °C), the
-  heating stops, or the hall empties. The two ΔT thresholds plus minimum run/off
+- **Winter destratification** (default) → fans **reverse (up air)** when the
+  ceiling-minus-floor ΔT is above the start threshold (default 3 °C) and a
+  radiator in *any* zone is actually drawing power (so office or shared heat
+  leaking into the hall counts too, not just the hall calling). This runs for
+  **loss reduction as well as comfort**: it knocks down the hot ceiling layer
+  that bleeds heat through the poorly-insulated roof, so it does **not** require
+  the hall to be occupied — heat pooling at the roof while people are only in the
+  office still triggers it. It stops when the ΔT falls to the stop threshold
+  (default 1 °C) or the heating stops. The two ΔT thresholds plus minimum run/off
   times (default 10 min each) prevent short-cycling.
 - **Summer cooling** (only when *Summer cooling mode* is on) → fans **forward
   (down air)** when the hall is occupied and the floor temperature is above the

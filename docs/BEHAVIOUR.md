@@ -48,7 +48,7 @@ signals and drive the Shelly.
 
 | Behaviour | Reconciler |
 | --- | --- |
-| Winter destratification (up air) | `_fan_target` + `fan_decision`: ceiling-floor ΔT above `fan_dt_on`, `_heat_demand()` true (any Rointe *Effective Power* over `heat_demand_watts`), and hall occupied (`_motion_recent("hall")` or `_cal_active(ZONE_A)`). Hysteresis via `fan_dt_off`, `fan_min_run_minutes`, `fan_min_off_minutes`. Direction reverse. |
+| Winter destratification (up air) | `_fan_target` + `fan_decision`: ceiling-floor ΔT above `fan_dt_on` and `_heat_demand()` true (any Rointe *Effective Power* over `heat_demand_watts`, across hall/office/shared). Runs for loss reduction as well as comfort, so it is **not** gated on hall occupancy. Hysteresis via `fan_dt_off`, `fan_min_run_minutes`, `fan_min_off_minutes`. Direction reverse. |
 | Summer cooling (down air) | `summer_mode` on + occupied + floor above `cooling_temp_high`; optional AC assist via `_ac_cooling`. Direction forward. |
 | Direction change | `_async_ensure_fans`: preset the O2 relay only while the master is off, otherwise press the reverse button (id 200); a `FAN_REVERSE_GRACE` window holds HA off the fans during the Shelly's 45 s sequence. |
 | Sensor lost | `fans_run_on_sensor_loss` (default on): assume stratification and keep the winter fans running while demand + occupancy hold; else fans off. `NOTIFY_FAN_SENSOR_LOST`. |

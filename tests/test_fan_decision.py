@@ -90,16 +90,18 @@ def test_winter_stops_when_heat_stops():
     assert winter(dt=5.0, currently_winter=True, demand=False) == (False, None, "off")
 
 
-def test_winter_stops_when_unoccupied():
-    assert winter(dt=5.0, currently_winter=True, occupied=False) == (False, None, "off")
+def test_winter_keeps_running_when_unoccupied():
+    # Loss-reduction: an empty hall does not stop winter destrat.
+    assert winter(dt=5.0, currently_winter=True, occupied=False) == (True, "reverse", "winter")
 
 
 def test_winter_needs_demand_to_start():
     assert winter(dt=5.0, demand=False) == (False, None, "off")
 
 
-def test_winter_needs_occupancy_to_start():
-    assert winter(dt=5.0, occupied=False) == (False, None, "off")
+def test_winter_runs_regardless_of_occupancy():
+    # Heat leaking into an empty hall still triggers loss-reduction destrat.
+    assert winter(dt=5.0, occupied=False) == (True, "reverse", "winter")
 
 
 # --- Sensor loss ---------------------------------------------------------------
@@ -113,9 +115,13 @@ def test_sensor_loss_off_when_not_preferred():
     assert winter(dt=None, run_on_loss=False) == (False, None, "off")
 
 
-def test_sensor_loss_still_needs_demand_and_occupancy():
+def test_sensor_loss_still_needs_demand():
     assert winter(dt=None, run_on_loss=True, demand=False) == (False, None, "off")
-    assert winter(dt=None, run_on_loss=True, occupied=False) == (False, None, "off")
+
+
+def test_sensor_loss_runs_unoccupied():
+    # Sensor lost + heat present: run for loss reduction even with an empty hall.
+    assert winter(dt=None, run_on_loss=True, occupied=False) == (True, "reverse", "winter")
 
 
 # --- Summer cooling ------------------------------------------------------------

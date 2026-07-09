@@ -1362,7 +1362,7 @@ class ScoutController:
         if self.switch_on("fans_run_on_sensor_loss", default=True):
             tail = (
                 "Assuming stratification and keeping the winter fans running "
-                "while heat is being produced and the hall is occupied."
+                "while heat is being produced."
             )
         else:
             tail = "The destratification fans are held off until it returns."
