@@ -19,6 +19,7 @@ def fan_decision(
     summer: bool,
     occupied: bool,
     warm: bool | None,
+    overheated: bool,
     dt: float | None,
     dt_on: float,
     dt_off: float,
@@ -44,6 +45,10 @@ def fan_decision(
             when people are only in the office.
         warm: floor temperature is above the cooling threshold; ``None`` when the
             floor temperature is unavailable.
+        overheated: the room is at/above the fan-cooling ceiling (~35 °C, skin
+            temperature). Above it a breeze blows heat *onto* people, so the
+            summer fans are held off (public-health guidance: CDC 32 °C for the
+            vulnerable, UK guidance 35 °C).
         dt: ceiling minus floor temperature; ``None`` when either reading is
             unavailable or stale.
         dt_on / dt_off: hysteresis band for winter start / stop.
@@ -67,8 +72,9 @@ def fan_decision(
     if summer:
         # Summer cooling: a forward breeze only helps someone who is present, and
         # we need a floor reading to know it is genuinely warm. Without one we do
-        # not blow air on assumption (unlike winter).
-        if warm is None:
+        # not blow air on assumption (unlike winter). Above the overheat ceiling
+        # a fan makes people hotter, not cooler — hold off.
+        if warm is None or overheated:
             return False, None, "off"
         if occupied and warm:
             return True, "forward", "summer"

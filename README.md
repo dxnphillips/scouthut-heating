@@ -75,7 +75,8 @@ restart needed to change them:
 - **Fan numbers:** ceiling-floor ΔT to start / stop, minimum run / off times,
   sensor-stale timeout, the summer warm-enough temperature, the heat-demand
   power threshold, and the winter recirculation floor cap.
-- **Fan switches:** ceiling fans enabled, summer cooling mode, and "run when the
+- **Fan switches:** ceiling fans enabled, summer cooling mode (manual
+  force-on), summer cooling follows season, and "run when the
   sensor is lost".
 - **Fan diagnostics:** ceiling-floor ΔT, fan mode/direction, fan running, fault,
   heat-demand active, and sensor-lost flags.
@@ -96,7 +97,12 @@ Direction (Shelly O2 relay): **open = forward = down air = summer**;
 through the Shelly **reverse button** (id 200); Home Assistant only writes the
 direction relay directly while the master is off, and never while it is running.
 
-Three regimes, chosen by the **Summer cooling mode** switch:
+Three regimes. The changeover is automatic by default: with **Summer cooling
+follows season** on, the cooling regime is active while the seasonal heating
+lockout is engaged and drops back to winter destratification when it releases
+in autumn — nobody has to remember to flip anything, and direction reversals
+stay seasonal-rare (best practice for these motors). The **Summer cooling
+mode** switch remains as a manual force-on for out-of-season heatwaves:
 
 - **Winter destratification** (default) → fans **reverse (up air)** when the
   ceiling-minus-floor ΔT is above the start threshold (default 3 °C) **and** the
@@ -114,10 +120,13 @@ Three regimes, chosen by the **Summer cooling mode** switch:
   run/off times (default 10 min each) prevent short-cycling. Defaults follow the
   documented practice for destrat fans (a few-degree ΔT band; a ~24 °C / 75 °F
   low-side limit).
-- **Summer cooling** (only when *Summer cooling mode* is on) → fans **forward
-  (down air)** when the hall is occupied and the floor temperature is above the
-  warm-enough threshold (default 24 °C). The breeze is what cools people, so an
-  empty hall never runs them.
+- **Summer cooling** → fans **forward (down air)** when the hall is occupied
+  (or in a booking window) and the floor temperature is above the warm-enough
+  threshold (default 24 °C). The breeze is what cools people, so an empty hall
+  never runs them — and above **35 °C** they are held off entirely with a
+  notification, because air hotter than skin heats people instead of cooling
+  them (per public-health guidance); ventilation and shade are the right tools
+  at that point.
 - **Off / fail-safe** → the master opens whenever the fans are disabled or the
   Shelly fault is latched.
 

@@ -123,3 +123,27 @@ def test_off_opens_master():
     ]
     assert [c["service"] for c in master_calls] == ["turn_off"]
     assert ctrl.fan_on is False and ctrl.fan_master_expected is False
+
+
+# --- Season changeover (which regime is active) --------------------------------
+
+def test_summer_follows_seasonal_lockout():
+    ctrl, _ = fan_controller()
+    assert ctrl._summer_active() is False  # heating season, default switches
+    ctrl.seasonal_lockout = True
+    assert ctrl._summer_active() is True  # lockout engaged -> cooling regime
+    ctrl.seasonal_lockout = False
+    assert ctrl._summer_active() is False  # autumn: back to destratification
+
+
+def test_manual_summer_mode_forces_cooling_regardless_of_season():
+    ctrl, _ = fan_controller()
+    ctrl._switches["summer_mode"].is_on = True
+    assert ctrl._summer_active() is True
+
+
+def test_follow_season_can_be_disabled():
+    ctrl, _ = fan_controller()
+    ctrl._switches["summer_follows_season"].is_on = False
+    ctrl.seasonal_lockout = True
+    assert ctrl._summer_active() is False

@@ -51,7 +51,7 @@ signals and drive the Shelly.
 | Behaviour | Reconciler |
 | --- | --- |
 | Winter destratification (up air) | `_fan_target` + `fan_decision`: ceiling-floor ΔT above `fan_dt_on` **and** the heat is worth moving — `_heat_demand()` true (any Rointe *Effective Power* over `heat_demand_watts`, across hall/office/shared) **or** the floor is below `fan_recirc_max_floor_temp`. The recirculation term decouples the fans from the heater's on/off cycle, so residual heat is harvested after a heater cuts out. Runs for loss reduction as well as comfort, so it is **not** gated on hall occupancy. Hysteresis via `fan_dt_off`, `fan_min_run_minutes`, `fan_min_off_minutes`. Direction reverse. |
-| Summer cooling (down air) | `summer_mode` on + occupied + floor above `cooling_temp_high`. Direction forward. |
+| Summer cooling (down air) | Regime active when `summer_mode` is on (manual force) or `summer_follows_season` (default on) + seasonal lockout engaged; runs when occupied + floor above `cooling_temp_high`, held off with a notification at/above `FAN_COOLING_MAX_TEMP` (35 °C — air hotter than skin heats people). Direction forward. |
 | Direction change | `_async_ensure_fans`: preset the O2 relay only while the master is off, otherwise press the reverse button (id 200); a `FAN_REVERSE_GRACE` window holds HA off the fans during the Shelly's 45 s sequence. |
 | Sensor lost | `fans_run_on_sensor_loss` (default on): assume stratification and keep the winter fans running while demand holds; else fans off. `NOTIFY_FAN_SENSOR_LOST`. |
 | Fault | `_fan_fault`: mapped boolean wins, else inferred from an unexpected master-off beyond `FAN_FAULT_GRACE`; refuses to run and notifies (`NOTIFY_FAN_FAULT`). Re-arm via `async_fan_rearm` (the *Ceiling fans enabled* switch off→on). |
