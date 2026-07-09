@@ -159,6 +159,10 @@ class ScoutController:
         self.fan_action_grace_until: datetime | None = None  # Shelly mid-sequence
         self._fan_fault_notified: bool = False
         self._discovered_power: list[str] | None = None  # auto-found power sensors
+        self._connected_map: dict[str, str] | None = None  # climate -> connected sensor
+        # A zone whose last preset was sent while a heater was offline: re-send it
+        # once every heater is back online.
+        self._zone_offline_apply: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
 
         # Cached calendar look-ahead (refreshed on a slower cadence).
         self.cal_window: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
@@ -723,9 +727,16 @@ class ScoutController:
     async def _reconcile_zones(self) -> None:
         for zone in (ZONE_A, ZONE_B):
             desired = self._desired_zone(zone)
-            if desired is None or desired == self.applied[zone]:
-                if desired is not None:
-                    self.expected_preset[zone] = desired
+            if desired is None:
+                continue
+            # If the last apply went out while a heater was offline, re-send once
+            # every heater in the zone is back online, even if the target is
+            # unchanged (the offline heater may never have received it).
+            if self._zone_offline_apply.get(zone) and self._all_zone_online(zone):
+                await self._async_set_preset(zone, desired)
+                continue
+            if desired == self.applied[zone]:
+                self.expected_preset[zone] = desired
                 continue
             await self._async_set_preset(zone, desired)
 
@@ -774,6 +785,10 @@ class ScoutController:
             climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
             if not climates:
                 continue
+            # Do not read drift from an offline heater: a stale preset would look
+            # like a manual change. Resume once it is back and readable.
+            if not self._climate_online(climates[0]):
+                continue
             state = self.hass.states.get(climates[0])
             if state is None:
                 continue
@@ -806,6 +821,9 @@ class ScoutController:
         self.applied[zone] = preset
         self.expected_preset[zone] = preset
         self._last_apply[zone] = self._now()
+        # Remember if any heater was offline: the command cannot have reached it,
+        # so mark the zone for a re-send once it reconnects.
+        self._zone_offline_apply[zone] = not self._all_zone_online(zone)
 
     def _hall_number_entities(self) -> tuple[list[str], list[str]]:
         """Resolve the hall comfort / eco temperature number entities.
@@ -1025,6 +1043,58 @@ class ScoutController:
                 if is_power:
                     found.append(member.entity_id)
         return found
+
+    def _connected_for(self, climate: str) -> str | None:
+        """Return the Rointe 'Connected' binary_sensor for a heater, if any."""
+        if self._connected_map is None:
+            found = self._discover_connected_map()
+            if found:
+                self._connected_map = found
+            return found.get(climate)
+        return self._connected_map.get(climate)
+
+    def _discover_connected_map(self) -> dict[str, str]:
+        """Map each mapped heater climate to its 'Connected' binary_sensor."""
+        registry = er.async_get(self.hass)
+        mapping: dict[str, str] = {}
+        climates = (
+            self._as_list(self.config.get(CONF_HALL_CLIMATES))
+            + self._as_list(self.config.get(CONF_OFFICE_CLIMATES))
+            + self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+        )
+        for climate in climates:
+            entry = registry.async_get(climate)
+            if entry is None or entry.device_id is None:
+                continue
+            for member in er.async_entries_for_device(
+                registry, entry.device_id, include_disabled_entities=False
+            ):
+                if member.domain != "binary_sensor":
+                    continue
+                if (member.original_device_class or "") == "connectivity" or (
+                    "connect" in member.entity_id.lower()
+                ):
+                    mapping[climate] = member.entity_id
+                    break
+        return mapping
+
+    def _climate_online(self, climate: str) -> bool:
+        """Whether a heater is reachable.
+
+        Prefers its Rointe 'Connected' sensor; falls back to the climate entity
+        not being unavailable / unknown when no connectivity sensor is found.
+        """
+        connected = self._connected_for(climate)
+        if connected:
+            st = self.hass.states.get(connected)
+            if st is not None and st.state not in ("unknown", "unavailable"):
+                return st.state == "on"
+        st = self.hass.states.get(climate)
+        return st is not None and st.state not in ("unavailable", "unknown")
+
+    def _all_zone_online(self, zone: str) -> bool:
+        climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
+        return bool(climates) and all(self._climate_online(c) for c in climates)
 
     def _ac_cooling(self, ac: str) -> bool:
         """True if the (optional) AC is actively cooling."""

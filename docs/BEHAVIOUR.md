@@ -55,6 +55,26 @@ signals and drive the Shelly.
 | Fault | `_fan_fault`: mapped boolean wins, else inferred from an unexpected master-off beyond `FAN_FAULT_GRACE`; refuses to run and notifies (`NOTIFY_FAN_FAULT`). Re-arm via `async_fan_rearm` (the *Ceiling fans enabled* switch off→on). |
 | Dial-high reminder | `_notify_dial_high` (`NOTIFY_FAN_DIAL`) before every reversal. |
 
+## Rointe offline / stale handling
+
+The Rointe integration is cloud based, so a heater can go offline or stop
+updating. The reconciler is defensive about this:
+
+- **Fan floor temperature & heat-demand** ignore a heater that is unavailable or
+  has stopped reporting (judged from `last_reported`), so a frozen reading is
+  never trusted; if nothing readable remains the floor is treated as lost.
+- **Re-send after reconnect** — `_async_set_preset` records when a preset was
+  sent while a heater was offline (`_zone_offline_apply`); `_reconcile_zones`
+  re-sends once every heater in the zone is back online (`_all_zone_online`), so
+  a heater cannot get stuck on the wrong preset after a blip.
+- **Drift detection pauses while offline** — `_detect_drift` skips a zone whose
+  representative heater is not reachable, so a stale preset is not mistaken for a
+  manual change.
+
+Reachability comes from each heater's Rointe **Connected** binary_sensor
+(auto-detected from the device, like the Effective Power sensors), falling back
+to the climate entity's own availability when no connectivity sensor exists.
+
 ## Deliberate differences
 
 - A single 30-second reconcile replaces the mix of 1- and 5-minute polls, so
