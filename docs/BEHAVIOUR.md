@@ -37,6 +37,24 @@ original YAML is preserved under [`reference/`](reference).
 | W7 Startup init | Covered by the startup reconcile. |
 | W8 / W9 Alarm set/cleared | `both_alarms` branch in `_desired_water`; alarm changes trigger a reconcile. |
 
+## Ceiling fans (new — no original automation)
+
+The destratification / cooling fans have no equivalent in the original packages;
+they are added on the same reconciler. The pure decision lives in
+[`fan_logic.py`](../custom_components/scout_hut_heating/fan_logic.py) (unit
+tested offline in [`tests/test_fan_decision.py`](../tests/test_fan_decision.py));
+the coordinator's `_reconcile_fans` / `_async_ensure_fans` gather the live
+signals and drive the Shelly.
+
+| Behaviour | Reconciler |
+| --- | --- |
+| Winter destratification (up air) | `_fan_target` + `fan_decision`: ceiling-floor ΔT above `fan_dt_on`, `_heat_demand()` true (any Rointe *Effective Power* over `heat_demand_watts`), and hall occupied (`_motion_recent("hall")` or `_cal_active(ZONE_A)`). Hysteresis via `fan_dt_off`, `fan_min_run_minutes`, `fan_min_off_minutes`. Direction reverse. |
+| Summer cooling (down air) | `summer_mode` on + occupied + floor above `cooling_temp_high`; optional AC assist via `_ac_cooling`. Direction forward. |
+| Direction change | `_async_ensure_fans`: preset the O2 relay only while the master is off, otherwise press the reverse button (id 200); a `FAN_REVERSE_GRACE` window holds HA off the fans during the Shelly's 45 s sequence. |
+| Sensor lost | `fans_run_on_sensor_loss` (default on): assume stratification and keep the winter fans running while demand + occupancy hold; else fans off. `NOTIFY_FAN_SENSOR_LOST`. |
+| Fault | `_fan_fault`: mapped boolean wins, else inferred from an unexpected master-off beyond `FAN_FAULT_GRACE`; refuses to run and notifies (`NOTIFY_FAN_FAULT`). Re-arm via `async_fan_rearm` (the *Ceiling fans enabled* switch off→on). |
+| Dial-high reminder | `_notify_dial_high` (`NOTIFY_FAN_DIAL`) before every reversal. |
+
 ## Deliberate differences
 
 - A single 30-second reconcile replaces the mix of 1- and 5-minute polls, so

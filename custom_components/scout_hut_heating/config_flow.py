@@ -20,6 +20,15 @@ from .const import (
     CONF_ALARM_OFFICE,
     CONF_CALENDAR_HALL,
     CONF_CALENDAR_OFFICE,
+    CONF_CEILING_TEMP,
+    CONF_FAN_DIRECTION,
+    CONF_FAN_FAULT,
+    CONF_FAN_MASTER,
+    CONF_FAN_O1_POWER,
+    CONF_FAN_O2_POWER,
+    CONF_FAN_REVERSE,
+    CONF_FLOOR_TEMP,
+    CONF_HALL_AC,
     CONF_HALL_CLIMATES,
     CONF_HALL_COMFORT_NUMBERS,
     CONF_HALL_ECO_NUMBERS,
@@ -31,6 +40,7 @@ from .const import (
     CONF_MOTION_OFFICE,
     CONF_OFFICE_CLIMATES,
     CONF_REALFEEL,
+    CONF_ROINTE_POWER,
     CONF_SHARED_CLIMATES,
     CONF_SHARED_WINDOWS,
     CONF_WATER_SWITCH,
@@ -112,6 +122,27 @@ def _extras_schema(d: dict[str, Any]) -> vol.Schema:
     return vol.Schema(s)
 
 
+def _fans_schema(d: dict[str, Any]) -> vol.Schema:
+    # Every field is optional: with no fan hardware mapped the whole feature is
+    # dormant. The Shelly script owns all timing and safety; Home Assistant only
+    # chooses when the fans are wanted and in which direction.
+    s: dict = {}
+    _add(s, CONF_FAN_MASTER, False, _sel("switch"), d)
+    _add(s, CONF_FAN_DIRECTION, False, _sel("switch"), d)
+    _add(s, CONF_FAN_REVERSE, False, _sel("button"), d)
+    _add(s, CONF_CEILING_TEMP, False, _sel("sensor"), d)
+    _add(s, CONF_FLOOR_TEMP, False, _sel("sensor"), d)
+    _add(s, CONF_ROINTE_POWER, False, _sel("sensor", True), d)
+    _add(s, CONF_FAN_O1_POWER, False, _sel("sensor"), d)
+    _add(s, CONF_FAN_O2_POWER, False, _sel("sensor"), d)
+    # A Shelly virtual boolean can surface as a binary_sensor or a switch, and an
+    # input_boolean works for manual testing; the fault reader treats any on/off
+    # entity the same.
+    _add(s, CONF_FAN_FAULT, False, _sel([*BINARY, "switch"]), d)
+    _add(s, CONF_HALL_AC, False, _sel("climate"), d)
+    return vol.Schema(s)
+
+
 class ScoutConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the initial multi-step setup."""
 
@@ -153,8 +184,16 @@ class ScoutConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         if user_input is not None:
             self._data.update(user_input)
-            return self.async_create_entry(title="Scout Hut Heating", data=self._data)
+            return await self.async_step_fans()
         return self.async_show_form(step_id="extras", data_schema=_extras_schema({}))
+
+    async def async_step_fans(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            self._data.update(user_input)
+            return self.async_create_entry(title="Scout Hut Heating", data=self._data)
+        return self.async_show_form(step_id="fans", data_schema=_fans_schema({}))
 
     @staticmethod
     @callback
@@ -200,5 +239,13 @@ class ScoutOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         if user_input is not None:
             self._data.update(user_input)
-            return self.async_create_entry(title="", data=self._data)
+            return await self.async_step_fans()
         return self.async_show_form(step_id="extras", data_schema=_extras_schema(self._data))
+
+    async def async_step_fans(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            self._data.update(user_input)
+            return self.async_create_entry(title="", data=self._data)
+        return self.async_show_form(step_id="fans", data_schema=_fans_schema(self._data))

@@ -49,6 +49,18 @@ SENSORS: dict[str, tuple[str, str, Callable[[ScoutController], bool]]] = {
     ),
     "zone_a_boost_active": ("Hall boost active", "mdi:fire", lambda c: c.boost_active(ZONE_A)),
     "zone_b_boost_active": ("Office boost active", "mdi:fire", lambda c: c.boost_active(ZONE_B)),
+    "fan_running": ("Ceiling fan running", "mdi:ceiling-fan", lambda c: bool(c.fan_on)),
+    "fan_fault_effective": (
+        "Ceiling fan fault",
+        "mdi:fan-alert",
+        lambda c: c.fan_fault_effective,
+    ),
+    "fan_sensor_stale": (
+        "Fan temperature sensor lost",
+        "mdi:thermometer-off",
+        lambda c: c.fan_sensor_stale,
+    ),
+    "fan_heat_demand": ("Heat demand active", "mdi:radiator", lambda c: c.heat_demand),
 }
 
 

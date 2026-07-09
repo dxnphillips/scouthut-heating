@@ -1,0 +1,80 @@
+# Optional Lovelace dashboard for the ceiling fans.
+#
+# Paste as a new manual dashboard (Settings -> Dashboards -> Add -> "Edit in
+# YAML"), or drop the cards into an existing view. Entity ids are the ones the
+# integration creates from the "Scout Hut Heating" device plus the Shelly
+# entities you mapped in the "Ceiling fans & cooling" setup step. The integration
+# entity ids below are the expected slugs; if yours differ (HA de-duplicates
+# names), pick them from the entity list and adjust. The Shelly entities use the
+# brief's placeholder ids — replace with your own.
+
+title: Scout Hut fans
+views:
+  - title: Fans
+    path: fans
+    cards:
+      - type: entities
+        title: Status
+        entities:
+          - entity: binary_sensor.scout_hut_heating_ceiling_fan_running
+            name: Fans running
+          - entity: sensor.scout_hut_heating_ceiling_fan_mode
+            name: Mode
+          - entity: sensor.scout_hut_heating_ceiling_fan_direction
+            name: Direction
+          - entity: sensor.scout_hut_heating_ceiling_floor_t
+            name: Ceiling-floor ΔT
+          - entity: binary_sensor.scout_hut_heating_heat_demand_active
+            name: Heat demand active
+          - entity: binary_sensor.scout_hut_heating_ceiling_fan_fault
+            name: Fault
+          - entity: binary_sensor.scout_hut_heating_fan_temperature_sensor_lost
+            name: Sensor lost
+
+      - type: entities
+        title: Temperatures & power
+        entities:
+          - entity: sensor.ceiling_temp
+            name: Ceiling temperature
+          - entity: sensor.fan_o1_power
+            name: O1 power (transformer + fans)
+          - entity: sensor.fan_o2_power
+            name: O2 power (direction coil)
+
+      - type: entities
+        title: Controls
+        entities:
+          - entity: switch.scout_hut_heating_ceiling_fans_enabled
+            name: Ceiling fans enabled
+          - entity: switch.scout_hut_heating_summer_cooling_mode
+            name: Summer cooling mode
+          - entity: switch.scout_hut_heating_fans_run_when_sensor_lost
+            name: Run when sensor lost
+
+      - type: entities
+        title: Tuning
+        entities:
+          - entity: number.scout_hut_heating_fan_ceiling_floor_t_to_start
+            name: ΔT to start
+          - entity: number.scout_hut_heating_fan_ceiling_floor_t_to_stop
+            name: ΔT to stop
+          - entity: number.scout_hut_heating_fan_minimum_run_time
+            name: Minimum run time
+          - entity: number.scout_hut_heating_fan_minimum_off_time
+            name: Minimum off time
+          - entity: number.scout_hut_heating_fan_sensor_stale_after
+            name: Sensor stale after
+          - entity: number.scout_hut_heating_cooling_warm_enough_temperature
+            name: Cooling warm-enough temperature
+          - entity: number.scout_hut_heating_fan_heat_demand_power_threshold
+            name: Heat-demand power threshold
+
+      - type: entities
+        title: Shelly (manual / diagnostics)
+        entities:
+          - entity: switch.fan_master
+            name: Master (O1)
+          - entity: switch.fan_direction
+            name: Direction relay (O2) — open=forward, closed=reverse
+          - entity: button.fan_reverse
+            name: Reverse fans (safe sequence)

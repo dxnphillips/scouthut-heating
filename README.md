@@ -27,7 +27,7 @@ hand-edit** — you map your entities with dropdowns instead.
 3. Find **Scout Hut Heating** in HACS, click **Download**, then **restart Home
    Assistant**.
 4. Go to **Settings → Devices & Services → Add Integration**, search for
-   **Scout Hut Heating**, and complete the four setup steps.
+   **Scout Hut Heating**, and complete the five setup steps.
 
 Manual install (without HACS): copy `custom_components/scout_hut_heating/` into
 your HA `config/custom_components/` folder and restart.
@@ -36,7 +36,7 @@ your HA `config/custom_components/` folder and restart.
 
 ## Configuration
 
-Setup is a four-step UI flow. Only the hall heaters, office heaters and the two
+Setup is a five-step UI flow. Only the hall heaters, office heaters and the two
 calendars are required; everything else is optional and any feature whose
 entities you leave blank simply switches itself off.
 
@@ -46,6 +46,7 @@ entities you leave blank simply switches itself off.
 | **Motion sensors** | Hall, office, kitchen, gents and female-toilet motion/presence sensors (`binary_sensor` or `input_boolean`) |
 | **Doors & windows** | Per-zone door and window contact groups, shared-zone windows, and the internal door |
 | **Calendars, weather & alarm** | Hall & office booking calendars, weather entity, RealFeel sensor, the two alarm booleans, and the water-heater switch |
+| **Ceiling fans & cooling** | Shelly fan master/direction switches and reverse button, the ceiling temperature sensor (and optional floor sensor), the Rointe *Effective Power* sensors, the O1/O2 power sensors, the Shelly fault boolean, and a future AC climate — all optional; leave blank to keep the fans off |
 
 You can re-map any of these later via the integration's **Configure** button.
 
@@ -65,6 +66,62 @@ restart needed to change them:
 - **Diagnostic sensors/binary sensors:** current & expected preset per zone,
   water state, seasonal lockout, opening-ice flags, manual-hold flags, boost
   flags.
+- **Fan numbers:** ceiling-floor ΔT to start / stop, minimum run / off times,
+  sensor-stale timeout, the summer warm-enough temperature, and the heat-demand
+  power threshold.
+- **Fan switches:** ceiling fans enabled, summer cooling mode, and "run when the
+  sensor is lost".
+- **Fan diagnostics:** ceiling-floor ΔT, fan mode/direction, fan running, fault,
+  heat-demand active, and sensor-lost flags.
+
+---
+
+## Ceiling fans (destratification & cooling)
+
+Three reversible Vent-Axia fans run through one **Shelly Pro 2PM**. **The Shelly
+script owns all timing and safety** — the 45-second coast-down dwell, the coil
+verification, stall / low-tap protection and the latched fault. Home Assistant
+only decides *when* the fans are wanted and *which direction*; it never
+reproduces any of that timing. The reconciler evaluates the fans on the same
+30-second tick as the heating.
+
+Direction (Shelly O2 relay): **open = forward = down air = summer**;
+**closed = reverse = up air = winter**. A live direction change always goes
+through the Shelly **reverse button** (id 200); Home Assistant only writes the
+direction relay directly while the master is off, and never while it is running.
+
+Three regimes, chosen by the **Summer cooling mode** switch:
+
+- **Winter destratification** (default) → fans **reverse (up air)** when *all*
+  hold: ceiling-minus-floor ΔT above the start threshold (default 3 °C), a
+  radiator is actually drawing power (so office heat leaking into the hall counts
+  too, not just the hall calling), and the hall is occupied or in a pre-heat
+  window. It stops when the ΔT falls to the stop threshold (default 1 °C), the
+  heating stops, or the hall empties. The two ΔT thresholds plus minimum run/off
+  times (default 10 min each) prevent short-cycling.
+- **Summer cooling** (only when *Summer cooling mode* is on) → fans **forward
+  (down air)** when the hall is occupied and the floor temperature is above the
+  warm-enough threshold (default 24 °C). The breeze is what cools people, so an
+  empty hall never runs them. Air conditioning is optional: map a `climate` and
+  the fans also assist while it is actively cooling, letting its setpoint sit a
+  little higher.
+- **Off / fail-safe** → the master opens whenever the fans are disabled or the
+  Shelly fault is latched.
+
+**When the ceiling / floor sensor is lost**, the behaviour is a tunable choice.
+By default (*Fans run when sensor lost* on) it **assumes stratification and keeps
+the winter fans running** while heat is being produced and the hall is occupied,
+and raises a *sensor lost* notification. Turn that switch off to fail-safe to
+fans-off instead. Either way the Shelly still owns motor safety, and a genuine
+Shelly fault still forces the fans off.
+
+**Fault handling.** If the Shelly publishes its fault as a boolean, map it and
+the integration reads it directly. Until then it **infers** a fault from an
+unexpected master-off (surviving the legitimate reversal dwell), refuses to
+command the fans on, and notifies. Re-arming is deliberate — turn the Shelly
+master back on, then toggle **Ceiling fans enabled** off→on; the integration
+never auto-rearms in a loop. Before any reversal it also reminds whoever is
+there to **set the transformer dial high** first (HA cannot check the dial).
 
 ---
 

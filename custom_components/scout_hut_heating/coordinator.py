@@ -37,11 +37,19 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
+from .fan_logic import fan_decision
 from .const import (
     CONF_ALARM_MAIN,
     CONF_ALARM_OFFICE,
     CONF_CALENDAR_HALL,
     CONF_CALENDAR_OFFICE,
+    CONF_CEILING_TEMP,
+    CONF_FAN_DIRECTION,
+    CONF_FAN_FAULT,
+    CONF_FAN_MASTER,
+    CONF_FAN_REVERSE,
+    CONF_FLOOR_TEMP,
+    CONF_HALL_AC,
     CONF_HALL_CLIMATES,
     CONF_HALL_COMFORT_NUMBERS,
     CONF_HALL_ECO_NUMBERS,
@@ -53,6 +61,7 @@ from .const import (
     CONF_MOTION_OFFICE,
     CONF_OFFICE_CLIMATES,
     CONF_REALFEEL,
+    CONF_ROINTE_POWER,
     CONF_SHARED_CLIMATES,
     CONF_SHARED_WINDOWS,
     CONF_WATER_SWITCH,
@@ -62,6 +71,9 @@ from .const import (
     CONF_ZONE_B_DOORS,
     CONF_ZONE_B_WINDOWS,
     DOMAIN,
+    NOTIFY_FAN_DIAL,
+    NOTIFY_FAN_FAULT,
+    NOTIFY_FAN_SENSOR_LOST,
     NOTIFY_INTERNAL_DOOR,
     NOTIFY_SEASONAL,
     NOTIFY_SHARED_OPENING,
@@ -76,6 +88,12 @@ from .const import (
     ZONE_A,
     ZONE_B,
 )
+
+# The Shelly reverse sequence takes ~45 s of coast-down plus a settle. While it
+# runs, the master relay legitimately reads off. Home Assistant must not touch
+# the fans during this window, and must not mistake the dwell for a fault.
+FAN_REVERSE_GRACE = 70  # seconds
+FAN_FAULT_GRACE = 70  # seconds a master may be unexpectedly off before we latch
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,6 +143,21 @@ class ScoutController:
         self.applied: dict[str, str | None] = {ZONE_A: None, ZONE_B: None, "shared": None}
         self.water_on: bool | None = None
         self._last_apply: dict[str, datetime] = {}
+
+        # Fan / destratification state.
+        self.fan_on: bool | None = None            # last commanded on/off
+        self.fan_mode: str = "off"                 # "winter" | "summer" | "off"
+        self.fan_direction: str | None = None      # "reverse" | "forward"
+        self.fan_last_on: datetime | None = None
+        self.fan_last_off: datetime | None = None
+        self.fan_dt: float | None = None           # ceiling - floor (diagnostic)
+        self.heat_demand: bool = False             # any radiator drawing power
+        self.fan_sensor_stale: bool = False        # ceiling/floor lost
+        self.fan_fault_latched: bool = False       # inferred (unpublished) fault
+        self.fan_master_expected: bool | None = None  # what we last told O1 to be
+        self.fan_master_off_since: datetime | None = None  # for dwell-safe infer
+        self.fan_action_grace_until: datetime | None = None  # Shelly mid-sequence
+        self._fan_fault_notified: bool = False
 
         # Cached calendar look-ahead (refreshed on a slower cadence).
         self.cal_window: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
@@ -202,9 +235,17 @@ class ScoutController:
             CONF_CALENDAR_OFFICE,
             CONF_ALARM_MAIN,
             CONF_ALARM_OFFICE,
+            CONF_CEILING_TEMP,
+            CONF_FLOOR_TEMP,
+            CONF_FAN_MASTER,
+            CONF_FAN_DIRECTION,
+            CONF_FAN_FAULT,
+            CONF_HALL_AC,
         ):
             if ent := self.config.get(key):
                 watched.append(ent)
+        # Rointe Effective Power sensors drive the heat-demand signal.
+        watched.extend(self._as_list(self.config.get(CONF_ROINTE_POWER)))
 
         motion_entities = {
             self.config[key]: area
@@ -496,6 +537,20 @@ class ScoutController:
             await self._async_push_hall_temps(eco_low=self._eco_keyword_active(ZONE_A))
             await self._async_set_preset(ZONE_A, self.applied[ZONE_A], force=True)
 
+    async def async_fan_rearm(self) -> None:
+        """Clear an inferred fan fault. This is the deliberate HA-side re-arm.
+
+        Called when the "Ceiling fans enabled" switch is turned on. We never
+        auto-rearm inside the loop; a latched fault clears only on this explicit
+        gesture (or when a mapped fault boolean clears itself). The physical
+        re-arm is still turning the Shelly master on at the device.
+        """
+        self.fan_fault_latched = False
+        self.fan_master_off_since = None
+        self._fan_fault_notified = False
+        persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_FAULT)
+        await self.async_reconcile()
+
     # ------------------------------------------------------------------
     # Desired-state computation
     # ------------------------------------------------------------------
@@ -592,6 +647,7 @@ class ScoutController:
             await self._reconcile_zones()
             await self._reconcile_shared()
             await self._reconcile_water()
+            await self._reconcile_fans()
             self._detect_drift()
             self._expire_boosts()
             async_dispatcher_send(self.hass, SIGNAL_UPDATE)
@@ -816,4 +872,370 @@ class ScoutController:
             "set_preset_mode",
             {"entity_id": climates, "preset_mode": preset},
             blocking=False,
+        )
+
+    # ------------------------------------------------------------------
+    # Destratification / cooling fans
+    #
+    # Home Assistant only decides when the fans are wanted and in which
+    # direction. The Shelly Pro 2PM script owns all timing and safety (the 45 s
+    # coast-down dwell, the coil verification, stall / low-tap protection and the
+    # latched fault). We never reproduce any of that here.
+    #
+    # Direction relay (O2 / switch.fan_direction): OFF/open = forward (down air,
+    # summer cooling); ON/closed = reverse (up air, winter destratification).
+    # A live direction change always goes through the reverse button.
+    # ------------------------------------------------------------------
+    def _num_state(self, entity_id: str | None) -> float | None:
+        """Return a numeric state, or None if missing / non-numeric."""
+        if not entity_id:
+            return None
+        st = self.hass.states.get(entity_id)
+        if st is None or st.state in ("unknown", "unavailable", None, ""):
+            return None
+        try:
+            return float(st.state)
+        except (TypeError, ValueError):
+            return None
+
+    def _stale(self, entity_id: str | None, stale_min: float) -> bool:
+        """Return True if the sensor is missing or has not reported recently.
+
+        Freshness is judged from ``last_reported`` when available (it advances on
+        every report, even when the value is unchanged) and falls back to
+        ``last_updated``. This matters for a Shelly H&T that sits at a steady
+        temperature: its value does not change but it keeps reporting, so it must
+        not be treated as stale.
+        """
+        if not entity_id:
+            return False
+        st = self.hass.states.get(entity_id)
+        if st is None or st.state in ("unknown", "unavailable"):
+            return True
+        ts = getattr(st, "last_reported", None) or st.last_updated
+        return (dt_util.utcnow() - ts).total_seconds() > stale_min * 60
+
+    def _ceiling_temp(self) -> float | None:
+        return self._num_state(self.config.get(CONF_CEILING_TEMP))
+
+    def _floor_temp(self) -> float | None:
+        """Floor / occupant temperature.
+
+        Uses an explicit floor sensor if mapped, otherwise the average
+        ``current_temperature`` of the hall heaters (the Rointe climates report
+        the room temperature at floor level).
+        """
+        override = self.config.get(CONF_FLOOR_TEMP)
+        if override:
+            return self._num_state(override)
+        vals: list[float] = []
+        for climate in self._as_list(self.config.get(CONF_HALL_CLIMATES)):
+            st = self.hass.states.get(climate)
+            if st is None:
+                continue
+            temp = st.attributes.get("current_temperature")
+            try:
+                if temp is not None:
+                    vals.append(float(temp))
+            except (TypeError, ValueError):
+                continue
+        return sum(vals) / len(vals) if vals else None
+
+    def _heat_demand(self) -> bool:
+        """True if any Rointe heater is actively producing heat right now.
+
+        Reads the mapped Rointe Effective Power sensors: any above the tunable
+        watt threshold means that heater is calling. This catches office (or
+        shared) heaters warming the poorly-insulated hall, not just hall demand.
+        If no power sensors are mapped (or all are unavailable) it falls back to
+        whether any hall/office zone is on a heating preset.
+        """
+        threshold = self.number("heat_demand_watts")
+        seen_value = False
+        for power in self._as_list(self.config.get(CONF_ROINTE_POWER)):
+            value = self._num_state(power)
+            if value is not None:
+                seen_value = True
+                if value > threshold:
+                    return True
+        if seen_value:
+            return False
+        return any(self.applied[z] in (PRESET_COMFORT, PRESET_ECO) for z in (ZONE_A, ZONE_B))
+
+    def _ac_cooling(self, ac: str) -> bool:
+        """True if the (optional) AC is actively cooling."""
+        st = self.hass.states.get(ac)
+        if st is None or st.state in ("off", "unavailable", "unknown"):
+            return False
+        action = (st.attributes.get("hvac_action") or "").lower()
+        if action:
+            return action == "cooling"
+        return st.state == "cool"
+
+    @property
+    def fan_fault_effective(self) -> bool:
+        """Read-only fault state for diagnostics (never mutates the latch).
+
+        A mapped fault boolean is authoritative both ways: when the Shelly clears
+        it (re-armed at the device) the fault clears here too. Only when no
+        readable boolean is mapped do we fall back to the inferred latch.
+        """
+        mapped = self.config.get(CONF_FAN_FAULT)
+        if mapped:
+            st = self.hass.states.get(mapped)
+            if st is not None and st.state not in ("unknown", "unavailable"):
+                return st.state == "on"
+        return self.fan_fault_latched
+
+    def _fan_fault(self) -> bool:
+        """Evaluate (and, for the inferred case, latch) the fan fault.
+
+        A mapped fault boolean wins and is authoritative both ways. Otherwise we
+        infer a fault when the master reads off while we expected it on for longer
+        than the reverse dwell — but never during the Shelly's own reversal grace.
+        The inferred latch never auto-rearms; it clears only via async_fan_rearm.
+        """
+        mapped = self.config.get(CONF_FAN_FAULT)
+        if mapped:
+            st = self.hass.states.get(mapped)
+            if st is not None and st.state not in ("unknown", "unavailable"):
+                return st.state == "on"
+
+        now = self._now()
+        in_grace = (
+            self.fan_action_grace_until is not None
+            and now < self.fan_action_grace_until
+        )
+        master = self.config.get(CONF_FAN_MASTER)
+        if in_grace or not self.fan_master_expected or not master:
+            self.fan_master_off_since = None
+            return self.fan_fault_latched
+        if self._is_on(master):
+            self.fan_master_off_since = None
+        else:
+            if self.fan_master_off_since is None:
+                self.fan_master_off_since = now
+            elif (now - self.fan_master_off_since).total_seconds() >= FAN_FAULT_GRACE:
+                self.fan_fault_latched = True
+        return self.fan_fault_latched
+
+    def _fan_target(self) -> tuple[bool, str | None, str]:
+        """Resolve the desired fan state with fail-safe precedence on top."""
+        if not self.switch_on("fans_enabled", default=True):
+            self.fan_sensor_stale = False
+            self.fan_dt = None
+            return False, None, "off"
+        if self._fan_fault():
+            return False, None, "off"
+
+        stale_min = self.number("fan_sensor_stale_minutes")
+        ceiling_id = self.config.get(CONF_CEILING_TEMP)
+        floor_id = self.config.get(CONF_FLOOR_TEMP)
+        ct = self._ceiling_temp()
+        ft = self._floor_temp()
+        ceiling_bad = ct is None or self._stale(ceiling_id, stale_min)
+        floor_bad = ft is None or (bool(floor_id) and self._stale(floor_id, stale_min))
+        sensors_bad = ceiling_bad or floor_bad
+        self.fan_sensor_stale = sensors_bad
+
+        if sensors_bad:
+            self.fan_dt = None
+            dt: float | None = None
+        else:
+            dt = ct - ft
+            self.fan_dt = dt
+
+        warm = None if ft is None else ft > self.number("cooling_temp_high")
+        timeout = self.number("motion_timeout_minutes")
+        occupied = self._motion_recent("hall", timeout) or self._cal_active(ZONE_A)
+        summer = self.switch_on("summer_mode", default=False)
+        demand = self._heat_demand()
+        self.heat_demand = demand
+        currently_winter = bool(self.fan_on) and self.fan_mode == "winter"
+
+        # Optional AC assist: even just below the warm threshold, run the forward
+        # breeze while the AC is actively cooling so its setpoint can sit higher.
+        if summer and warm is False and occupied:
+            ac = self.config.get(CONF_HALL_AC)
+            if ac and self._ac_cooling(ac):
+                return True, "forward", "summer"
+
+        return fan_decision(
+            summer=summer,
+            occupied=occupied,
+            warm=warm,
+            dt=dt,
+            dt_on=self.number("fan_dt_on"),
+            dt_off=self.number("fan_dt_off"),
+            demand=demand,
+            currently_winter=currently_winter,
+            run_on_loss=self.switch_on("fans_run_on_sensor_loss", default=True),
+        )
+
+    async def _reconcile_fans(self) -> None:
+        """Apply the desired fan state, honouring the anti-short-cycle timers."""
+        if not self.config.get(CONF_FAN_MASTER):
+            return  # feature not configured
+
+        now = self._now()
+        # While the Shelly runs its own reversal sequence the master legitimately
+        # reads off. Do not touch the fans; just refresh diagnostics.
+        if self.fan_action_grace_until is not None and now < self.fan_action_grace_until:
+            self._fan_target()
+            return
+
+        prev_stale = self.fan_sensor_stale
+        want_on, want_dir, mode = self._fan_target()
+
+        # Sensor-lost notification (fires even when the fans keep running).
+        if self.fan_sensor_stale and not prev_stale:
+            self._notify_sensor_lost()
+        elif prev_stale and not self.fan_sensor_stale:
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_SENSOR_LOST)
+
+        # Fault notification.
+        fault_now = self.fan_fault_effective
+        if fault_now and not self._fan_fault_notified:
+            self._fan_fault_notified = True
+            persistent_notification.async_create(
+                self.hass,
+                "The ceiling fans have latched a fault (stall, low dial or a "
+                "failed coil), or the master was switched off unexpectedly. The "
+                "fans will not be commanded on. Investigate, then re-arm by "
+                "turning the Shelly master on and toggling 'Ceiling fans enabled'.",
+                title="🏕 Scout Hut – Ceiling fan fault",
+                notification_id=NOTIFY_FAN_FAULT,
+            )
+        elif not fault_now and self._fan_fault_notified:
+            self._fan_fault_notified = False
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_FAULT)
+
+        # Fail-safe stops bypass the minimum-run timer; ordinary stops respect it.
+        fail_safe_off = (not want_on) and (
+            not self.switch_on("fans_enabled", default=True)
+            or self.fan_fault_latched
+            or self._is_on(self.config.get(CONF_FAN_FAULT))
+            or self.fan_sensor_stale
+        )
+
+        if want_on and not self.fan_on:
+            if self.fan_last_off is not None and (
+                now - self.fan_last_off
+            ).total_seconds() < self.number("fan_min_off_minutes") * 60:
+                return  # honour minimum off time before restarting
+        elif (not want_on) and self.fan_on and not fail_safe_off:
+            if self.fan_last_on is not None and (
+                now - self.fan_last_on
+            ).total_seconds() < self.number("fan_min_run_minutes") * 60:
+                return  # honour minimum run time before an ordinary stop
+
+        await self._async_ensure_fans(want_on, want_dir)
+        self.fan_mode = mode
+
+    async def _async_ensure_fans(self, want_on: bool, want_direction: str | None) -> None:
+        """Reusable actuator that encodes the hard Shelly rules.
+
+        - Off: open the master.
+        - On while master is off: preset the direction relay directly (only legal
+          while the master is off), then close the master.
+        - On while master is already on but the direction is wrong: press the
+          reverse button (the Shelly runs the safe reversal, which ends master
+          on). Never write the direction relay while the master is on.
+        """
+        master = self.config.get(CONF_FAN_MASTER)
+        direction = self.config.get(CONF_FAN_DIRECTION)
+        reverse = self.config.get(CONF_FAN_REVERSE)
+        if not master:
+            return
+
+        master_on = self._is_on(master)
+        cur_dir = "reverse" if self._is_on(direction) else "forward"
+        now = self._now()
+
+        # ---- OFF ----
+        if not want_on:
+            if master_on:
+                await self.hass.services.async_call(
+                    "switch", "turn_off", {"entity_id": master}, blocking=False
+                )
+            self.fan_master_expected = False
+            if self.fan_on:
+                self.fan_last_off = now
+            self.fan_on = False
+            self.fan_direction = cur_dir
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_DIAL)
+            return
+
+        # ---- ON with a target direction ----
+        if not master_on:
+            # Presetting the direction relay directly is allowed only while the
+            # master is off (no load on the coil switching).
+            if direction and cur_dir != want_direction:
+                await self.hass.services.async_call(
+                    "switch",
+                    "turn_on" if want_direction == "reverse" else "turn_off",
+                    {"entity_id": direction},
+                    blocking=False,
+                )
+            await self.hass.services.async_call(
+                "switch", "turn_on", {"entity_id": master}, blocking=False
+            )
+            self.fan_master_expected = True
+            self.fan_master_off_since = None
+            if not self.fan_on:
+                self.fan_last_on = now
+            self.fan_on = True
+            self.fan_direction = want_direction
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_DIAL)
+            return
+
+        # master already on
+        if cur_dir == want_direction:
+            self.fan_on = True
+            self.fan_direction = cur_dir
+            self.fan_master_expected = True
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_DIAL)
+            return
+
+        # Live direction change: must go through the reverse button. Remind first
+        # to set the dial high (a low dial can stall on reversal); HA cannot check.
+        self._notify_dial_high()
+        if reverse:
+            await self.hass.services.async_call(
+                "button", "press", {"entity_id": reverse}, blocking=False
+            )
+        # The Shelly sequence turns the master off, dwells, flips, then master on.
+        # Hold off touching the fans until it finishes.
+        self.fan_action_grace_until = now + timedelta(seconds=FAN_REVERSE_GRACE)
+        self.fan_master_expected = True
+        self.fan_master_off_since = None
+        self.fan_on = True
+        self.fan_direction = want_direction
+        if self.fan_last_on is None:
+            self.fan_last_on = now
+
+    def _notify_dial_high(self) -> None:
+        persistent_notification.async_create(
+            self.hass,
+            "About to reverse the ceiling fans. Set the transformer dial to a "
+            "high speed first: a low dial can stall the motor on a direction "
+            "change. Home Assistant cannot verify this — it is a reminder only.",
+            title="🏕 Scout Hut – Set the fan dial high before reversing",
+            notification_id=NOTIFY_FAN_DIAL,
+        )
+
+    def _notify_sensor_lost(self) -> None:
+        if self.switch_on("fans_run_on_sensor_loss", default=True):
+            tail = (
+                "Assuming stratification and keeping the winter fans running "
+                "while heat is being produced and the hall is occupied."
+            )
+        else:
+            tail = "The destratification fans are held off until it returns."
+        persistent_notification.async_create(
+            self.hass,
+            "The ceiling or floor temperature reading has been lost or has not "
+            "updated recently. " + tail,
+            title="🏕 Scout Hut – Fan temperature sensor lost",
+            notification_id=NOTIFY_FAN_SENSOR_LOST,
         )

@@ -20,6 +20,9 @@ NAMES: dict[str, str] = {
     "zone_a_occupied_override": "Hall occupied override",
     "zone_b_occupied_override": "Office occupied override",
     "water_manual_override": "Water heater manual override",
+    "fans_enabled": "Ceiling fans enabled",
+    "summer_mode": "Summer cooling mode",
+    "fans_run_on_sensor_loss": "Fans run when sensor lost",
 }
 
 
@@ -49,6 +52,9 @@ class ScoutSwitch(ScoutEntity, RestoreEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         self._attr_is_on = True
         self.async_write_ha_state()
+        # Turning the fans back on is the deliberate re-arm for an inferred fault.
+        if self._key == "fans_enabled":
+            await self._controller.async_fan_rearm()
         self._controller.async_request_reconcile()
 
     async def async_turn_off(self, **kwargs: Any) -> None:

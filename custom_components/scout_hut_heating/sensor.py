@@ -35,6 +35,13 @@ SENSORS: dict[str, tuple[str, str, Callable[[ScoutController], str | None]]] = {
         "mdi:thermometer-check",
         lambda c: c.expected_preset[ZONE_B],
     ),
+    "fan_mode": ("Ceiling fan mode", "mdi:ceiling-fan", lambda c: c.fan_mode),
+    "fan_direction": ("Ceiling fan direction", "mdi:fan", lambda c: c.fan_direction),
+    "fan_delta_t": (
+        "Ceiling-floor ΔT",
+        "mdi:thermometer-lines",
+        lambda c: None if c.fan_dt is None else str(round(c.fan_dt, 1)),
+    ),
 }
 
 

@@ -9,5 +9,5 @@
   "issue_tracker": "https://github.com/dxnphillips/scouthut-heating/issues",
   "after_dependencies": ["climate", "calendar", "weather", "persistent_notification"],
   "requirements": [],
-  "version": "1.0.4"
+  "version": "1.1.0"
 }
