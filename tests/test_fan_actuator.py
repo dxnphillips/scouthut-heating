@@ -187,3 +187,29 @@ def test_fans_running_requires_real_power_when_metered():
     assert ctrl._fans_running() is True
     off(hass, MASTER)
     assert ctrl._fans_running() is False
+
+
+# --- No pre-cooling: the breeze needs someone to cool ---------------------------
+
+def test_preheat_window_does_not_start_the_summer_breeze():
+    from scout_testkit import ZA, booking
+
+    ctrl, _ = fan_controller()
+    booking(ctrl, ZA)  # pre-heat window / upcoming event, hall still empty
+    assert ctrl._cooling_occupied() is False
+
+
+def test_running_event_keeps_the_breeze_without_motion():
+    from scout_testkit import E
+
+    ctrl, hass = fan_controller()
+    on(hass, E["cal_hall"])  # event underway; seated group outside PIR view
+    assert ctrl._cooling_occupied() is True
+
+
+def test_hall_motion_starts_the_breeze():
+    from scout_testkit import motion
+
+    ctrl, _ = fan_controller()
+    motion(ctrl, "hall")
+    assert ctrl._cooling_occupied() is True

@@ -1551,6 +1551,20 @@ class ScoutController:
                 self.fan_fault_latched = True
         return self.fan_fault_latched
 
+    def _cooling_occupied(self) -> bool:
+        """Whether anyone is there for the summer breeze to cool.
+
+        Recent hall motion, or a hall calendar event actually RUNNING (kept so
+        a seated group outside PIR coverage doesn't lose its breeze). The
+        pre-heat window deliberately does NOT count: a fan cannot pre-cool a
+        room — its benefit is instantaneous wind-chill on the people under it,
+        so running early would only add motor heat to an empty hall.
+        """
+        timeout = self.number("motion_timeout_minutes")
+        return self._motion_recent("hall", timeout) or self._is_on(
+            self.config.get(ZONE_CALENDAR[ZONE_A])
+        )
+
     def _summer_active(self) -> bool:
         """Whether the fans should run the summer cooling regime.
 
@@ -1597,8 +1611,7 @@ class ScoutController:
         # Recirculate residual / leaked ceiling heat while the occupied zone is
         # still below the cap, decoupled from whether a heater is drawing power.
         recirc_ok = ft is not None and ft < self.number("fan_recirc_max_floor_temp")
-        timeout = self.number("motion_timeout_minutes")
-        occupied = self._motion_recent("hall", timeout) or self._cal_active(ZONE_A)
+        occupied = self._cooling_occupied()
         demand = self._heat_demand()
         self.heat_demand = demand
         currently_winter = bool(self.fan_on) and self.fan_mode == "winter"

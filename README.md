@@ -120,10 +120,14 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
   run/off times (default 10 min each) prevent short-cycling. Defaults follow the
   documented practice for destrat fans (a few-degree ΔT band; a ~24 °C / 75 °F
   low-side limit).
-- **Summer cooling** → fans **forward (down air)** when the hall is occupied
-  (or in a booking window) and the floor temperature is above the warm-enough
-  threshold (default 24 °C). The breeze is what cools people, so an empty hall
-  never runs them — and above **35 °C** they are held off entirely with a
+- **Summer cooling** → fans **forward (down air)** when someone is there to
+  cool — recent hall motion, or a hall event actually running (so a seated
+  group outside PIR coverage keeps its breeze) — and the floor temperature is
+  above the warm-enough threshold (default 24 °C). The breeze is what cools
+  people, so an empty hall never runs them; there is deliberately **no
+  pre-cooling** — a fan's benefit is instantaneous wind-chill, so starting
+  before anyone arrives would only add motor heat to an empty room. Above
+  **35 °C** they are held off entirely with a
   notification, because air hotter than skin heats people instead of cooling
   them (per public-health guidance); ventilation and shade are the right tools
   at that point.
