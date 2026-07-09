@@ -157,7 +157,8 @@ class ScoutController:
         self.applied: dict[str, str | None] = {ZONE_A: None, ZONE_B: None, "shared": None}
         self.water_on: bool | None = None
         self.water_frost_active = False  # shared zone near freezing: keep powered
-        self.water_last_hot: datetime | None = None  # last time the tank had power
+        self.water_on_since: datetime | None = None  # start of current powered stretch
+        self.water_last_hot: datetime | None = None  # last COMPLETED full reheat
         self.water_hygiene_until: datetime | None = None  # weekly heat-up window
         self._last_apply: dict[str, datetime] = {}
 
@@ -668,6 +669,17 @@ class ScoutController:
             return None
         now = self._now()
 
+        # The stored water only counts as genuinely hot after a continuous
+        # powered stretch long enough for a full reheat. A brief dab of power
+        # (a short keep-alive, a quick override) raises 15 L by only a few
+        # degrees, so it must not reset the weekly hygiene clock — otherwise a
+        # week of 5-minute uses would leave the tank permanently lukewarm with
+        # the hygiene cycle never firing.
+        if self.water_on_since is not None and now - self.water_on_since >= timedelta(
+            minutes=WATER_HYGIENE_MINUTES
+        ):
+            self.water_last_hot = now
+
         # Frost protection (highest priority, overrides the alarms): the
         # Speedflow's own frost stat only works while powered, so keep it
         # powered whenever the rooms around it are near freezing. Hysteresis so
@@ -683,9 +695,9 @@ class ScoutController:
             return True
 
         # Weekly hygiene heat-up (also overrides the alarms): if the tank has
-        # gone a week without power, run it long enough for the full 15 L to
-        # reach thermostat temperature, so stored water never sits lukewarm
-        # indefinitely between lets.
+        # gone a week without a completed reheat, run it long enough for the
+        # full 15 L to reach thermostat temperature, so stored water never sits
+        # lukewarm indefinitely between lets.
         if self.water_hygiene_until is not None and now < self.water_hygiene_until:
             return True
         self.water_hygiene_until = None
@@ -820,11 +832,16 @@ class ScoutController:
 
     async def _reconcile_water(self) -> None:
         desired = self._desired_water()
+        if desired is None:
+            return
+        # Track the continuous powered stretch; _desired_water marks the water
+        # as genuinely hot only once it exceeds a full reheat.
         if desired:
-            # The tank is powered (any reason): the stored water is being held
-            # at temperature, so the weekly hygiene clock restarts from here.
-            self.water_last_hot = self._now()
-        if desired is None or desired == self.water_on:
+            if self.water_on_since is None:
+                self.water_on_since = self._now()
+        else:
+            self.water_on_since = None
+        if desired == self.water_on:
             return
         switch = self.config.get(CONF_WATER_SWITCH)
         await self.hass.services.async_call(

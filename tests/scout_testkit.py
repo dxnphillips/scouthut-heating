@@ -209,6 +209,8 @@ def advance(ctrl, minutes):
             ctrl.boost_until[zone] = ts - delta
     for zone in list(ctrl._last_apply):
         ctrl._last_apply[zone] = ctrl._last_apply[zone] - delta
+    if ctrl.water_on_since is not None:
+        ctrl.water_on_since = ctrl.water_on_since - delta
     if ctrl.water_last_hot is not None:
         ctrl.water_last_hot = ctrl.water_last_hot - delta
     if ctrl.water_hygiene_until is not None:

@@ -160,8 +160,11 @@ The **shared zone** follows either calendar / any motion / boost, and the
 alarmed. Two safeguards for the 15 L point-of-use tank override even the
 alarm: it is powered whenever the shared zone nears freezing (≤3 °C, releasing
 at 5 °C — the Speedflow's own frost stat only works while powered), and if the
-tank has gone a week without power it runs a 45-minute hygiene heat-up so the
-stored water never sits lukewarm indefinitely between lets. Hall comfort/eco setpoints are pushed onto the Rointe `number`
+tank has gone a week without a completed reheat it runs a 45-minute hygiene
+heat-up so the stored water never sits lukewarm indefinitely between lets.
+Only a continuous powered stretch long enough for a full reheat (45 min)
+counts — brief dabs of use raise 15 L by only a few degrees and do not reset
+the weekly clock. Hall comfort/eco setpoints are pushed onto the Rointe `number`
 entities before a preset is applied, so slider changes take effect immediately.
 
 A mapping from each original automation (A1–A35, W1–W9) to the reconciler is in
