@@ -23,6 +23,7 @@ def fan_decision(
     dt_on: float,
     dt_off: float,
     demand: bool,
+    recirc_ok: bool,
     currently_winter: bool,
     run_on_loss: bool,
 ) -> tuple[bool, str | None, str]:
@@ -47,6 +48,12 @@ def fan_decision(
             unavailable or stale.
         dt_on / dt_off: hysteresis band for winter start / stop.
         demand: at least one radiator (any zone) is actively producing heat.
+        recirc_ok: the floor is below the recirculation cap, so ceiling heat is
+            still worth bringing down even with no active demand (harvests residual
+            heat after a heater cuts out, and heat leaking in from other zones).
+            This is how real destratification controllers run — on the ceiling-floor
+            difference, decoupled from the heater's on/off cycle — backing off only
+            once the occupied zone is genuinely warm.
         currently_winter: the fans are already running in winter mode (so the
             stop thresholds apply instead of the start thresholds).
         run_on_loss: when the ceiling / floor reading is lost, assume
@@ -62,9 +69,12 @@ def fan_decision(
             return True, "forward", "summer"
         return False, None, "off"
 
-    # Winter destratification. This runs for loss reduction as well as comfort, so
-    # it is gated only on real stratification and heat being produced somewhere in
-    # the building — not on hall occupancy.
+    # Winter destratification. Runs for loss reduction as well as comfort, so it is
+    # gated on real stratification plus "the heat is worth moving" — i.e. a heater
+    # is actively producing heat, OR the occupied zone is still below the
+    # recirculation cap (so residual / leaked ceiling heat is worth harvesting). Not
+    # gated on hall occupancy.
+    worth_moving = demand or recirc_ok
     if dt is None:
         # Ceiling / floor lost. Optionally assume stratification and keep running,
         # still gated on heat being produced.
@@ -73,12 +83,13 @@ def fan_decision(
         return False, None, "off"
 
     if currently_winter:
-        # Stop on either: the difference collapsed, or the heat stopped.
-        if dt <= dt_off or not demand:
+        # Stop on either: the difference collapsed, or the heat is no longer worth
+        # moving (heater off and the room already warm enough).
+        if dt <= dt_off or not worth_moving:
             return False, None, "off"
         return True, "reverse", "winter"
 
-    # Start when the difference is real and heat is being produced anywhere.
-    if dt > dt_on and demand:
+    # Start when the difference is real and the heat is worth moving.
+    if dt > dt_on and worth_moving:
         return True, "reverse", "winter"
     return False, None, "off"

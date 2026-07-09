@@ -67,8 +67,8 @@ restart needed to change them:
   water state, seasonal lockout, opening-ice flags, manual-hold flags, boost
   flags.
 - **Fan numbers:** ceiling-floor ΔT to start / stop, minimum run / off times,
-  sensor-stale timeout, the summer warm-enough temperature, and the heat-demand
-  power threshold.
+  sensor-stale timeout, the summer warm-enough temperature, the heat-demand
+  power threshold, and the winter recirculation floor cap.
 - **Fan switches:** ceiling fans enabled, summer cooling mode, and "run when the
   sensor is lost".
 - **Fan diagnostics:** ceiling-floor ΔT, fan mode/direction, fan running, fault,
@@ -93,15 +93,21 @@ direction relay directly while the master is off, and never while it is running.
 Three regimes, chosen by the **Summer cooling mode** switch:
 
 - **Winter destratification** (default) → fans **reverse (up air)** when the
-  ceiling-minus-floor ΔT is above the start threshold (default 3 °C) and a
-  radiator in *any* zone is actually drawing power (so office or shared heat
-  leaking into the hall counts too, not just the hall calling). This runs for
-  **loss reduction as well as comfort**: it knocks down the hot ceiling layer
-  that bleeds heat through the poorly-insulated roof, so it does **not** require
-  the hall to be occupied — heat pooling at the roof while people are only in the
-  office still triggers it. It stops when the ΔT falls to the stop threshold
-  (default 1 °C) or the heating stops. The two ΔT thresholds plus minimum run/off
-  times (default 10 min each) prevent short-cycling.
+  ceiling-minus-floor ΔT is above the start threshold (default 3 °C) **and** the
+  heat is worth moving — meaning either a radiator in *any* zone is drawing power
+  (so office or shared heat leaking into the hall counts too), **or** the floor is
+  still below the recirculation cap (default 24 °C). That second condition is the
+  key one: like real destratification controllers, it runs on the ceiling-floor
+  difference **decoupled from the heater's on/off cycle**, so it keeps harvesting
+  *residual* heat after a heater has reached setpoint and cut out — pushing that
+  already-paid-for warmth back down instead of letting it escape through the
+  poorly-insulated roof. It runs for **loss reduction as well as comfort**, so it
+  does **not** require the hall to be occupied. It stops when the ΔT falls to the
+  stop threshold (default 1 °C), or once the heat is no longer worth moving (heater
+  off *and* the floor has reached the cap). The two ΔT thresholds plus minimum
+  run/off times (default 10 min each) prevent short-cycling. Defaults follow the
+  documented practice for destrat fans (a few-degree ΔT band; a ~24 °C / 75 °F
+  low-side limit).
 - **Summer cooling** (only when *Summer cooling mode* is on) → fans **forward
   (down air)** when the hall is occupied and the floor temperature is above the
   warm-enough threshold (default 24 °C). The breeze is what cools people, so an

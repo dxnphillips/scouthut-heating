@@ -36,6 +36,7 @@ def winter(**kw):
         dt_on=DT_ON,
         dt_off=DT_OFF,
         demand=True,
+        recirc_ok=False,
         currently_winter=False,
         run_on_loss=True,
     )
@@ -52,6 +53,7 @@ def summer(**kw):
         dt_on=DT_ON,
         dt_off=DT_OFF,
         demand=False,
+        recirc_ok=False,
         currently_winter=False,
         run_on_loss=True,
     )
@@ -86,8 +88,14 @@ def test_winter_stops_at_dt_off():
 
 # --- Winter stop conditions ----------------------------------------------------
 
-def test_winter_stops_when_heat_stops():
-    assert winter(dt=5.0, currently_winter=True, demand=False) == (False, None, "off")
+def test_winter_stops_when_heat_stops_and_room_warm():
+    # Heater off AND room already warm (not below the recirc cap) -> nothing to
+    # gain, so stop.
+    assert winter(dt=5.0, currently_winter=True, demand=False, recirc_ok=False) == (
+        False,
+        None,
+        "off",
+    )
 
 
 def test_winter_keeps_running_when_unoccupied():
@@ -95,8 +103,30 @@ def test_winter_keeps_running_when_unoccupied():
     assert winter(dt=5.0, currently_winter=True, occupied=False) == (True, "reverse", "winter")
 
 
-def test_winter_needs_demand_to_start():
-    assert winter(dt=5.0, demand=False) == (False, None, "off")
+def test_winter_off_without_demand_or_recirc():
+    # No active heat and the room is already warm -> do not start.
+    assert winter(dt=5.0, demand=False, recirc_ok=False) == (False, None, "off")
+
+
+# --- Recirculation of residual / leaked heat (decoupled from active demand) ----
+
+def test_winter_recirculates_residual_heat_without_demand():
+    # Heater has cut out (no demand) but the ceiling is warm and the room is still
+    # below the cap -> harvest the residual heat.
+    assert winter(dt=5.0, demand=False, recirc_ok=True) == (True, "reverse", "winter")
+
+
+def test_winter_recirc_keeps_running_in_hysteresis_band():
+    assert winter(dt=2.0, currently_winter=True, demand=False, recirc_ok=True) == (
+        True,
+        "reverse",
+        "winter",
+    )
+
+
+def test_winter_active_demand_runs_even_if_room_above_cap():
+    # Actively heating always qualifies, even when the floor is above the cap.
+    assert winter(dt=5.0, demand=True, recirc_ok=False) == (True, "reverse", "winter")
 
 
 def test_winter_runs_regardless_of_occupancy():

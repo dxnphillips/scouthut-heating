@@ -173,6 +173,11 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     "cooling_temp_high": (18, 30, 0.5, 24, "°C"),
     # A Rointe Effective Power reading above this means that heater is calling.
     "heat_demand_watts": (0, 200, 5, 20, "W"),
+    # Winter fans recirculate ceiling heat while the floor is below this cap, even
+    # after the heaters cut out (harvesting residual / leaked heat). Above it the
+    # occupied zone is warm enough that there is nothing to gain. 24 °C mirrors the
+    # 75 °F top of the documented HVLS winter-mode band.
+    "fan_recirc_max_floor_temp": (18, 28, 0.5, 24, "°C"),
 }
 
 NUMBER_ICONS: dict[str, str] = {
@@ -193,6 +198,7 @@ NUMBER_ICONS: dict[str, str] = {
     "fan_sensor_stale_minutes": "mdi:timer-alert",
     "cooling_temp_high": "mdi:thermometer-high",
     "heat_demand_watts": "mdi:flash",
+    "fan_recirc_max_floor_temp": "mdi:thermometer-chevron-up",
 }
 
 BOOST_OPTIONS = ["30 min", "60 min", "90 min"]
