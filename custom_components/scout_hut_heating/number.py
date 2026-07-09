@@ -17,7 +17,7 @@ NAMES: dict[str, str] = {
     "motion_timeout_minutes": "No-motion eco timeout",
     "door_ice_minutes": "Door: drop to ice after",
     "window_ice_minutes": "Window: drop to ice after",
-    "seasonal_lockout_temp": "Seasonal lockout threshold",
+    "seasonal_lockout_temp": "Seasonal lockout: 3-day average threshold",
     "hall_comfort_temp": "Hall comfort temperature",
     "hall_eco_temp": "Hall eco temperature",
     "hall_eco_low_temp": "Hall eco-low temperature",

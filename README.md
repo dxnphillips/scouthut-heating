@@ -81,7 +81,8 @@ this priority (highest wins):
 2. **Door or window held open** past its delay → `ice` (the internal door only
    counts when an exterior opening is also open).
 3. **Boost active** → `comfort` (bypasses the seasonal lockout).
-4. **Seasonal lockout** (next 3 forecast days all warm) → `ice`.
+4. **Seasonal lockout** (3-day *average* forecast temperature at/above the
+   threshold; releases on a cold snap or low RealFeel) → `ice`.
 5. **Alarm set with no booking** → `ice` and clears the occupied override.
 6. **Booking or pre-heat window** → `comfort`, dropping to `eco` while
    unoccupied; events matching an ECO keyword stay on the lower `eco` setpoint.

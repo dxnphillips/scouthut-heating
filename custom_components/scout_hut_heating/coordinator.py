@@ -228,10 +228,12 @@ class ScoutController:
         self._unsubs.append(
             async_track_time_interval(self.hass, self._async_tick, RECONCILE_INTERVAL)
         )
-        # Daily seasonal lockout evaluation at 08:00 local time.
+        # Re-evaluate the seasonal lockout every hour on the hour, so a changing
+        # forecast (or a fresh setup) is reflected within the hour rather than
+        # waiting for a single daily check.
         self._unsubs.append(
             async_track_time_change(
-                self.hass, self._async_seasonal_time, hour=8, minute=0, second=0
+                self.hass, self._async_seasonal_time, minute=0, second=0
             )
         )
 
@@ -400,43 +402,72 @@ class ScoutController:
             _LOGGER.debug("weather.get_forecasts failed for %s: %s", weather, err)
             return
         forecast = (response or {}).get(weather, {}).get("forecast", [])[:3]
-        if len(forecast) < 3:
+        if not forecast:
             return
 
-        def _f(value: Any, fallback: float) -> float:
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return fallback
-
-        highs = [_f(day.get("temperature"), 0.0) for day in forecast]
-        lows = [_f(day.get("templow"), 0.0) for day in forecast]
         realfeel = 99.0
         if rf := self.config.get(CONF_REALFEEL):
             state = self.hass.states.get(rf)
-            realfeel = _f(state.state if state else None, 99.0)
+            try:
+                realfeel = float(state.state) if state else 99.0
+            except (TypeError, ValueError):
+                realfeel = 99.0
 
-        all_warm = all(h >= threshold for h in highs) and all(lo >= threshold for lo in lows)
-        any_cold = (
-            any(h < threshold for h in highs)
-            or any(lo < threshold for lo in lows)
-            or realfeel < threshold
-        )
+        avg, warm, cold = self._lockout_decision(forecast, threshold, realfeel)
+        if avg is None:
+            return
 
-        if all_warm and not self.seasonal_lockout:
+        if warm and not self.seasonal_lockout:
             self.seasonal_lockout = True
             persistent_notification.async_create(
                 self.hass,
                 (
-                    f"The next 3 days are forecast at or above {threshold}°C. "
-                    "Heating is locked out for the season. A Boost still works."
+                    f"The next 3 days average {avg:.1f}°C (lockout threshold "
+                    f"{threshold:.0f}°C). Heating is locked out for the season. "
+                    "A Boost still works if it is genuinely needed."
                 ),
                 title="🏕 Scout Hut – Seasonal lockout engaged",
                 notification_id=NOTIFY_SEASONAL,
             )
-        elif any_cold and self.seasonal_lockout:
+        elif cold and self.seasonal_lockout:
             self.seasonal_lockout = False
             persistent_notification.async_dismiss(self.hass, NOTIFY_SEASONAL)
+
+    @staticmethod
+    def _lockout_decision(
+        forecast: list[dict], threshold: float, realfeel: float
+    ) -> tuple[float | None, bool, bool]:
+        """Decide the lockout from the 3-day average mean daily temperature.
+
+        Averaging the mean daily temperature ((high + overnight low) / 2) — rather
+        than requiring every high AND every low to clear the threshold — means a
+        warm season still locks out even when nights dip, which is both the
+        sensible real-world behaviour and what the control has always been
+        labelled ("3-day average"). Returns (avg, engage?, release?).
+        """
+
+        def _f(value: Any) -> float | None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        means: list[float] = []
+        for day in forecast[:3]:
+            high = _f(day.get("temperature"))
+            low = _f(day.get("templow"))
+            if high is None and low is None:
+                continue
+            if low is None:
+                means.append(high)
+            elif high is None:
+                means.append(low)
+            else:
+                means.append((high + low) / 2)
+        if not means:
+            return None, False, False
+        avg = sum(means) / len(means)
+        return avg, avg >= threshold, (avg < threshold or realfeel < threshold)
 
     # ------------------------------------------------------------------
     # Boost API (called by the button platform)
