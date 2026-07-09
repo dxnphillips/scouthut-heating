@@ -40,7 +40,7 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .fan_logic import fan_decision
-from .preheat import required_lead_minutes, updated_rate
+from .preheat import required_lead_minutes, updated_cooling_rate, updated_rate
 from .const import (
     CONF_ALARM_MAIN,
     CONF_ALARM_OFFICE,
@@ -50,6 +50,7 @@ from .const import (
     CONF_FAN_DIRECTION,
     CONF_FAN_FAULT,
     CONF_FAN_MASTER,
+    CONF_FAN_O1_POWER,
     CONF_FAN_REVERSE,
     CONF_FLOOR_TEMP,
     CONF_HALL_CLIMATES,
@@ -111,6 +112,11 @@ FAN_DIRECTION_SETTLE = 1.5  # seconds
 # once the 3-day average drops this far below it (or on a cold-snap RealFeel),
 # so a forecast hovering at the threshold cannot flap the lockout hourly.
 SEASONAL_RELEASE_BAND = 0.5  # °C
+
+# O1 power above this means the fans are genuinely moving air (a closed master
+# with the transformer dial at zero draws next to nothing). Just below the
+# Shelly script's MIN_RUN_W commissioning placeholder.
+FAN_RUNNING_MIN_WATTS = 20.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -192,10 +198,16 @@ class ScoutController:
         self.water_window = False
 
         # Optimum-start learning: an in-flight warm-up sample per zone
-        # (started-at, start temperature), and the last comfort target seen on
-        # the zone's own heater (used as the office target, which the
-        # integration does not otherwise know).
-        self._warmup_start: dict[str, tuple[datetime, float] | None] = {
+        # (started-at, start temperature, ticks-with-fans-running, total
+        # ticks), an in-flight cool-off sample per zone (started-at, start
+        # temperature), and the last comfort target seen on the zone's own
+        # heater (used as the office target, which the integration does not
+        # otherwise know).
+        self._warmup_start: dict[str, tuple[datetime, float, int, int] | None] = {
+            ZONE_A: None,
+            ZONE_B: None,
+        }
+        self._cooloff_start: dict[str, tuple[datetime, float] | None] = {
             ZONE_A: None,
             ZONE_B: None,
         }
@@ -416,19 +428,43 @@ class ScoutController:
     # ------------------------------------------------------------------
     async def _async_refresh_calendars(self) -> None:
         water_preheat = int(self.number("water_preheat_minutes"))
+        cap = int(round(self.number("preheat_minutes")))
+        now = dt_util.now()
         for zone in (ZONE_A, ZONE_B):
             cal = self.config.get(ZONE_CALENDAR[zone])
             if not cal:
                 continue
-            in_window, title = await self._async_calendar_window(
-                cal, self._zone_preheat_minutes(zone)
-            )
-            self.cal_window[zone] = in_window or self._is_on(cal)
             if self._is_on(cal):
                 state = self.hass.states.get(cal)
-                self.cal_title[zone] = (state.attributes.get("message") or "").lower() if state else ""
-            else:
-                self.cal_title[zone] = title.lower()
+                self.cal_window[zone] = True
+                self.cal_title[zone] = (
+                    (state.attributes.get("message") or "").lower() if state else ""
+                )
+                continue
+            # Look ahead as far as the pre-heat cap, then compute the actual
+            # lead for the specific event found: its own target (an ECO event
+            # pre-heats to the lower eco setpoint) and the idle gap until it
+            # starts (during which the room keeps cooling).
+            title, start = await self._async_next_event(cal, cap)
+            if title is None:
+                self.cal_window[zone] = False
+                self.cal_title[zone] = ""
+                continue
+            self.cal_title[zone] = title.lower()
+            eco = any(kw in self.cal_title[zone] for kw in self.eco_keywords())
+            gap_min: float | None = None
+            if start is not None:
+                try:
+                    gap_min = max((start - now).total_seconds() / 60, 0.0)
+                except TypeError:  # naive/aware mismatch from an odd calendar
+                    gap_min = None
+            if gap_min is None:
+                # The event is inside the cap window but its start could not
+                # be read: err on the warm side and pre-heat now.
+                self.cal_window[zone] = True
+                continue
+            lead = self._zone_preheat_minutes(zone, eco=eco, gap_hours=gap_min / 60)
+            self.cal_window[zone] = gap_min <= lead
 
         water = False
         for zone in (ZONE_A, ZONE_B):
@@ -439,8 +475,8 @@ class ScoutController:
             water = water or in_window or self._is_on(cal)
         self.water_window = water
 
-    async def _async_calendar_window(self, cal: str, minutes: int) -> tuple[bool, str]:
-        """Return (event within window?, first event summary)."""
+    async def _async_calendar_events(self, cal: str, minutes: int) -> list[dict] | None:
+        """Events on a calendar within the next `minutes`; None on error."""
         start = dt_util.now()
         end = start + timedelta(minutes=minutes)
         try:
@@ -457,8 +493,37 @@ class ScoutController:
             )
         except Exception as err:  # noqa: BLE001 - calendar may be unavailable
             _LOGGER.debug("calendar.get_events failed for %s: %s", cal, err)
+            return None
+        return (response or {}).get(cal, {}).get("events", []) if response else []
+
+    async def _async_next_event(self, cal: str, minutes: int) -> tuple[str | None, datetime | None]:
+        """First event within `minutes`: (summary, parsed start) or (None, None).
+
+        A summary with a None start means an event exists but its start could
+        not be parsed — callers treat that conservatively (pre-heat now).
+        """
+        events = await self._async_calendar_events(cal, minutes)
+        if not events:
+            return None, None
+        first = events[0]
+        return first.get("summary", "") or "", self._parse_event_start(first.get("start"))
+
+    @staticmethod
+    def _parse_event_start(value: Any) -> datetime | None:
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+
+    async def _async_calendar_window(self, cal: str, minutes: int) -> tuple[bool, str]:
+        """Return (event within window?, first event summary)."""
+        events = await self._async_calendar_events(cal, minutes)
+        if events is None:
             return self._is_on(cal), ""
-        events = (response or {}).get(cal, {}).get("events", []) if response else []
         if events:
             return True, events[0].get("summary", "") or ""
         return False, ""
@@ -512,16 +577,58 @@ class ScoutController:
         cached = self._zone_comfort_target.get(zone)
         return cached if cached is not None else self.number("hall_comfort_temp")
 
-    def _zone_preheat_minutes(self, zone: str) -> int:
-        """Adaptive pre-heat lead: learned rate x deficit, capped by the slider."""
+    def _zone_preheat_minutes(
+        self, zone: str, eco: bool = False, gap_hours: float | None = None
+    ) -> int:
+        """Adaptive pre-heat lead for a zone's next event, capped by the slider.
+
+        eco: the event matches an ECO keyword, so the pre-heat aims at the
+        lower eco-low setpoint instead of comfort (the same target the
+        reconciler will push when the event runs). gap_hours: time until the
+        event starts, when known — the learned heat-loss rate then predicts
+        how much further the room will cool before the pre-heat begins.
+        """
+        target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
         minutes = required_lead_minutes(
-            rate=self.number(f"{zone}_warmup_rate"),
+            rate=self.number(self._warmup_rate_key(zone)),
             indoor=self._zone_room_temp(zone),
-            target=self._zone_target(zone),
+            target=target,
             outdoor=self._outdoor_temp(),
             max_minutes=self.number("preheat_minutes"),
+            gap_hours=gap_hours,
+            cool_rate=self.number(f"{zone}_cooloff_rate"),
         )
         return int(round(minutes))
+
+    def _warmup_rate_key(self, zone: str, assisted: bool | None = None) -> str:
+        """Which learned warm-up rate applies to a zone.
+
+        The hall keeps two: with and without the destratification fans
+        running, because the fans materially change warm-up speed.
+        ``assisted=None`` asks for the rate to *predict* with (will the fans
+        help the next warm-up?); a bool records which rate an *observed*
+        warm-up should update.
+        """
+        if zone != ZONE_A or not self.config.get(CONF_FAN_MASTER):
+            return f"{zone}_warmup_rate"
+        if assisted is None:
+            assisted = self.switch_on("fans_enabled", default=True) and not self._summer_active()
+        return "zone_a_warmup_rate_fans" if assisted else "zone_a_warmup_rate"
+
+    def _fans_running(self) -> bool:
+        """Whether the fans are genuinely moving air right now.
+
+        Master on, and — when the O1 power sensor is mapped — actually drawing
+        fan-scale power: a closed master with the transformer dial at zero
+        moves no air and must not count as fan-assisted in the learning.
+        """
+        master = self.config.get(CONF_FAN_MASTER)
+        if not master or not self._is_on(master):
+            return False
+        power = self._num_state(self.config.get(CONF_FAN_O1_POWER))
+        if power is not None:
+            return power > FAN_RUNNING_MIN_WATTS
+        return True
 
     def _update_warmup_learning(self) -> None:
         """Time real comfort warm-ups and fold them into the learned rates.
@@ -558,26 +665,83 @@ class ScoutController:
 
             if sample is None:
                 if comfort and temp is not None and temp < target - 0.5:
-                    self._warmup_start[zone] = (now, temp)
+                    fans = 1 if self._fans_running() else 0
+                    self._warmup_start[zone] = (now, temp, fans, 1)
                 continue
 
+            started, start_temp, fan_ticks, ticks = sample
             done = comfort and temp is not None and temp >= target
             if comfort and not done:
-                continue  # still warming (or temp reading lost: wait)
+                # Still warming (or temp reading lost: wait). Keep tallying
+                # whether the fans are assisting.
+                fan_ticks += 1 if self._fans_running() else 0
+                self._warmup_start[zone] = (started, start_temp, fan_ticks, ticks + 1)
+                continue
 
             # Warm-up finished (target reached) or ended early (preset left
-            # comfort): fold the observation in and clear the sample.
+            # comfort): fold the observation into the applicable rate — the
+            # fan-assisted one when the fans ran for most of the warm-up.
             self._warmup_start[zone] = None
             if temp is None:
                 continue
-            started, start_temp = sample
             minutes = (now - started).total_seconds() / 60
-            rate_key = f"{zone}_warmup_rate"
+            assisted = fan_ticks * 2 >= ticks
+            rate_key = self._warmup_rate_key(zone, assisted=assisted)
             new_rate = updated_rate(self.number(rate_key), minutes, temp - start_temp)
             entity = self._numbers.get(rate_key)
             write = getattr(entity, "write_value", None)
             if write is not None and new_rate != self.number(rate_key):
                 write(new_rate)
+
+    def _update_cooloff_learning(self) -> None:
+        """Measure how fast an unheated zone loses heat (retention learning).
+
+        A sample runs while a zone sits at ice (heating effectively off): a
+        real drop over a real duration updates the zone's learned heat-loss
+        rate and re-anchors the sample. A temperature *rise* while unheated
+        (solar gain, heat leaking from another zone) re-anchors without
+        learning, so warmth can never be mistaken for insulation.
+        """
+        now = self._now()
+        for zone in (ZONE_A, ZONE_B):
+            cooling = self.applied[zone] == PRESET_ICE
+            temp = self._zone_room_temp(zone)
+            sample = self._cooloff_start[zone]
+
+            if sample is None:
+                if cooling and temp is not None:
+                    self._cooloff_start[zone] = (now, temp)
+                continue
+
+            started, start_temp = sample
+            if not cooling or temp is None:
+                # Heating resumed (or reading lost): fold in whatever partial
+                # drop there was and stop sampling.
+                self._cooloff_start[zone] = None
+                if temp is not None:
+                    hours = (now - started).total_seconds() / 3600
+                    self._fold_cooloff(zone, hours, start_temp - temp)
+                continue
+
+            if temp > start_temp + 0.3:
+                self._cooloff_start[zone] = (now, temp)  # gaining, not losing
+                continue
+            drop = start_temp - temp
+            if drop >= 1.0:
+                hours = (now - started).total_seconds() / 3600
+                self._fold_cooloff(zone, hours, drop)
+                self._cooloff_start[zone] = (now, temp)  # rolling window
+
+    def _fold_cooloff(self, zone: str, hours: float, drop: float) -> None:
+        key = f"{zone}_cooloff_rate"
+        current = self.number(key)
+        if current <= 0:
+            return  # prediction disabled by the user; leave it that way
+        new = updated_cooling_rate(current, hours, drop)
+        entity = self._numbers.get(key)
+        write = getattr(entity, "write_value", None)
+        if write is not None and new != current:
+            write(new)
 
     async def _async_seasonal_check(self) -> None:
         weather = self.config.get(CONF_WEATHER)
@@ -884,6 +1048,7 @@ class ScoutController:
             await self._evaluate_openings()
             await self._reconcile_zones()
             self._update_warmup_learning()
+            self._update_cooloff_learning()
             await self._reconcile_shared()
             await self._reconcile_water()
             await self._reconcile_fans()

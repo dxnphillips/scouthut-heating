@@ -15,7 +15,10 @@ from .entity import ScoutEntity
 NAMES: dict[str, str] = {
     "preheat_minutes": "Pre-heat lead time (max)",
     "zone_a_warmup_rate": "Hall learned warm-up rate",
+    "zone_a_warmup_rate_fans": "Hall learned warm-up rate (fans running)",
     "zone_b_warmup_rate": "Office learned warm-up rate",
+    "zone_a_cooloff_rate": "Hall learned heat-loss rate",
+    "zone_b_cooloff_rate": "Office learned heat-loss rate",
     "motion_timeout_minutes": "No-motion eco timeout",
     "door_ice_minutes": "Door: drop to ice after",
     "window_ice_minutes": "Window: drop to ice after",

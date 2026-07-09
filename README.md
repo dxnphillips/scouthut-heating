@@ -171,17 +171,30 @@ this priority (highest wins):
    `ice` once the building is empty.
 
 **Optimum start.** The pre-heat lead is not a fixed number: each zone computes
-it as *learned warm-up rate × how far the room is below its comfort target*,
-with a small extra margin when it is cold outside, clamped between 15 minutes
-and the **Pre-heat lead time (max)** slider (the safety cap — a room with no
-readable temperature also falls back to the cap, so a cold start is never
-missed). The warm-up rate (min/°C) is learned automatically: every real
-comfort warm-up from cold is timed, and the observed minutes-per-degree is
-folded into the zone's **learned warm-up rate** number (exponentially
-smoothed and clamped, so one door-open disaster can't poison it). Insulation,
-the destratification fans, and the seasons are all absorbed into that observed
-rate. The learned numbers are visible and adjustable — re-seed them after any
-building change.
+it as *learned warm-up rate × how far the room is below **that booking's**
+target* — a booking matching an ECO keyword pre-heats only to the eco-low
+setpoint, not comfort — with a small extra margin when it is cold outside,
+clamped between 15 minutes and the **Pre-heat lead time (max)** slider (the
+safety cap — a room with no readable temperature also falls back to the cap,
+so a cold start is never missed). When the event's start time is known, the
+zone's **learned heat-loss rate** (°C/h, measured whenever the room coasts
+unheated) predicts how much further it will cool before the pre-heat begins,
+so a booking many hours away still gets a long-enough lead (never predicting
+below the 7 °C anti-frost floor).
+
+All the learned numbers are **fail-safe by construction**: the warm-up rates
+are seeded at the slowest plausible value, so an unlearned zone uses
+(effectively) the full cap — the old fixed behaviour — until real warm-ups
+pull the rate down to the truth over a handful of bookings. Every real
+comfort warm-up from cold is timed and folded in (exponentially smoothed and
+clamped, so one door-open disaster can't poison it); a temperature *rise*
+while unheated (July roof sun) is never mistaken for good insulation. The
+hall keeps **two** warm-up rates — with and without the destratification fans
+running — judged from the Shelly O1 power reading (a closed master with the
+dial at zero doesn't count), because the fans materially change warm-up
+speed. All the learned numbers are visible and adjustable — re-seed them
+after any building change, or set the heat-loss rate to 0 to disable the
+cooling prediction.
 
 The **shared zone** follows either calendar / any motion / boost, and the
 **water heater** turns on for its own pre-heat window, kitchen/toilet motion

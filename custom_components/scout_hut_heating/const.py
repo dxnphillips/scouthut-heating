@@ -174,11 +174,23 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # (learned warm-up rate x temperature deficit, with a cold-weather margin)
     # and clamped to this — the optimum-start cap, like Rointe's own 2 h limit.
     "preheat_minutes": (0, 120, 5, 120, "min"),
-    # Learned warm-up rates (minutes per °C), one per zone. Updated
-    # automatically from every completed comfort warm-up; adjustable to
-    # re-seed the learning after building changes (insulation, extra heaters).
-    "zone_a_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
-    "zone_b_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
+    # Learned warm-up rates (minutes per °C), one per zone (plus a separate
+    # hall rate for when the destratification fans are running, which
+    # materially speeds warm-up). Updated automatically from every completed
+    # comfort warm-up; adjustable to re-seed after building changes.
+    # DELIBERATELY seeded at the slowest plausible rate: an unlearned zone
+    # therefore uses (effectively) the full pre-heat cap — fail-safe warm —
+    # and real warm-ups pull the rate down to the truth over a few bookings.
+    "zone_a_warmup_rate": (5, 60, 0.5, 60, "min/°C"),
+    "zone_a_warmup_rate_fans": (5, 60, 0.5, 60, "min/°C"),
+    "zone_b_warmup_rate": (5, 60, 0.5, 60, "min/°C"),
+    # Learned heat-loss (cool-off) rates (°C per hour), one per zone, measured
+    # while a zone coasts unheated after use. Used to predict how far a room
+    # will have cooled by the time a pre-heat begins, so a booking many hours
+    # away still gets a long-enough lead. Seeded high (cautious: predicts
+    # colder, heats earlier); set to 0 to disable the prediction.
+    "zone_a_cooloff_rate": (0, 5, 0.1, 2.0, "°C/h"),
+    "zone_b_cooloff_rate": (0, 5, 0.1, 2.0, "°C/h"),
     "motion_timeout_minutes": (5, 60, 5, 15, "min"),
     "door_ice_minutes": (2, 30, 1, 10, "min"),
     "window_ice_minutes": (5, 60, 5, 10, "min"),
@@ -219,7 +231,10 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
 NUMBER_ICONS: dict[str, str] = {
     "preheat_minutes": "mdi:radiator",
     "zone_a_warmup_rate": "mdi:chart-line",
+    "zone_a_warmup_rate_fans": "mdi:fan-chevron-up",
     "zone_b_warmup_rate": "mdi:chart-line",
+    "zone_a_cooloff_rate": "mdi:snowflake-thermometer",
+    "zone_b_cooloff_rate": "mdi:snowflake-thermometer",
     "motion_timeout_minutes": "mdi:timer-outline",
     "door_ice_minutes": "mdi:door-open",
     "window_ice_minutes": "mdi:window-open",

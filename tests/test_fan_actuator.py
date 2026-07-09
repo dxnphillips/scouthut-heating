@@ -147,3 +147,43 @@ def test_follow_season_can_be_disabled():
     ctrl._switches["summer_follows_season"].is_on = False
     ctrl.seasonal_lockout = True
     assert ctrl._summer_active() is False
+
+
+# --- Fan awareness in the optimum-start learning --------------------------------
+
+def test_warmup_rate_key_follows_fan_availability():
+    from scout_testkit import ZA, ZB
+
+    ctrl, _ = fan_controller()
+    # Winter, fans enabled: predict warm-ups with the fan-assisted rate.
+    assert ctrl._warmup_rate_key(ZA) == "zone_a_warmup_rate_fans"
+    # Summer regime: fans blow a cooling breeze, not destratified heat.
+    ctrl.seasonal_lockout = True
+    assert ctrl._warmup_rate_key(ZA) == "zone_a_warmup_rate"
+    ctrl.seasonal_lockout = False
+    ctrl._switches["fans_enabled"].is_on = False
+    assert ctrl._warmup_rate_key(ZA) == "zone_a_warmup_rate"
+    # The office has no fans, ever.
+    assert ctrl._warmup_rate_key(ZB) == "zone_b_warmup_rate"
+
+
+def test_no_fan_hardware_uses_base_rate():
+    from scout_testkit import ZA
+
+    ctrl, _ = make_controller()  # no fan master mapped
+    assert ctrl._warmup_rate_key(ZA) == "zone_a_warmup_rate"
+
+
+def test_fans_running_requires_real_power_when_metered():
+    from custom_components.scout_hut_heating.const import CONF_FAN_O1_POWER
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_FAN_O1_POWER: "sensor.fan_power"}
+    )
+    on(hass, MASTER)
+    hass.states.set("sensor.fan_power", "2.5")  # dial at zero: idle transformer
+    assert ctrl._fans_running() is False
+    hass.states.set("sensor.fan_power", "120")
+    assert ctrl._fans_running() is True
+    off(hass, MASTER)
+    assert ctrl._fans_running() is False

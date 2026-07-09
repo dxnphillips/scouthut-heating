@@ -42,6 +42,19 @@ MIN_LEAD = 15.0
 OUTDOOR_BASE = 15.0
 OUTDOOR_MARGIN_PER_DEG = 0.01
 
+# Cooling prediction never assumes the room drops below the Rointe anti-frost
+# floor — the heating system holds it there even when "off".
+MIN_PREDICT_TEMP = 7.0
+
+# Plausibility clamps and sample thresholds for the learned heat-loss
+# (cool-off) rate, °C per hour. A poorly insulated timber hut plausibly loses
+# 0.3-3 °C/h against a cold outside; require a real drop over a real duration
+# so cloud noise cannot masquerade as heat loss.
+MIN_COOL_RATE = 0.1
+MAX_COOL_RATE = 5.0
+MIN_COOL_SAMPLE_DROP = 1.0
+MIN_COOL_SAMPLE_HOURS = 0.5
+
 
 def required_lead_minutes(
     *,
@@ -50,22 +63,39 @@ def required_lead_minutes(
     target: float,
     outdoor: float | None,
     max_minutes: float,
+    gap_hours: float | None = None,
+    cool_rate: float = 0.0,
 ) -> float:
-    """Minutes of pre-heat needed to bring ``indoor`` up to ``target``.
+    """Minutes of pre-heat needed to bring the room up to ``target``.
 
     Falls back to ``max_minutes`` when the room temperature is unknown (a cold
     start must not be missed because the cloud is down). Clamped to
     [MIN_LEAD, max_minutes] — the user's pre-heat slider is the safety cap.
+
+    When the event start is known (``gap_hours`` from now) and a heat-loss
+    rate has been learned, the lead accounts for the room continuing to cool
+    until the pre-heat actually begins: the deficit is grown by the predicted
+    loss over the idle gap, solved in closed form (the loss stops mattering
+    once heating starts because the learned warm-up rate already includes
+    fabric losses while heating). The prediction never assumes a drop below
+    the anti-frost floor.
     """
     if indoor is None:
         return max_minutes
     deficit = target - indoor
-    if deficit <= 0:
+    lead = max(rate * deficit, 0.0)
+    if gap_hours is not None and gap_hours > 0 and cool_rate > 0 and lead < gap_hours * 60:
+        # Idle until the pre-heat begins: deficit grows while the room cools.
+        # lead = rate * (deficit + cool_rate * idle_hours), where
+        # idle_hours = gap_hours - lead/60 — solved for lead.
+        predicted = min(deficit + cool_rate * gap_hours, target - MIN_PREDICT_TEMP)
+        if predicted > deficit:
+            lead = rate * predicted / (1 + rate * cool_rate / 60)
+    if lead <= 0:
         return min(MIN_LEAD, max_minutes)
-    minutes = rate * deficit
     if outdoor is not None and outdoor < OUTDOOR_BASE:
-        minutes *= 1 + (OUTDOOR_BASE - outdoor) * OUTDOOR_MARGIN_PER_DEG
-    return max(min(minutes, max_minutes), min(MIN_LEAD, max_minutes))
+        lead *= 1 + (OUTDOOR_BASE - outdoor) * OUTDOOR_MARGIN_PER_DEG
+    return max(min(lead, max_minutes), min(MIN_LEAD, max_minutes))
 
 
 def updated_rate(rate: float, minutes_elapsed: float, temp_rise: float) -> float:
@@ -82,3 +112,18 @@ def updated_rate(rate: float, minutes_elapsed: float, temp_rise: float) -> float
     observed = max(MIN_RATE, min(MAX_RATE, observed))
     new = rate + ALPHA * (observed - rate)
     return max(MIN_RATE, min(MAX_RATE, new))
+
+
+def updated_cooling_rate(rate: float, hours_elapsed: float, temp_drop: float) -> float:
+    """Fold one observed cool-off into the learned heat-loss rate (EWMA).
+
+    Samples need a real drop over a real duration; observations and the
+    result are clamped so a burst of solar gain or a frozen cloud reading
+    cannot poison the estimate.
+    """
+    if temp_drop < MIN_COOL_SAMPLE_DROP or hours_elapsed < MIN_COOL_SAMPLE_HOURS:
+        return rate
+    observed = temp_drop / hours_elapsed
+    observed = max(MIN_COOL_RATE, min(MAX_COOL_RATE, observed))
+    new = rate + ALPHA * (observed - rate)
+    return max(MIN_COOL_RATE, min(MAX_COOL_RATE, new))
