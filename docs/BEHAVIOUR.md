@@ -18,7 +18,7 @@ original YAML is preserved under [`reference/`](reference).
 | A17–A24 Motion logic (during/outside booking) | Motion timestamps (`last_motion`) + `_motion_recent*`; `_desired_zone`/`_desired_shared` encode eco-while-empty and drop-to-ice-when-empty. |
 | A25 / A26 Rointe app drift detection | `_detect_drift` compares the representative heater's `preset_mode` to `expected_preset` and sets `manual_hold`. |
 | A27 / A28 Boost | `async_boost` / `boost_until` / `boost_active`; shared zone follows via `_desired_shared`. |
-| A29 Seasonal lockout | `_async_seasonal_check` (daily 08:00 + on threshold change) using `weather.get_forecasts` + RealFeel. |
+| A29 Seasonal lockout | `_async_seasonal_check` (hourly + on threshold change) using `weather.get_forecasts` + RealFeel. Engages on the **3-day average** mean temperature ≥ threshold (not every high/low), so a warm season locks out even with cool nights. |
 | A30 Automation re-enabled | Toggling the enable switch requests a reconcile. |
 | A31 Nightly safety net | Implicit: with no booking/motion the reconciler already targets `ice`. |
 | A32 Startup initialise | `async_start` schedules a first reconcile after a 30 s delay. |
