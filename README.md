@@ -46,7 +46,7 @@ entities you leave blank simply switches itself off.
 | **Motion sensors** | Hall, office, kitchen, gents and female-toilet motion/presence sensors (`binary_sensor` or `input_boolean`) |
 | **Doors & windows** | Per-zone door and window contact groups, shared-zone windows, and the internal door |
 | **Calendars, weather & alarm** | Hall & office booking calendars, weather entity, RealFeel sensor, the two alarm booleans, and the water-heater switch |
-| **Ceiling fans & cooling** | Shelly fan master/direction switches and reverse button, the ceiling temperature sensor, the O1/O2 power sensors, the Shelly fault boolean, and a future AC climate — all optional; leave blank to keep the fans off. The floor temperature and the Rointe *Effective Power* sensors are auto-detected from the heaters, so you normally leave them blank |
+| **Ceiling fans & cooling** | Shelly fan master/direction switches and reverse button, the ceiling temperature sensor, the O1/O2 power sensors, and the Shelly fault boolean — all optional; leave blank to keep the fans off. The floor temperature and the Rointe *Effective Power* sensors are auto-detected from the heaters, so you normally leave them blank |
 
 You can re-map any of these later via the integration's **Configure** button.
 
@@ -111,9 +111,7 @@ Three regimes, chosen by the **Summer cooling mode** switch:
 - **Summer cooling** (only when *Summer cooling mode* is on) → fans **forward
   (down air)** when the hall is occupied and the floor temperature is above the
   warm-enough threshold (default 24 °C). The breeze is what cools people, so an
-  empty hall never runs them. Air conditioning is optional: map a `climate` and
-  the fans also assist while it is actively cooling, letting its setpoint sit a
-  little higher.
+  empty hall never runs them.
 - **Off / fail-safe** → the master opens whenever the fans are disabled or the
   Shelly fault is latched.
 
