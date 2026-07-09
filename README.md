@@ -109,6 +109,18 @@ full decision table are covered by an offline test harness, but **verify it on
 your own system** — watch the diagnostic sensors and the heater presets through
 a booking, an opening event and a boost before trusting it unattended.
 
+## Development / tests
+
+The reconciler is covered by a self-contained test suite (90+ scenarios across
+all three zones, the cross-zone links, openings, seasonal lockout, boost and the
+auto-mapping) that runs without a full Home Assistant install — it stubs the HA
+API surface the integration uses:
+
+```bash
+pip install pytest
+pytest
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
