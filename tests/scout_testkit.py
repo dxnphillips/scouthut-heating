@@ -230,7 +230,10 @@ def advance(ctrl, minutes):
         ctrl._last_apply[zone] = ctrl._last_apply[zone] - delta
     for zone, sample in ctrl._warmup_start.items():
         if sample is not None:
-            ctrl._warmup_start[zone] = (sample[0] - delta, sample[1])
+            ctrl._warmup_start[zone] = (sample[0] - delta, *sample[1:])
+    for zone, sample in ctrl._cooloff_start.items():
+        if sample is not None:
+            ctrl._cooloff_start[zone] = (sample[0] - delta, *sample[1:])
     if ctrl.water_on_since is not None:
         ctrl.water_on_since = ctrl.water_on_since - delta
     if ctrl.water_last_hot is not None:
