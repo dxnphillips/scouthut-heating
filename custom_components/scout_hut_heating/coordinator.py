@@ -158,6 +158,7 @@ class ScoutController:
         self.fan_master_off_since: datetime | None = None  # for dwell-safe infer
         self.fan_action_grace_until: datetime | None = None  # Shelly mid-sequence
         self._fan_fault_notified: bool = False
+        self._discovered_power: list[str] | None = None  # auto-found power sensors
 
         # Cached calendar look-ahead (refreshed on a slower cadence).
         self.cal_window: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
@@ -944,15 +945,17 @@ class ScoutController:
     def _heat_demand(self) -> bool:
         """True if any Rointe heater is actively producing heat right now.
 
-        Reads the mapped Rointe Effective Power sensors: any above the tunable
-        watt threshold means that heater is calling. This catches office (or
-        shared) heaters warming the poorly-insulated hall, not just hall demand.
-        If no power sensors are mapped (or all are unavailable) it falls back to
-        whether any hall/office zone is on a heating preset.
+        Reads the Rointe Effective Power sensors: any above the tunable watt
+        threshold means that heater is calling. This catches office (or shared)
+        heaters warming the poorly-insulated hall, not just hall demand. The
+        sensors are auto-detected from the mapped heater devices, so nothing extra
+        needs mapping; an explicit mapping overrides the auto-detection. If none
+        can be read it falls back to whether any hall/office zone is on a heating
+        preset.
         """
         threshold = self.number("heat_demand_watts")
         seen_value = False
-        for power in self._as_list(self.config.get(CONF_ROINTE_POWER)):
+        for power in self._power_sensors():
             value = self._num_state(power)
             if value is not None:
                 seen_value = True
@@ -961,6 +964,55 @@ class ScoutController:
         if seen_value:
             return False
         return any(self.applied[z] in (PRESET_COMFORT, PRESET_ECO) for z in (ZONE_A, ZONE_B))
+
+    def _power_sensors(self) -> list[str]:
+        """Resolve the Rointe Effective Power sensors.
+
+        Uses an explicit mapping if given; otherwise auto-detects them from the
+        heater devices (mirrors how the hall comfort/eco numbers are found) and
+        memoises the first non-empty result.
+        """
+        mapped = self._as_list(self.config.get(CONF_ROINTE_POWER))
+        if mapped:
+            return mapped
+        if self._discovered_power is None:
+            found = self._discover_power_sensors()
+            if found:
+                self._discovered_power = found
+            return found
+        return self._discovered_power
+
+    def _discover_power_sensors(self) -> list[str]:
+        """Find the Effective Power sensor on each mapped heater's device.
+
+        Looks across the hall, office and shared heaters (any of their power can
+        signal that heat is being produced in the building) for a sibling sensor
+        with a power device class, or an ``*_power`` entity id that is not the
+        energy total.
+        """
+        registry = er.async_get(self.hass)
+        found: list[str] = []
+        climates = (
+            self._as_list(self.config.get(CONF_HALL_CLIMATES))
+            + self._as_list(self.config.get(CONF_OFFICE_CLIMATES))
+            + self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+        )
+        for climate in climates:
+            entry = registry.async_get(climate)
+            if entry is None or entry.device_id is None:
+                continue
+            for member in er.async_entries_for_device(
+                registry, entry.device_id, include_disabled_entities=False
+            ):
+                if member.domain != "sensor":
+                    continue
+                eid = member.entity_id.lower()
+                is_power = (member.original_device_class or "") == "power" or (
+                    "power" in eid and "energy" not in eid
+                )
+                if is_power:
+                    found.append(member.entity_id)
+        return found
 
     def _ac_cooling(self, ac: str) -> bool:
         """True if the (optional) AC is actively cooling."""

@@ -46,7 +46,7 @@ entities you leave blank simply switches itself off.
 | **Motion sensors** | Hall, office, kitchen, gents and female-toilet motion/presence sensors (`binary_sensor` or `input_boolean`) |
 | **Doors & windows** | Per-zone door and window contact groups, shared-zone windows, and the internal door |
 | **Calendars, weather & alarm** | Hall & office booking calendars, weather entity, RealFeel sensor, the two alarm booleans, and the water-heater switch |
-| **Ceiling fans & cooling** | Shelly fan master/direction switches and reverse button, the ceiling temperature sensor (and optional floor sensor), the Rointe *Effective Power* sensors, the O1/O2 power sensors, the Shelly fault boolean, and a future AC climate — all optional; leave blank to keep the fans off |
+| **Ceiling fans & cooling** | Shelly fan master/direction switches and reverse button, the ceiling temperature sensor, the O1/O2 power sensors, the Shelly fault boolean, and a future AC climate — all optional; leave blank to keep the fans off. The floor temperature and the Rointe *Effective Power* sensors are auto-detected from the heaters, so you normally leave them blank |
 
 You can re-map any of these later via the integration's **Configure** button.
 
