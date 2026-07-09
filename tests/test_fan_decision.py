@@ -86,6 +86,15 @@ def test_winter_stops_at_dt_off():
     assert winter(dt=1.0, currently_winter=True) == (False, None, "off")
 
 
+def test_inverted_thresholds_are_clamped():
+    # dt_off set above dt_on (possible via the sliders) must not invert the
+    # hysteresis band: the effective stop threshold is clamped to dt_on, so a
+    # running fan with dt above dt_on keeps running.
+    assert winter(dt=3.5, dt_off=5.0, currently_winter=True) == (True, "reverse", "winter")
+    # ...and below dt_on it stops as if dt_off == dt_on.
+    assert winter(dt=2.5, dt_off=5.0, currently_winter=True) == (False, None, "off")
+
+
 # --- Winter stop conditions ----------------------------------------------------
 
 def test_winter_stops_when_heat_stops_and_room_warm():

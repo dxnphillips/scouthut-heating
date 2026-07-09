@@ -34,6 +34,18 @@ def test_borderline_average_equals_threshold_locks_out():
     assert warm is True
 
 
+def test_hysteresis_dead_band_neither_engages_nor_releases():
+    # Just below the threshold: not warm enough to engage, but inside the
+    # release band, so an engaged lockout stays engaged (no hourly flapping).
+    _, warm, cold = D(_days(14.8, 14.8), 15, 20)  # mean 14.8, band 0.5
+    assert warm is False and cold is False
+
+
+def test_release_below_the_band():
+    _, warm, cold = D(_days(14.5, 14.5), 15, 20)  # mean 14.5 == threshold - band
+    assert warm is False and cold is True
+
+
 def test_cold_realfeel_forces_release():
     _, _, cold = D(_days(33, 15), 15, 10)  # warm average but RealFeel below
     assert cold is True

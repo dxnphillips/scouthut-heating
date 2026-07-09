@@ -59,6 +59,11 @@ def fan_decision(
         run_on_loss: when the ceiling / floor reading is lost, assume
             stratification and keep the winter fans running instead of stopping.
     """
+    # The sliders allow dt_off to be set above dt_on, which would invert the
+    # hysteresis band (fans stopping the moment they start). Clamp so the stop
+    # threshold can never exceed the start threshold.
+    dt_off = min(dt_off, dt_on)
+
     if summer:
         # Summer cooling: a forward breeze only helps someone who is present, and
         # we need a floor reading to know it is genuinely warm. Without one we do

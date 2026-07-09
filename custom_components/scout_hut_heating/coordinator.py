@@ -15,11 +15,13 @@ Priority (highest wins), per heated zone:
     6. Calendar booking / pre-heat window -> comfort (eco for ECO-keyword events);
                                              drops to eco while unoccupied
     7. Occupied override / recent motion  -> eco
-    8. Building empty                      -> ice
+    8. Zone empty                          -> eco while someone is elsewhere in
+                                             the building, ice once it is empty
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -84,6 +86,10 @@ from .const import (
     PRESET_ICE,
     RECONCILE_INTERVAL,
     STARTUP_DELAY,
+    WATER_FROST_OFF_TEMP,
+    WATER_FROST_ON_TEMP,
+    WATER_HYGIENE_INTERVAL,
+    WATER_HYGIENE_MINUTES,
     ZONE_A,
     ZONE_B,
 )
@@ -93,6 +99,15 @@ from .const import (
 # the fans during this window, and must not mistake the dwell for a fault.
 FAN_REVERSE_GRACE = 70  # seconds
 FAN_FAULT_GRACE = 70  # seconds a master may be unexpectedly off before we latch
+# Pause between presetting the direction relay and closing the master, so the
+# Finder contactor has finished travelling before the load is applied (the
+# Shelly script uses the same settle inside its own reversal sequence).
+FAN_DIRECTION_SETTLE = 1.5  # seconds
+
+# Hysteresis on the seasonal lockout: engage at avg >= threshold, release only
+# once the 3-day average drops this far below it (or on a cold-snap RealFeel),
+# so a forecast hovering at the threshold cannot flap the lockout hourly.
+SEASONAL_RELEASE_BAND = 0.5  # °C
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -141,6 +156,9 @@ class ScoutController:
         self.expected_preset: dict[str, str | None] = {ZONE_A: None, ZONE_B: None}
         self.applied: dict[str, str | None] = {ZONE_A: None, ZONE_B: None, "shared": None}
         self.water_on: bool | None = None
+        self.water_frost_active = False  # shared zone near freezing: keep powered
+        self.water_last_hot: datetime | None = None  # last time the tank had power
+        self.water_hygiene_until: datetime | None = None  # weekly heat-up window
         self._last_apply: dict[str, datetime] = {}
 
         # Fan / destratification state.
@@ -488,7 +506,10 @@ class ScoutController:
         than requiring every high AND every low to clear the threshold — means a
         warm season still locks out even when nights dip, which is both the
         sensible real-world behaviour and what the control has always been
-        labelled ("3-day average"). Returns (avg, engage?, release?).
+        labelled ("3-day average"). Release requires the average to fall
+        SEASONAL_RELEASE_BAND below the threshold (or a cold-snap RealFeel), so
+        the lockout cannot flap while the forecast hovers at the threshold.
+        Returns (avg, engage?, release?).
         """
 
         def _f(value: Any) -> float | None:
@@ -512,7 +533,8 @@ class ScoutController:
         if not means:
             return None, False, False
         avg = sum(means) / len(means)
-        return avg, avg >= threshold, (avg < threshold or realfeel < threshold)
+        release = avg <= threshold - SEASONAL_RELEASE_BAND or realfeel < threshold
+        return avg, avg >= threshold, release
 
     # ------------------------------------------------------------------
     # Boost API (called by the button platform)
@@ -596,8 +618,10 @@ class ScoutController:
             return PRESET_ECO
         if not self._motion_recent_any(timeout):
             return PRESET_ICE
-        # Zone quiet but someone is elsewhere in the building: leave as is.
-        return None
+        # Zone quiet but someone is elsewhere in the building: rest at eco rather
+        # than leaving a stale comfort preset running (e.g. the hall after a
+        # booking ends while a cleaner is still in the kitchen).
+        return PRESET_ECO
 
     def _desired_shared(self) -> str | None:
         if not self.config.get(CONF_SHARED_CLIMATES):
@@ -618,10 +642,59 @@ class ScoutController:
             return PRESET_ECO
         return PRESET_ICE
 
+    def _shared_room_temp(self) -> float | None:
+        """Coldest reported room temperature around the water heater.
+
+        Reads the shared-zone (kitchen/toilet) Rointe climates, ignoring any
+        heater that is unavailable; the tank lives in that zone, so the coldest
+        reading is the one that matters for frost.
+        """
+        vals: list[float] = []
+        for climate in self._as_list(self.config.get(CONF_SHARED_CLIMATES)):
+            st = self.hass.states.get(climate)
+            if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            temp = st.attributes.get("current_temperature")
+            try:
+                if temp is not None:
+                    vals.append(float(temp))
+            except (TypeError, ValueError):
+                continue
+        return min(vals) if vals else None
+
     def _desired_water(self) -> bool | None:
         switch = self.config.get(CONF_WATER_SWITCH)
         if not switch:
             return None
+        now = self._now()
+
+        # Frost protection (highest priority, overrides the alarms): the
+        # Speedflow's own frost stat only works while powered, so keep it
+        # powered whenever the rooms around it are near freezing. Hysteresis so
+        # a reading hovering at the trip point cannot flap the switch; a lost
+        # reading holds the current state until it returns.
+        room = self._shared_room_temp()
+        if room is not None:
+            if room <= WATER_FROST_ON_TEMP:
+                self.water_frost_active = True
+            elif room >= WATER_FROST_OFF_TEMP:
+                self.water_frost_active = False
+        if self.water_frost_active:
+            return True
+
+        # Weekly hygiene heat-up (also overrides the alarms): if the tank has
+        # gone a week without power, run it long enough for the full 15 L to
+        # reach thermostat temperature, so stored water never sits lukewarm
+        # indefinitely between lets.
+        if self.water_hygiene_until is not None and now < self.water_hygiene_until:
+            return True
+        self.water_hygiene_until = None
+        if self.water_last_hot is None:
+            self.water_last_hot = now  # start the clock on first evaluation
+        elif now - self.water_last_hot >= WATER_HYGIENE_INTERVAL:
+            self.water_hygiene_until = now + timedelta(minutes=WATER_HYGIENE_MINUTES)
+            return True
+
         override = self.switch_on("water_manual_override")
         cal = self.water_window
         keepalive = self.number("water_motion_keepalive_minutes")
@@ -747,6 +820,10 @@ class ScoutController:
 
     async def _reconcile_water(self) -> None:
         desired = self._desired_water()
+        if desired:
+            # The tank is powered (any reason): the stored water is being held
+            # at temperature, so the weekly hygiene clock restarts from here.
+            self.water_last_hot = self._now()
         if desired is None or desired == self.water_on:
             return
         switch = self.config.get(CONF_WATER_SWITCH)
@@ -1288,7 +1365,9 @@ class ScoutController:
         # ---- ON with a target direction ----
         if not master_on:
             # Presetting the direction relay directly is allowed only while the
-            # master is off (no load on the coil switching).
+            # master is off (no load on the coil switching). Give the contactor
+            # time to finish travelling before energising, mirroring the settle
+            # the Shelly script uses in its own sequence.
             if direction and cur_dir != want_direction:
                 await self.hass.services.async_call(
                     "switch",
@@ -1296,6 +1375,7 @@ class ScoutController:
                     {"entity_id": direction},
                     blocking=False,
                 )
+                await asyncio.sleep(FAN_DIRECTION_SETTLE)
             await self.hass.services.async_call(
                 "switch", "turn_on", {"entity_id": master}, blocking=False
             )
@@ -1309,9 +1389,16 @@ class ScoutController:
             return
 
         # master already on
-        if cur_dir == want_direction:
+        # Without a mapped direction relay the running direction is unknowable
+        # (cur_dir would be a guess), and without the reverse button a live
+        # change is impossible. Either way, never attempt a live reversal —
+        # blind re-pressing would otherwise cycle the motor through a full
+        # reversal sequence on every reconcile. Keep the fans running as they
+        # are instead.
+        if not direction or not reverse or cur_dir == want_direction:
             self.fan_on = True
-            self.fan_direction = cur_dir
+            if direction:
+                self.fan_direction = cur_dir
             self.fan_master_expected = True
             persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_DIAL)
             return

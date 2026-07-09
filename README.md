@@ -117,7 +117,7 @@ Three regimes, chosen by the **Summer cooling mode** switch:
 
 **When the ceiling / floor sensor is lost**, the behaviour is a tunable choice.
 By default (*Fans run when sensor lost* on) it **assumes stratification and keeps
-the winter fans running** while heat is being produced and the hall is occupied,
+the winter fans running** while heat is being produced,
 and raises a *sensor lost* notification. Turn that switch off to fail-safe to
 fans-off instead. Either way the Shelly still owns motor safety, and a genuine
 Shelly fault still forces the fans off.
@@ -151,12 +151,17 @@ this priority (highest wins):
 6. **Booking or pre-heat window** → `comfort`, dropping to `eco` while
    unoccupied; events matching an ECO keyword stay on the lower `eco` setpoint.
 7. **Occupied override or recent motion** → `eco`.
-8. **Building empty** → `ice`.
+8. **Zone empty** → `eco` while someone is still elsewhere in the building,
+   `ice` once the building is empty.
 
 The **shared zone** follows either calendar / any motion / boost, and the
 **water heater** turns on for its own pre-heat window, kitchen/toilet motion
 (within the keep-alive) or the manual override, and off when the building is
-alarmed. Hall comfort/eco setpoints are pushed onto the Rointe `number`
+alarmed. Two safeguards for the 15 L point-of-use tank override even the
+alarm: it is powered whenever the shared zone nears freezing (≤3 °C, releasing
+at 5 °C — the Speedflow's own frost stat only works while powered), and if the
+tank has gone a week without power it runs a 45-minute hygiene heat-up so the
+stored water never sits lukewarm indefinitely between lets. Hall comfort/eco setpoints are pushed onto the Rointe `number`
 entities before a preset is applied, so slider changes take effect immediately.
 
 A mapping from each original automation (A1–A35, W1–W9) to the reconciler is in
