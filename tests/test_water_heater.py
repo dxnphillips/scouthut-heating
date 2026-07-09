@@ -151,6 +151,43 @@ def test_hygiene_runs_even_when_alarmed():
     assert ctrl._desired_water() is True
 
 
+def test_short_daily_dabs_do_not_defer_the_hygiene_cycle():
+    # A week of brief power windows never completes a full reheat, so the
+    # hygiene cycle must still fire (a dab must not reset the weekly clock).
+    ctrl, _ = make_controller()
+    ctrl._numbers["water_motion_keepalive_minutes"].native_value = 5
+    run(ctrl.async_reconcile())  # starts the clock
+    for _ in range(6):
+        motion(ctrl, "kitchen")
+        run(ctrl.async_reconcile())  # dab: powers on
+        assert ctrl.water_on is True
+        advance(ctrl, 6)  # keep-alive expired after ~5 minutes of power
+        run(ctrl.async_reconcile())
+        assert ctrl.water_on is False
+        assert ctrl.water_hygiene_until is None  # not due yet
+        advance(ctrl, 24 * 60 - 6)  # rest of the day, quiet
+    advance(ctrl, 2 * 24 * 60)  # two more quiet days: >7 days since truly hot
+    run(ctrl.async_reconcile())
+    assert ctrl.water_on is True
+    assert ctrl.water_hygiene_until is not None
+
+
+def test_completed_reheat_resets_the_hygiene_clock():
+    # One continuous powered stretch longer than a full reheat counts as hot
+    # and defers the weekly cycle.
+    ctrl, _ = make_controller()
+    run(ctrl.async_reconcile())
+    advance(ctrl, 6 * 24 * 60)  # six days quiet
+    motion(ctrl, "kitchen")
+    run(ctrl.async_reconcile())  # on (default 60 min keep-alive)
+    advance(ctrl, 50)  # continuously powered past the full-reheat mark
+    run(ctrl.async_reconcile())
+    advance(ctrl, 3 * 24 * 60)  # only three days since the completed reheat
+    run(ctrl.async_reconcile())
+    assert ctrl.water_on is False
+    assert ctrl.water_hygiene_until is None
+
+
 def test_regular_use_defers_the_hygiene_cycle():
     ctrl, _ = make_controller()
     run(ctrl.async_reconcile())
