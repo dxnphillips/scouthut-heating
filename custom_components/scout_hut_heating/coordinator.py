@@ -73,9 +73,11 @@ from .const import (
     CONF_ZONE_B_DOORS,
     CONF_ZONE_B_WINDOWS,
     DOMAIN,
+    FAN_COOLING_MAX_TEMP,
     NOTIFY_FAN_DIAL,
     NOTIFY_FAN_FAULT,
     NOTIFY_FAN_SENSOR_LOST,
+    NOTIFY_FAN_TOO_HOT,
     NOTIFY_INTERNAL_DOOR,
     NOTIFY_SEASONAL,
     NOTIFY_SHARED_OPENING,
@@ -170,6 +172,7 @@ class ScoutController:
         self.fan_last_on: datetime | None = None
         self.fan_last_off: datetime | None = None
         self.fan_dt: float | None = None           # ceiling - floor (diagnostic)
+        self.fan_overheated: bool = False          # room past the fan-cooling ceiling
         self.heat_demand: bool = False             # any radiator drawing power
         self.fan_sensor_stale: bool = False        # ceiling/floor lost
         self.fan_fault_latched: bool = False       # inferred (unpublished) fault
@@ -1383,11 +1386,25 @@ class ScoutController:
                 self.fan_fault_latched = True
         return self.fan_fault_latched
 
+    def _summer_active(self) -> bool:
+        """Whether the fans should run the summer cooling regime.
+
+        The manual "Summer cooling mode" switch forces it on; otherwise, with
+        "Summer cooling follows season" enabled (the default), the regime
+        tracks the seasonal heating lockout — cooling while heating is locked
+        out for the season, winter destratification once it releases. Nobody
+        has to remember the changeover, and reversals stay seasonal-rare.
+        """
+        if self.switch_on("summer_mode", default=False):
+            return True
+        return self.switch_on("summer_follows_season", default=True) and self.seasonal_lockout
+
     def _fan_target(self) -> tuple[bool, str | None, str]:
         """Resolve the desired fan state with fail-safe precedence on top."""
         if not self.switch_on("fans_enabled", default=True):
             self.fan_sensor_stale = False
             self.fan_dt = None
+            self.fan_overheated = False
             return False, None, "off"
         if self._fan_fault():
             return False, None, "off"
@@ -1410,20 +1427,22 @@ class ScoutController:
             self.fan_dt = dt
 
         warm = None if ft is None else ft > self.number("cooling_temp_high")
+        overheated = ft is not None and ft >= FAN_COOLING_MAX_TEMP
+        self.fan_overheated = overheated
         # Recirculate residual / leaked ceiling heat while the occupied zone is
         # still below the cap, decoupled from whether a heater is drawing power.
         recirc_ok = ft is not None and ft < self.number("fan_recirc_max_floor_temp")
         timeout = self.number("motion_timeout_minutes")
         occupied = self._motion_recent("hall", timeout) or self._cal_active(ZONE_A)
-        summer = self.switch_on("summer_mode", default=False)
         demand = self._heat_demand()
         self.heat_demand = demand
         currently_winter = bool(self.fan_on) and self.fan_mode == "winter"
 
         return fan_decision(
-            summer=summer,
+            summer=self._summer_active(),
             occupied=occupied,
             warm=warm,
+            overheated=overheated,
             dt=dt,
             dt_on=self.number("fan_dt_on"),
             dt_off=self.number("fan_dt_off"),
@@ -1446,6 +1465,7 @@ class ScoutController:
             return
 
         prev_stale = self.fan_sensor_stale
+        prev_hot = self.fan_overheated
         want_on, want_dir, mode = self._fan_target()
 
         # Sensor-lost notification (fires even when the fans keep running).
@@ -1453,6 +1473,23 @@ class ScoutController:
             self._notify_sensor_lost()
         elif prev_stale and not self.fan_sensor_stale:
             persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_SENSOR_LOST)
+
+        # Overheat notification: past the fan-cooling ceiling a breeze heats
+        # people instead of cooling them, so the summer fans are held off.
+        if self.fan_overheated and not prev_hot and self._summer_active():
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    f"The hall is at or above {FAN_COOLING_MAX_TEMP:.0f}°C. Air "
+                    "this hot blows heat onto people rather than cooling them, "
+                    "so the ceiling fans are held off. Ventilate (open windows "
+                    "on the shaded side) and encourage drinking water instead."
+                ),
+                title="🏕 Scout Hut – Too hot for fan cooling",
+                notification_id=NOTIFY_FAN_TOO_HOT,
+            )
+        elif prev_hot and not self.fan_overheated:
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_TOO_HOT)
 
         # Fault notification.
         fault_now = self.fan_fault_effective

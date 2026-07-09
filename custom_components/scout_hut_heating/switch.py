@@ -22,6 +22,7 @@ NAMES: dict[str, str] = {
     "water_manual_override": "Water heater manual override",
     "fans_enabled": "Ceiling fans enabled",
     "summer_mode": "Summer cooling mode",
+    "summer_follows_season": "Summer cooling follows season",
     "fans_run_on_sensor_loss": "Fans run when sensor lost",
 }
 

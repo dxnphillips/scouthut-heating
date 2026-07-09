@@ -32,6 +32,7 @@ def winter(**kw):
         summer=False,
         occupied=True,
         warm=None,
+        overheated=False,
         dt=5.0,
         dt_on=DT_ON,
         dt_off=DT_OFF,
@@ -49,6 +50,7 @@ def summer(**kw):
         summer=True,
         occupied=True,
         warm=True,
+        overheated=False,
         dt=None,
         dt_on=DT_ON,
         dt_off=DT_OFF,
@@ -180,6 +182,18 @@ def test_summer_off_when_not_warm():
 def test_summer_off_when_floor_unknown():
     # No floor reading -> cannot confirm warmth -> do not blow air.
     assert summer(warm=None, occupied=True) == (False, None, "off")
+
+
+def test_summer_off_when_overheated():
+    # Past the ~35 °C ceiling a breeze heats people; hold off even when
+    # occupied and warm.
+    assert summer(overheated=True) == (False, None, "off")
+
+
+def test_winter_ignores_overheat_flag():
+    # The ceiling only applies to the cooling breeze; the winter branch is
+    # governed by its own recirculation cap.
+    assert winter(overheated=True) == (True, "reverse", "winter")
 
 
 def test_summer_ignores_winter_heat_demand():

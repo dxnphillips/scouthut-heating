@@ -93,6 +93,13 @@ CONF_FAN_O2_POWER = "fan_o2_power"          # O2 power (direction coil)
 CONF_FAN_FAULT = "fan_fault"                # Shelly latched fault (if published)
 CONF_ROINTE_POWER = "rointe_power_sensors"  # Rointe Effective Power sensors
 
+# Above this floor temperature a fan blows air hotter than skin onto people and
+# makes them warmer, not cooler; the summer fans hold off and a notification
+# suggests ventilation/shade instead. 35 °C per UK public-health guidance
+# (CDC advises 32 °C where occupants may be vulnerable). Not tunable: this is
+# a health limit, not a preference.
+FAN_COOLING_MAX_TEMP = 35.0
+
 # Every mapping key, grouped for the config flow / options flow.
 MULTI_ENTITY_KEYS = (
     CONF_HALL_CLIMATES,
@@ -244,9 +251,14 @@ SWITCH_DEFS: dict[str, bool] = {
     "water_manual_override": False,
     # Master enable for the destratification fans (winter). Default on.
     "fans_enabled": True,
-    # Summer cooling regime. Default OFF so the forward-air branch stays dormant
-    # until deliberately enabled.
+    # Manual force-on for the summer cooling regime, regardless of season.
+    # Default OFF; normally the season switch below drives the changeover.
     "summer_mode": False,
+    # Follow the season automatically: while the seasonal heating lockout is
+    # engaged the fans run the summer cooling regime, and they drop back to
+    # winter destratification when the lockout releases in autumn. Default ON
+    # so nobody has to remember the changeover.
+    "summer_follows_season": True,
     # When the ceiling/floor sensor is lost, assume stratification is present and
     # keep running the winter fans (still gated by heat demand) rather than
     # failing to off. Default ON per site preference; turn off to fail-safe
@@ -262,6 +274,7 @@ SWITCH_ICONS: dict[str, str] = {
     "water_manual_override": "mdi:water-boiler-alert",
     "fans_enabled": "mdi:ceiling-fan",
     "summer_mode": "mdi:weather-sunny",
+    "summer_follows_season": "mdi:calendar-sync",
     "fans_run_on_sensor_loss": "mdi:fan-alert",
 }
 
@@ -286,3 +299,4 @@ NOTIFY_SEASONAL = "scout_seasonal_lockout"
 NOTIFY_FAN_FAULT = "scout_fan_fault"
 NOTIFY_FAN_DIAL = "scout_fan_dial_high"
 NOTIFY_FAN_SENSOR_LOST = "scout_fan_sensor_lost"
+NOTIFY_FAN_TOO_HOT = "scout_fan_too_hot"
