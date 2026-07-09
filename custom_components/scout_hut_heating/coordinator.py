@@ -27,6 +27,7 @@ from typing import Any
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_call_later,
@@ -749,9 +750,46 @@ class ScoutController:
         self.expected_preset[zone] = preset
         self._last_apply[zone] = self._now()
 
+    def _hall_number_entities(self) -> tuple[list[str], list[str]]:
+        """Resolve the hall comfort / eco temperature number entities.
+
+        Uses whatever the user mapped explicitly; for either side left blank it
+        auto-discovers the matching ``number`` entities from the same device as
+        each mapped hall climate entity (Rointe exposes a comfort and an eco
+        temperature number per heater). Eco-low is not a separate entity — it is
+        just a lower value written to the eco number, so there is nothing to map
+        for it.
+        """
+        comfort = self._as_list(self.config.get(CONF_HALL_COMFORT_NUMBERS))
+        eco = self._as_list(self.config.get(CONF_HALL_ECO_NUMBERS))
+        if comfort and eco:
+            return comfort, eco
+        auto_comfort, auto_eco = self._discover_hall_numbers()
+        return comfort or auto_comfort, eco or auto_eco
+
+    def _discover_hall_numbers(self) -> tuple[list[str], list[str]]:
+        """Find comfort/eco temperature numbers on the hall heaters' devices."""
+        registry = er.async_get(self.hass)
+        comfort: list[str] = []
+        eco: list[str] = []
+        for climate in self._as_list(self.config.get(CONF_HALL_CLIMATES)):
+            entry = registry.async_get(climate)
+            if entry is None or entry.device_id is None:
+                continue
+            for member in er.async_entries_for_device(
+                registry, entry.device_id, include_disabled_entities=False
+            ):
+                if member.domain != "number":
+                    continue
+                eid = member.entity_id.lower()
+                if "comfort" in eid:
+                    comfort.append(member.entity_id)
+                elif "eco" in eid:
+                    eco.append(member.entity_id)
+        return comfort, eco
+
     async def _async_push_hall_temps(self, eco_low: bool) -> None:
-        comfort_numbers = self._as_list(self.config.get(CONF_HALL_COMFORT_NUMBERS))
-        eco_numbers = self._as_list(self.config.get(CONF_HALL_ECO_NUMBERS))
+        comfort_numbers, eco_numbers = self._hall_number_entities()
         comfort_temp = self.number("hall_comfort_temp")
         eco_temp = self.number("hall_eco_low_temp") if eco_low else self.number("hall_eco_temp")
         if comfort_numbers:
