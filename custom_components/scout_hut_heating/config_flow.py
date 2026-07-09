@@ -65,13 +65,17 @@ def _add(
         schema[marker(key)] = sel
 
 
-def _zones_schema(d: dict[str, Any]) -> vol.Schema:
+def _zones_schema(d: dict[str, Any], overrides: bool = True) -> vol.Schema:
     s: dict = {}
     _add(s, CONF_HALL_CLIMATES, True, _sel("climate", True), d)
     _add(s, CONF_OFFICE_CLIMATES, True, _sel("climate", True), d)
     _add(s, CONF_SHARED_CLIMATES, False, _sel("climate", True), d)
-    _add(s, CONF_HALL_COMFORT_NUMBERS, False, _sel("number", True), d)
-    _add(s, CONF_HALL_ECO_NUMBERS, False, _sel("number", True), d)
+    # The hall comfort/eco temperature number entities are auto-detected from
+    # the heaters, so they are not asked for during first-time setup. They are
+    # offered here only as an advanced override under Configure (options flow).
+    if overrides:
+        _add(s, CONF_HALL_COMFORT_NUMBERS, False, _sel("number", True), d)
+        _add(s, CONF_HALL_ECO_NUMBERS, False, _sel("number", True), d)
     return vol.Schema(s)
 
 
@@ -124,7 +128,9 @@ class ScoutConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._data.update(user_input)
             return await self.async_step_motion()
-        return self.async_show_form(step_id="user", data_schema=_zones_schema({}))
+        return self.async_show_form(
+            step_id="user", data_schema=_zones_schema({}, overrides=False)
+        )
 
     async def async_step_motion(
         self, user_input: dict[str, Any] | None = None
