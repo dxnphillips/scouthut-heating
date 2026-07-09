@@ -1,0 +1,105 @@
+{
+  "title": "Scout Hut Heating",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Heated zones",
+        "description": "Map the Rointe climate entities for each zone. Shared-zone and hall temperature number entities are optional.",
+        "data": {
+          "hall_climates": "Hall (Zone A) heaters",
+          "office_climates": "Office (Zone B) heaters",
+          "shared_climates": "Shared zone heaters (toilets / kitchen)",
+          "hall_comfort_numbers": "Hall comfort-temperature number entities",
+          "hall_eco_numbers": "Hall eco-temperature number entities"
+        }
+      },
+      "motion": {
+        "title": "Motion sensors",
+        "description": "Presence / PIR sensors used to keep zones warm while occupied.",
+        "data": {
+          "motion_hall": "Hall motion",
+          "motion_office": "Office motion",
+          "motion_kitchen": "Kitchen motion",
+          "motion_gents": "Gents toilet motion",
+          "motion_female": "Female toilet motion"
+        }
+      },
+      "openings": {
+        "title": "Door & window sensors",
+        "description": "Contact sensors grouped per zone. A group held open drops that zone to ice.",
+        "data": {
+          "zone_a_doors": "Hall exterior doors",
+          "zone_a_windows": "Hall windows",
+          "zone_b_doors": "Office exterior doors",
+          "zone_b_windows": "Office windows",
+          "shared_windows": "Shared-zone windows (toilets / kitchen)",
+          "internal_door": "Internal door (between hall and office)"
+        }
+      },
+      "extras": {
+        "title": "Calendars, weather & alarm",
+        "description": "Booking calendars drive pre-heat. Weather drives the seasonal lockout. Alarm booleans cancel motion/manual heating when the building is locked.",
+        "data": {
+          "calendar_hall": "Hall bookings calendar",
+          "calendar_office": "Office bookings calendar",
+          "weather_entity": "Weather entity (daily forecast)",
+          "realfeel_sensor": "RealFeel temperature sensor",
+          "alarm_main": "Main alarm (Zone A)",
+          "alarm_office": "Office alarm (Zone B)",
+          "water_switch": "Water heater switch"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Scout Hut Heating is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Heated zones",
+        "description": "Update the climate and hall temperature number entities.",
+        "data": {
+          "hall_climates": "Hall (Zone A) heaters",
+          "office_climates": "Office (Zone B) heaters",
+          "shared_climates": "Shared zone heaters (toilets / kitchen)",
+          "hall_comfort_numbers": "Hall comfort-temperature number entities",
+          "hall_eco_numbers": "Hall eco-temperature number entities"
+        }
+      },
+      "motion": {
+        "title": "Motion sensors",
+        "data": {
+          "motion_hall": "Hall motion",
+          "motion_office": "Office motion",
+          "motion_kitchen": "Kitchen motion",
+          "motion_gents": "Gents toilet motion",
+          "motion_female": "Female toilet motion"
+        }
+      },
+      "openings": {
+        "title": "Door & window sensors",
+        "data": {
+          "zone_a_doors": "Hall exterior doors",
+          "zone_a_windows": "Hall windows",
+          "zone_b_doors": "Office exterior doors",
+          "zone_b_windows": "Office windows",
+          "shared_windows": "Shared-zone windows (toilets / kitchen)",
+          "internal_door": "Internal door (between hall and office)"
+        }
+      },
+      "extras": {
+        "title": "Calendars, weather & alarm",
+        "data": {
+          "calendar_hall": "Hall bookings calendar",
+          "calendar_office": "Office bookings calendar",
+          "weather_entity": "Weather entity (daily forecast)",
+          "realfeel_sensor": "RealFeel temperature sensor",
+          "alarm_main": "Main alarm (Zone A)",
+          "alarm_office": "Office alarm (Zone B)",
+          "water_switch": "Water heater switch"
+        }
+      }
+    }
+  }
+}

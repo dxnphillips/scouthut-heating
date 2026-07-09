@@ -1,0 +1,389 @@
+###############################################################################
+# SCOUT HUT – WATER HEATER AUTOMATION PACKAGE  v1
+# =============================================================================
+#
+# FIRST-TIME SETUP
+# ----------------
+# 1. Copy this file to config/packages/scout_hut_water_heater.yaml
+#    (same packages/ folder as the heating package)
+# 2. Replace the <CHANGE_ME> placeholders with your real entity IDs.
+#    There are only 6 things to change – see QUICK REFERENCE at the bottom.
+# 3. Restart Home Assistant.
+#
+# After that, all tuning is done from the dashboard.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# HOW IT WORKS
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# PRIORITY  (highest wins)
+#   1. Manual override → ON until manually cleared
+#   2. Either calendar has an event starting within the pre-heat window → ON
+#      Once the session starts, motion takes over completely.
+#   3. Motion in kitchen or either toilet → ON, stay on for
+#      MOTION_KEEPALIVE minutes after last motion, then OFF
+#   4. No recent motion → OFF
+#
+# NOTES
+#   - The calendar only triggers the initial pre-heat (default 15 min before
+#     a booking). Once the session is underway, motion alone keeps it on.
+#     This means it switches off during a session if no one uses the kitchen
+#     or toilets, saving energy.
+#   - Hot water is always available regardless of seasonal lockout.
+#   - Door/window sensors have no effect on the water heater.
+#   - A nightly safety net switches it off at 00:10 regardless.
+#
+###############################################################################
+
+
+###############################################################################
+# SECTION 1 – HELPERS
+###############################################################################
+
+input_number:
+
+  # How many minutes before an event to switch the water heater on.
+  # Only covers the pre-heat window. Once the session starts, motion
+  # takes over – the calendar no longer keeps it on.
+  scout_water_preheat_minutes:
+    name: "🚿 Water heater pre-heat lead time (min)"
+    min: 5
+    max: 30
+    step: 5
+    initial: 15
+    unit_of_measurement: "min"
+    icon: mdi:water-boiler
+
+  # How long to keep the water heater on after the last kitchen/toilet
+  # motion detection before switching off.
+  scout_water_motion_keepalive_minutes:
+    name: "🚿 Water heater: keep on after motion (min)"
+    min: 15
+    max: 120
+    step: 15
+    initial: 60
+    unit_of_measurement: "min"
+    icon: mdi:timer-outline
+
+
+input_boolean:
+
+  # Manual override – switches the water heater on regardless of calendar
+  # or motion. Useful for unscheduled events or maintenance.
+  # Does NOT auto-clear – you must turn it off manually.
+  scout_water_heater_manual_override:
+    name: "🚿 Water heater – Manual override"
+    icon: mdi:water-boiler-alert
+
+
+###############################################################################
+# SECTION 2 – AUTOMATIONS
+###############################################################################
+
+automation:
+
+  ###########################################################################
+  # W1 – CALENDAR PRE-HEAT  (every 5 min)
+  #
+  # Checks BOTH calendars. If either has an event starting within the
+  # pre-heat window (default 15 min before start), switches on.
+  # Only covers the window BEFORE the event starts. Once the session
+  # is underway, W2/W3 (motion) are solely responsible for keeping
+  # it on or switching it off. This means no wasted energy if no one
+  # uses the kitchen or toilets during a session.
+  ###########################################################################
+  - id: scout_water_heater_calendar_check
+    alias: "[Water Heater] Calendar pre-heat"
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition: []
+    action:
+      - service: calendar.get_events
+        target:
+          entity_id:
+            - calendar.pelsall_hall_bookings
+            - calendar.pelsall_office_bookings
+        data:
+          start_date_time: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          end_date_time: "{{ (now() + timedelta(minutes=states('input_number.scout_water_preheat_minutes') | int(15))).strftime('%Y-%m-%d %H:%M:%S') }}"
+        response_variable: wh_events
+      - variables:
+          a_events: "{{ wh_events['calendar.pelsall_hall_bookings']['events'] | default([]) }}"
+          b_events: "{{ wh_events['calendar.pelsall_office_bookings']['events'] | default([]) }}"
+          a_preheating: >
+            {{ is_state('calendar.pelsall_hall_bookings', 'on') or a_events | length > 0 }}
+          b_preheating: >
+            {{ is_state('calendar.pelsall_office_bookings', 'on') or b_events | length > 0 }}
+          either_preheating: "{{ a_preheating or b_preheating }}"
+          manual_on: "{{ is_state('input_boolean.scout_water_heater_manual_override', 'on') }}"
+
+      - choose:
+          # Pre-heat window active – switch on
+          - conditions:
+              - condition: template
+                value_template: "{{ either_preheating or manual_on }}"
+            sequence:
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.kitchen_water_heater_water_heater
+
+  ###########################################################################
+  # W2 – MOTION IN KITCHEN OR TOILETS → TURN ON
+  #
+  # If any of the three sensors triggers and the water heater is off,
+  # switch it on immediately.
+  ###########################################################################
+  - id: scout_water_heater_motion_on
+    alias: "[Water Heater] Motion detected → on"
+    trigger:
+      - platform: state
+        entity_id:
+          - input_boolean.kitchen_motion_sensor
+          - input_boolean.gents_motion_sensor
+          - input_boolean.female_motion_sensor
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: switch.kitchen_water_heater_water_heater
+        state: "off"
+      - condition: template
+        value_template: >
+          {{ not (is_state('input_boolean.alarm_main', 'on')
+                  and is_state('input_boolean.alarm_office', 'on')) }}
+    action:
+      # Record which sensor triggered using the shared heating timestamps
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.entity_id == 'input_boolean.kitchen_motion_sensor' }}"
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.scout_last_motion_kitchen
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.entity_id == 'input_boolean.gents_motion_sensor' }}"
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.scout_last_motion_gents
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.entity_id == 'input_boolean.female_motion_sensor' }}"
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.scout_last_motion_female
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+      - service: switch.turn_on
+        target:
+          entity_id: switch.kitchen_water_heater_water_heater
+
+  ###########################################################################
+  # W3 – MOTION KEEP-ALIVE TIMEOUT → TURN OFF
+  #
+  # When all three motion sensors have been clear for MOTION_KEEPALIVE
+  # minutes, switch the water heater off. This applies during sessions too –
+  # if no one has used the kitchen or toilets, there is no point keeping
+  # the water hot. Motion in any of the three areas resets the countdown.
+  ###########################################################################
+  - id: scout_water_heater_motion_timeout
+    alias: "[Water Heater] No motion → off"
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_water_heater_manual_override
+        state: "off"
+      # Switch off when last motion across kitchen/toilet sensors exceeds keepalive
+      - condition: template
+        value_template: >
+          {% set timeout = states('input_number.scout_water_motion_keepalive_minutes') | int(60) * 60 %}
+          {% set now_ts = as_timestamp(now()) %}
+          {% set sensors = [
+               'input_datetime.scout_last_motion_kitchen',
+               'input_datetime.scout_last_motion_gents',
+               'input_datetime.scout_last_motion_female'
+             ] %}
+          {% set last_any = sensors
+               | map('states')
+               | reject('eq', 'unknown')
+               | map('as_timestamp')
+               | list %}
+          {{ last_any | length == 0
+             or (now_ts - (last_any | max)) > timeout }}
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.kitchen_water_heater_water_heater
+
+  ###########################################################################
+  # W4 – MANUAL OVERRIDE ON → SWITCH ON IMMEDIATELY
+  ###########################################################################
+  - id: scout_water_heater_manual_on
+    alias: "[Water Heater] Manual override on"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.scout_water_heater_manual_override
+        to: "on"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.kitchen_water_heater_water_heater
+
+  ###########################################################################
+  # W5 – MANUAL OVERRIDE OFF → RE-EVALUATE
+  #
+  # When override is cleared, don't just switch off – check whether a
+  # calendar event or recent motion should keep it running.
+  ###########################################################################
+  - id: scout_water_heater_manual_off
+    alias: "[Water Heater] Manual override off"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.scout_water_heater_manual_override
+        to: "off"
+    action:
+      # Kick the calendar check automation to re-evaluate immediately
+      - service: automation.trigger
+        target:
+          entity_id: automation.scout_water_heater_calendar_pre_heat_check
+
+  ###########################################################################
+  # W6 – NIGHTLY SAFETY NET  (00:10)
+  #
+  # Switches the water heater off overnight regardless of state.
+  # Runs 5 minutes after the heating safety net to avoid any race.
+  ###########################################################################
+  - id: scout_water_heater_nightly_off
+    alias: "[Water Heater] Nightly off"
+    trigger:
+      - platform: time
+        at: "00:10:00"
+    condition:
+      # Skip if a genuine overnight event is running
+      - condition: template
+        value_template: >
+          {{ not is_state('calendar.pelsall_hall_bookings', 'on')
+             and not is_state('calendar.pelsall_office_bookings', 'on') }}
+      - condition: state
+        entity_id: input_boolean.scout_water_heater_manual_override
+        state: "off"
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.kitchen_water_heater_water_heater
+
+
+
+  ###########################################################################
+  # W7 – STARTUP INITIALISATION
+  #
+  # On HA start, re-evaluate whether the water heater should be on based
+  # on calendar and motion state. Waits 30 seconds for integrations to load.
+  ###########################################################################
+  - id: scout_water_heater_startup
+    alias: "[Water Heater] Startup initialise"
+    trigger:
+      - platform: homeassistant
+        event: start
+    action:
+      - delay:
+          seconds: 30
+      - service: automation.trigger
+        target:
+          entity_id: automation.scout_water_heater_calendar_check
+
+
+  ###########################################################################
+  # W8 – ALARM SET: SWITCH OFF WATER HEATER
+  #
+  # When both alarms are set the building is locked. Switch the water heater
+  # off unless there is a calendar event active (pre-heat for next session)
+  # or the manual override is on.
+  # Triggers when either alarm is set and checks the other is also set,
+  # so the water heater only stops when the whole building is locked.
+  ###########################################################################
+  - id: scout_water_heater_alarm_set
+    alias: "[Water Heater] Alarm set, switch off"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.alarm_main
+        to: "on"
+      - platform: state
+        entity_id: input_boolean.alarm_office
+        to: "on"
+    condition:
+      # Both alarms must be set for the whole building to be locked
+      - condition: state
+        entity_id: input_boolean.alarm_main
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.alarm_office
+        state: "on"
+      # Don't switch off if a calendar event is active
+      - condition: template
+        value_template: >
+          {{ not is_state('calendar.pelsall_hall_bookings', 'on')
+             and not is_state('calendar.pelsall_office_bookings', 'on') }}
+      # Don't switch off if manual override is on
+      - condition: state
+        entity_id: input_boolean.scout_water_heater_manual_override
+        state: "off"
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.kitchen_water_heater_water_heater
+
+  ###########################################################################
+  # W9 – ALARM CLEARED: RE-EVALUATE
+  # When either alarm clears, re-run the calendar check in case a session
+  # is about to start and the water heater needs to pre-heat.
+  ###########################################################################
+  - id: scout_water_heater_alarm_cleared
+    alias: "[Water Heater] Alarm cleared, re-evaluate"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.alarm_main
+        to: "off"
+      - platform: state
+        entity_id: input_boolean.alarm_office
+        to: "off"
+    action:
+      - service: automation.trigger
+        target:
+          entity_id: automation.scout_water_heater_calendar_check
+
+###############################################################################
+# QUICK REFERENCE  – the only entity IDs to change  (<CHANGE_ME>)
+# =============================================================================
+#
+#  WATER HEATER SWITCH
+#    switch.kitchen_water_heater_water_heater         → your Shelly switch entity
+#                                        (find it in Settings → Devices →
+#                                         your Shelly device)
+#
+#  MOTION SENSORS  (3 sensors)
+#    input_boolean.kitchen_motion_sensor        → kitchen PIR
+#    input_boolean.gents_motion_sensor    → male toilets PIR
+#    input_boolean.female_motion_sensor  → female toilets PIR
+#
+#  CALENDARS  (same entities as the heating package – use Find & Replace)
+#    calendar.pelsall_hall_bookings          → Zone A ICS calendar entity
+#    calendar.pelsall_office_bookings          → Zone B ICS calendar entity
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# DASHBOARD CONTROLS  (no restart needed after initial setup)
+# ─────────────────────────────────────────────────────────────────────────────
+#  🚿 Water heater pre-heat lead time    slider   default: 15 min
+#  🚿 Keep on after motion               slider   default: 60 min
+#  🚿 Manual override                    toggle   turns on immediately;
+#                                                 clear to return to automation
+###############################################################################

@@ -1,0 +1,175 @@
+"""Constants for the Scout Hut Heating integration."""
+
+from __future__ import annotations
+
+from datetime import timedelta
+
+DOMAIN = "scout_hut_heating"
+
+# How often the reconciler re-evaluates every zone. The original package used
+# a mix of 1 and 5 minute time_pattern triggers; a single 30 second tick keeps
+# behaviour responsive while remaining light.
+RECONCILE_INTERVAL = timedelta(seconds=30)
+
+# Delay after Home Assistant start before the first reconcile, so the Rointe,
+# calendar and weather integrations have time to load (mirrors the original
+# startup automations that waited 30 seconds).
+STARTUP_DELAY = timedelta(seconds=30)
+
+# Rointe / climate preset names used throughout.
+PRESET_COMFORT = "comfort"
+PRESET_ECO = "eco"
+PRESET_ICE = "ice"
+
+# ---------------------------------------------------------------------------
+# Config entry keys (entity mappings collected by the config flow)
+# ---------------------------------------------------------------------------
+# Climate zones
+CONF_HALL_CLIMATES = "hall_climates"
+CONF_OFFICE_CLIMATES = "office_climates"
+CONF_SHARED_CLIMATES = "shared_climates"
+
+# Rointe number entities used to push comfort / eco target temperatures onto
+# the hall heaters before a preset is applied.
+CONF_HALL_COMFORT_NUMBERS = "hall_comfort_numbers"
+CONF_HALL_ECO_NUMBERS = "hall_eco_numbers"
+
+# Motion sensors (binary_sensor or input_boolean)
+CONF_MOTION_HALL = "motion_hall"
+CONF_MOTION_OFFICE = "motion_office"
+CONF_MOTION_KITCHEN = "motion_kitchen"
+CONF_MOTION_GENTS = "motion_gents"
+CONF_MOTION_FEMALE = "motion_female"
+
+# Opening (contact) sensors
+CONF_ZONE_A_DOORS = "zone_a_doors"
+CONF_ZONE_A_WINDOWS = "zone_a_windows"
+CONF_ZONE_B_DOORS = "zone_b_doors"
+CONF_ZONE_B_WINDOWS = "zone_b_windows"
+CONF_SHARED_WINDOWS = "shared_windows"
+CONF_INTERNAL_DOOR = "internal_door"
+
+# Calendars, weather and alarm
+CONF_CALENDAR_HALL = "calendar_hall"
+CONF_CALENDAR_OFFICE = "calendar_office"
+CONF_WEATHER = "weather_entity"
+CONF_REALFEEL = "realfeel_sensor"
+CONF_ALARM_MAIN = "alarm_main"
+CONF_ALARM_OFFICE = "alarm_office"
+
+# Water heater switch
+CONF_WATER_SWITCH = "water_switch"
+
+# Every mapping key, grouped for the config flow / options flow.
+MULTI_ENTITY_KEYS = (
+    CONF_HALL_CLIMATES,
+    CONF_OFFICE_CLIMATES,
+    CONF_SHARED_CLIMATES,
+    CONF_HALL_COMFORT_NUMBERS,
+    CONF_HALL_ECO_NUMBERS,
+    CONF_ZONE_A_DOORS,
+    CONF_ZONE_A_WINDOWS,
+    CONF_ZONE_B_DOORS,
+    CONF_ZONE_B_WINDOWS,
+    CONF_SHARED_WINDOWS,
+)
+
+SINGLE_ENTITY_KEYS = (
+    CONF_MOTION_HALL,
+    CONF_MOTION_OFFICE,
+    CONF_MOTION_KITCHEN,
+    CONF_MOTION_GENTS,
+    CONF_MOTION_FEMALE,
+    CONF_INTERNAL_DOOR,
+    CONF_CALENDAR_HALL,
+    CONF_CALENDAR_OFFICE,
+    CONF_WEATHER,
+    CONF_REALFEEL,
+    CONF_ALARM_MAIN,
+    CONF_ALARM_OFFICE,
+    CONF_WATER_SWITCH,
+)
+
+# Optional single-entity keys (setup can complete without them).
+OPTIONAL_KEYS = (
+    CONF_INTERNAL_DOOR,
+    CONF_REALFEEL,
+    CONF_ALARM_MAIN,
+    CONF_ALARM_OFFICE,
+    CONF_HALL_COMFORT_NUMBERS,
+    CONF_HALL_ECO_NUMBERS,
+    CONF_SHARED_CLIMATES,
+    CONF_WATER_SWITCH,
+    CONF_MOTION_KITCHEN,
+    CONF_MOTION_GENTS,
+    CONF_MOTION_FEMALE,
+)
+
+# ---------------------------------------------------------------------------
+# Tunable helper entities owned by this integration
+# ---------------------------------------------------------------------------
+# key: (min, max, step, default, unit)
+NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
+    "preheat_minutes": (0, 120, 5, 120, "min"),
+    "motion_timeout_minutes": (5, 60, 5, 15, "min"),
+    "door_ice_minutes": (2, 30, 1, 10, "min"),
+    "window_ice_minutes": (5, 60, 5, 10, "min"),
+    "seasonal_lockout_temp": (10, 20, 0.5, 15, "°C"),
+    "hall_comfort_temp": (16, 24, 0.5, 22, "°C"),
+    "hall_eco_temp": (10, 20, 0.5, 18, "°C"),
+    "hall_eco_low_temp": (8, 18, 0.5, 14, "°C"),
+    "water_preheat_minutes": (5, 30, 5, 15, "min"),
+    "water_motion_keepalive_minutes": (15, 120, 15, 60, "min"),
+}
+
+NUMBER_ICONS: dict[str, str] = {
+    "preheat_minutes": "mdi:radiator",
+    "motion_timeout_minutes": "mdi:timer-outline",
+    "door_ice_minutes": "mdi:door-open",
+    "window_ice_minutes": "mdi:window-open",
+    "seasonal_lockout_temp": "mdi:thermometer-chevron-up",
+    "hall_comfort_temp": "mdi:thermometer-high",
+    "hall_eco_temp": "mdi:thermometer-low",
+    "hall_eco_low_temp": "mdi:thermometer-minus",
+    "water_preheat_minutes": "mdi:water-boiler",
+    "water_motion_keepalive_minutes": "mdi:timer-outline",
+}
+
+BOOST_OPTIONS = ["30 min", "60 min", "90 min"]
+BOOST_DEFAULT = "60 min"
+
+# User-facing switches: key -> default state (True = on)
+SWITCH_DEFS: dict[str, bool] = {
+    "zone_a_automation_enabled": True,
+    "zone_b_automation_enabled": True,
+    "zone_a_occupied_override": False,
+    "zone_b_occupied_override": False,
+    "water_manual_override": False,
+}
+
+SWITCH_ICONS: dict[str, str] = {
+    "zone_a_automation_enabled": "mdi:calendar-check",
+    "zone_b_automation_enabled": "mdi:calendar-check",
+    "zone_a_occupied_override": "mdi:account-check",
+    "zone_b_occupied_override": "mdi:account-check",
+    "water_manual_override": "mdi:water-boiler-alert",
+}
+
+DEFAULT_ECO_KEYWORDS = "sal-vation,test"
+
+# Zones handled by the reconciler.
+ZONE_A = "zone_a"
+ZONE_B = "zone_b"
+
+# Persistent notification ids (kept stable so we can dismiss them).
+NOTIFY_ZONE_OPENING = {
+    ZONE_A: "scout_zone_a_opening_ice",
+    ZONE_B: "scout_zone_b_opening_ice",
+}
+NOTIFY_ZONE_HOLD = {
+    ZONE_A: "scout_zone_a_manual_hold",
+    ZONE_B: "scout_zone_b_manual_hold",
+}
+NOTIFY_SHARED_OPENING = "scout_shared_opening_ice"
+NOTIFY_INTERNAL_DOOR = "scout_internal_door_exterior_open"
+NOTIFY_SEASONAL = "scout_seasonal_lockout"

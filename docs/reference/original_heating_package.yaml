@@ -1,0 +1,2774 @@
+###############################################################################
+# SCOUT HUT – ROINTE HEATING AUTOMATION PACKAGE  v6
+# Pelsall Scout Hut
+# =============================================================================
+#
+# REMAINING PLACEHOLDERS  (everything else is fully configured)
+# -------------------------------------------------------------
+# Search for REPLACE_ME to find the items still needing your input:
+#
+#   climate.hall_back through _4  – Zone A (Hall) Rointe entities
+#   climate.office             – Zone B (Office) Rointe entity
+#   climate.kitchen             – Shared zone (toilets/kitchen) heater(s)
+#   input_boolean.hall_motion_sensor                 – Zone A hall motion sensor
+#   input_boolean.office_motion_sensor               – Zone B office motion sensor
+#   climate.hall_back              – First Zone A heater (for drift detection)
+#   climate.office              – First Zone B heater (for drift detection)
+#
+# All door/window sensors, calendars, and group logic are fully configured.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# SENSOR LAYOUT  (Pelsall)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  Zone A (Hall)
+#    Doors:   front_door, front_fire_door, rear_fire_door_left, rear_fire_door_right
+#    Windows: hall_front_left, hall_front_right, hall_right_back,
+#             hall_right_front, hall_right_middle
+#    Internal door (shared with Zone B): office_internal_door
+#
+#  Zone B (Office)
+#    Doors:   office_external_door + office_internal_door (shared with A)
+#    Windows: office_window
+#
+#  Shared Zone (Toilets + Kitchen)
+#    No heating zone per se – but pre-heats on either calendar event.
+#    Windows: female_toilets_contact_sensor, gents_toilet_contact_sensor,
+#             kitchen_contact_sensor
+#    These do NOT affect Zone A or B heating – they are informational only
+#    and feed the water heater automation.
+#
+#  Internal door (office_internal_door_contact_sensor):
+#    NOT in any sensor group. Only triggers ice if an exterior opening is
+#    also open (creating a heat-loss path to outside). If all exterior
+#    doors and windows are closed, the internal door being open is harmless
+#    – the two zones simply share air.
+#
+###############################################################################
+
+
+###############################################################################
+# SECTION 1 – HELPERS
+###############################################################################
+
+input_number:
+
+  scout_preheat_minutes:
+    name: "🏕 Pre-heat lead time (min)"
+    min: 0
+    max: 120
+    step: 5
+    initial: 120
+    unit_of_measurement: "min"
+    icon: mdi:radiator
+
+  scout_motion_timeout_minutes:
+    name: "🏕 No-motion eco timeout (min)"
+    min: 5
+    max: 60
+    step: 5
+    initial: 15
+    unit_of_measurement: "min"
+    icon: mdi:timer-outline
+
+  scout_opening_ignore_minutes:
+    name: "🏕 Opening: ignore if under (min)"
+    min: 1
+    max: 10
+    step: 1
+    initial: 3
+    unit_of_measurement: "min"
+    icon: mdi:clock-fast
+
+  scout_door_ice_minutes:
+    name: "🏕 Door: drop to ice after (min)"
+    min: 2
+    max: 30
+    step: 1
+    initial: 10
+    unit_of_measurement: "min"
+    icon: mdi:door-open
+
+  scout_window_ice_minutes:
+    name: "🏕 Window: drop to ice after (min)"
+    min: 5
+    max: 60
+    step: 5
+    initial: 10
+    unit_of_measurement: "min"
+    icon: mdi:window-open
+
+  scout_seasonal_lockout_temp:
+    name: "🏕 Seasonal lockout: 3-day avg threshold (°C)"
+    min: 10
+    max: 20
+    step: 0.5
+    initial: 15
+    unit_of_measurement: "°C"
+    icon: mdi:thermometer-chevron-up
+
+  # ── Hall temperature targets ───────────────────────────────────────────────
+  # These are applied to the Rointe number entities before the preset is set.
+  # Changing them here takes effect at the next calendar pre-heat poll.
+  scout_hall_comfort_temp:
+    name: "🏕 Hall: Comfort temperature (°C)"
+    min: 16
+    max: 24
+    step: 0.5
+    initial: 22
+    unit_of_measurement: "°C"
+    icon: mdi:thermometer-high
+
+  scout_hall_eco_temp:
+    name: "🏕 Hall: Eco temperature (°C)"
+    min: 10
+    max: 20
+    step: 0.5
+    initial: 18
+    unit_of_measurement: "°C"
+    icon: mdi:thermometer-low
+
+  scout_hall_eco_low_temp:
+    name: "🏕 Hall: Eco LOW temperature – ECO bookings (°C)"
+    min: 8
+    max: 18
+    step: 0.5
+    initial: 14
+    unit_of_measurement: "°C"
+    icon: mdi:thermometer-minus
+
+
+input_select:
+
+  scout_boost_duration:
+    name: "🏕 Boost duration"
+    options:
+      - "30 min"
+      - "60 min"
+      - "90 min"
+    initial: "60 min"
+    icon: mdi:fire
+
+  scout_zone_a_expected_preset:
+    name: "🏕 Zone A – Expected preset"
+    options: ["comfort", "eco", "ice", "unknown"]
+    initial: "unknown"
+    icon: mdi:thermometer-check
+
+  scout_zone_b_expected_preset:
+    name: "🏕 Zone B – Expected preset"
+    options: ["comfort", "eco", "ice", "unknown"]
+    initial: "unknown"
+    icon: mdi:thermometer-check
+
+
+input_boolean:
+
+  scout_zone_a_automation_enabled:
+    name: "🏕 Zone A (Hall) – Automation enabled"
+    icon: mdi:calendar-check
+
+  scout_zone_b_automation_enabled:
+    name: "🏕 Zone B (Office) – Automation enabled"
+    icon: mdi:calendar-check
+
+  scout_zone_a_occupied_override:
+    name: "🏕 Zone A (Hall) – Manual occupied override"
+    icon: mdi:account-check
+
+  scout_zone_b_occupied_override:
+    name: "🏕 Zone B (Office) – Manual occupied override"
+    icon: mdi:account-check
+
+  scout_zone_a_boost_active:
+    name: "🏕 Zone A (Hall) – Boost active"
+    icon: mdi:fire
+
+  scout_zone_b_boost_active:
+    name: "🏕 Zone B (Office) – Boost active"
+    icon: mdi:fire
+
+  # Turning these on cancels a running boost immediately
+  scout_zone_a_boost_cancel:
+    name: "🏕 Zone A (Hall) – Cancel boost"
+    icon: mdi:fire-off
+
+  scout_zone_b_boost_cancel:
+    name: "🏕 Zone B (Office) – Cancel boost"
+    icon: mdi:fire-off
+
+  scout_zone_a_manual_hold:
+    name: "🏕 Zone A (Hall) – Manual hold (Rointe app override)"
+    icon: mdi:hand-back-right
+
+  scout_zone_b_manual_hold:
+    name: "🏕 Zone B (Office) – Manual hold (Rointe app override)"
+    icon: mdi:hand-back-right
+
+  scout_seasonal_lockout_active:
+    name: "🏕 Seasonal lockout active"
+    icon: mdi:leaf
+
+  scout_zone_a_opening_ice_active:
+    name: "🏕 Zone A (Hall) – Opening ice active"
+    icon: mdi:snowflake-alert
+
+  scout_zone_b_opening_ice_active:
+    name: "🏕 Zone B (Office) – Opening ice active"
+    icon: mdi:snowflake-alert
+
+  scout_shared_opening_ice_active:
+    name: "🏕 Shared zone – Opening ice active"
+    icon: mdi:snowflake-alert
+
+
+input_datetime:
+
+  # Last-seen motion timestamps – updated every time a motion sensor fires.
+  # Used to track "was there motion recently?" rather than "is motion active now?"
+  # which solves the pulse-only sensor problem.
+  scout_last_motion_hall:
+    name: "🏕 Last motion – Hall"
+    has_date: true
+    has_time: true
+
+  scout_last_motion_office:
+    name: "🏕 Last motion – Office"
+    has_date: true
+    has_time: true
+
+  scout_last_motion_kitchen:
+    name: "🏕 Last motion – Kitchen"
+    has_date: true
+    has_time: true
+
+  scout_last_motion_gents:
+    name: "🏕 Last motion – Gents"
+    has_date: true
+    has_time: true
+
+  scout_last_motion_female:
+    name: "🏕 Last motion – Female toilets"
+    has_date: true
+    has_time: true
+
+
+input_text:
+
+  scout_eco_keywords:
+    name: "🏕 ECO keyword blocklist (comma-separated)"
+    initial: "sal-vation,test"
+    max: 255
+    icon: mdi:format-list-bulleted
+
+
+###############################################################################
+# SECTION 2 – SENSOR GROUPS
+#
+# All contact sensors at Pelsall are input_boolean entities, so we use
+# template binary_sensors to group them rather than the binary_sensor
+# group platform (which only works with binary_sensor entities).
+#
+# Each group evaluates to ON if ANY member is open (ON), OFF if ALL closed.
+###############################################################################
+
+template:
+  - binary_sensor:
+
+      # ── Zone A (Hall) door group ──────────────────────────────────────────
+      # 4 external hall doors only. Internal door is NOT included –
+      # it only matters if an exterior opening is also open (see A12).
+      - name: "Scout Zone A – Any exterior door open"
+        unique_id: scout_zone_a_doors_group
+        device_class: door
+        state: >
+          {{ is_state('input_boolean.front_door_contact_sensor', 'on')
+             or is_state('input_boolean.front_fire_door_contact_sensor', 'on')
+             or is_state('input_boolean.rear_fire_door_left_contact_sensor', 'on')
+             or is_state('input_boolean.rear_fire_door_right_contact_sensor', 'on') }}
+
+      # ── Zone A (Hall) window group ────────────────────────────────────────
+      - name: "Scout Zone A – Any window open"
+        unique_id: scout_zone_a_windows_group
+        device_class: window
+        state: >
+          {{ is_state('input_boolean.hall_front_left_contact_sensor', 'on')
+             or is_state('input_boolean.hall_front_right_contact_sensor', 'on')
+             or is_state('input_boolean.hall_right_back_contact_sensor', 'on')
+             or is_state('input_boolean.hall_right_front_contact_sensor', 'on')
+             or is_state('input_boolean.hall_right_middle_contact_sensor', 'on') }}
+
+      # ── Zone A (Hall) all openings – restore check ────────────────────────
+      - name: "Scout Zone A – Any exterior opening open"
+        unique_id: scout_zone_a_all_openings_group
+        device_class: opening
+        state: >
+          {{ is_state('input_boolean.front_door_contact_sensor', 'on')
+             or is_state('input_boolean.front_fire_door_contact_sensor', 'on')
+             or is_state('input_boolean.rear_fire_door_left_contact_sensor', 'on')
+             or is_state('input_boolean.rear_fire_door_right_contact_sensor', 'on')
+             or is_state('input_boolean.hall_front_left_contact_sensor', 'on')
+             or is_state('input_boolean.hall_front_right_contact_sensor', 'on')
+             or is_state('input_boolean.hall_right_back_contact_sensor', 'on')
+             or is_state('input_boolean.hall_right_front_contact_sensor', 'on')
+             or is_state('input_boolean.hall_right_middle_contact_sensor', 'on') }}
+
+      # ── Zone B (Office) door group ────────────────────────────────────────
+      - name: "Scout Zone B – Any exterior door open"
+        unique_id: scout_zone_b_doors_group
+        device_class: door
+        state: >
+          {{ is_state('input_boolean.office_external_door_contact_sensor', 'on') }}
+
+      # ── Zone B (Office) window group ──────────────────────────────────────
+      - name: "Scout Zone B – Any window open"
+        unique_id: scout_zone_b_windows_group
+        device_class: window
+        state: >
+          {{ is_state('input_boolean.office_window_contact_sensor', 'on') }}
+
+      # ── Zone B (Office) all openings ──────────────────────────────────────
+      - name: "Scout Zone B – Any exterior opening open"
+        unique_id: scout_zone_b_all_openings_group
+        device_class: opening
+        state: >
+          {{ is_state('input_boolean.office_external_door_contact_sensor', 'on')
+             or is_state('input_boolean.office_window_contact_sensor', 'on') }}
+
+      # ── Outdoor RealFeel warm flag ─────────────────────────────────────────
+      - name: "Scout – Feels warm outside (RealFeel)"
+        unique_id: scout_outdoor_is_warm
+        state: >
+          {{ states('sensor.1st_pelsall_scouts_realfeel_temperature') | float(0)
+             >= states('input_number.scout_seasonal_lockout_temp') | float(15) }}
+
+  - sensor:
+      # ── Current outdoor temperature ───────────────────────────────────────
+      - name: "Scout – Outdoor temp (current)"
+        unique_id: scout_outdoor_temp_current
+        unit_of_measurement: "°C"
+        state: >
+          {{ state_attr('weather.1st_pelsall_scouts', 'temperature') | float(0) }}
+
+
+script:
+
+  scout_set_zone_a_preset:
+    alias: "Scout – Set Zone A (Hall) preset"
+    mode: restart
+    fields:
+      preset:
+        description: "comfort, eco or ice"
+      from_boost:
+        description: "true to bypass seasonal lockout (boost use only)"
+    sequence:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_automation_enabled
+                state: "off"
+            sequence:
+              - service: system_log.write
+                data:
+                  message: "Scout Zone A: automation disabled, skipping"
+                  level: debug
+
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_manual_hold
+                state: "on"
+            sequence:
+              - service: system_log.write
+                data:
+                  message: "Scout Zone A: manual hold active, skipping"
+                  level: debug
+
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_boost_active
+                state: "on"
+              - condition: template
+                value_template: "{{ not (from_boost | default(false)) }}"
+            sequence:
+              - service: system_log.write
+                data:
+                  message: "Scout Zone A: boost active, skipping lower-priority call"
+                  level: debug
+
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_seasonal_lockout_active
+                state: "on"
+              - condition: template
+                value_template: >
+                  {{ preset != 'ice' and not (from_boost | default(false)) }}
+            sequence:
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.hall_back
+                    - climate.hall_front
+                    - climate.hall_left
+                    - climate.hall_right
+                data:
+                  preset_mode: ice
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.scout_zone_a_expected_preset
+                data:
+                  option: ice
+
+          - conditions:
+              - condition: template
+                value_template: "{{ preset in ['comfort','eco','ice'] }}"
+            sequence:
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.hall_back
+                    - climate.hall_front
+                    - climate.hall_left
+                    - climate.hall_right
+                data:
+                  preset_mode: "{{ preset }}"
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.scout_zone_a_expected_preset
+                data:
+                  option: "{{ preset }}"
+
+  scout_set_zone_b_preset:
+    alias: "Scout – Set Zone B (Office) preset"
+    mode: restart
+    fields:
+      preset:
+        description: "comfort, eco or ice"
+      from_boost:
+        description: "true to bypass seasonal lockout (boost use only)"
+    sequence:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_b_automation_enabled
+                state: "off"
+            sequence:
+              - service: system_log.write
+                data:
+                  message: "Scout Zone B: automation disabled, skipping"
+                  level: debug
+
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_b_manual_hold
+                state: "on"
+            sequence:
+              - service: system_log.write
+                data:
+                  message: "Scout Zone B: manual hold active, skipping"
+                  level: debug
+
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_b_boost_active
+                state: "on"
+              - condition: template
+                value_template: "{{ not (from_boost | default(false)) }}"
+            sequence:
+              - service: system_log.write
+                data:
+                  message: "Scout Zone B: boost active, skipping lower-priority call"
+                  level: debug
+
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_seasonal_lockout_active
+                state: "on"
+              - condition: template
+                value_template: >
+                  {{ preset != 'ice' and not (from_boost | default(false)) }}
+            sequence:
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.office
+                data:
+                  preset_mode: ice
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.scout_zone_b_expected_preset
+                data:
+                  option: ice
+
+          - conditions:
+              - condition: template
+                value_template: "{{ preset in ['comfort','eco','ice'] }}"
+            sequence:
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.office
+                data:
+                  preset_mode: "{{ preset }}"
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.scout_zone_b_expected_preset
+                data:
+                  option: "{{ preset }}"
+
+  # ---------------------------------------------------------------------------
+  # scout_restore_zone_a / _b
+  # Resolves what the zone should currently be running and applies it.
+  # ---------------------------------------------------------------------------
+  scout_restore_zone_a:
+    alias: "Scout – Restore Zone A (Hall) to correct preset"
+    mode: single
+    sequence:
+      - variables:
+          cal_on:      "{{ is_state('calendar.pelsall_hall_bookings', 'on') }}"
+          manual_on:   "{{ is_state('input_boolean.scout_zone_a_occupied_override', 'on') }}"
+          boost_on:    "{{ is_state('input_boolean.scout_zone_a_boost_active', 'on') }}"
+          event_title: "{{ state_attr('calendar.pelsall_hall_bookings', 'message') | default('') | lower }}"
+          eco_keywords: >
+            {{ states('input_text.scout_eco_keywords').split(',') | map('trim') | list }}
+          restore_preset: >
+            {% if boost_on %}
+              comfort
+            {% elif cal_on %}
+              {% set found = eco_keywords | select('in', event_title) | list %}
+              {{ 'eco' if found | length > 0 else 'comfort' }}
+            {% elif manual_on %}
+              eco
+            {% else %}
+              ice
+            {% endif %}
+      - service: script.scout_set_zone_a_preset
+        data:
+          preset: "{{ restore_preset }}"
+
+  scout_restore_zone_b:
+    alias: "Scout – Restore Zone B (Office) to correct preset"
+    mode: single
+    sequence:
+      - variables:
+          cal_on:      "{{ is_state('calendar.pelsall_office_bookings', 'on') }}"
+          manual_on:   "{{ is_state('input_boolean.scout_zone_b_occupied_override', 'on') }}"
+          boost_on:    "{{ is_state('input_boolean.scout_zone_b_boost_active', 'on') }}"
+          event_title: "{{ state_attr('calendar.pelsall_office_bookings', 'message') | default('') | lower }}"
+          eco_keywords: >
+            {{ states('input_text.scout_eco_keywords').split(',') | map('trim') | list }}
+          restore_preset: >
+            {% if boost_on %}
+              comfort
+            {% elif cal_on %}
+              {% set found = eco_keywords | select('in', event_title) | list %}
+              {{ 'eco' if found | length > 0 else 'comfort' }}
+            {% elif manual_on %}
+              eco
+            {% else %}
+              ice
+            {% endif %}
+      - service: script.scout_set_zone_b_preset
+        data:
+          preset: "{{ restore_preset }}"
+
+  # ---------------------------------------------------------------------------
+  # Dashboard boost entry points
+  # ---------------------------------------------------------------------------
+  scout_boost_zone_a:
+    alias: "Scout – Boost Zone A (Hall)"
+    sequence:
+      - event: scout_boost_zone_a
+
+  scout_boost_zone_b:
+    alias: "Scout – Boost Zone B (Office)"
+    sequence:
+      - event: scout_boost_zone_b
+
+  # ---------------------------------------------------------------------------
+  # scout_apply_hall_temperatures
+  #   Sets the eco/comfort temperature on all hall heaters to match the
+  #   configured helpers, then re-applies the current preset so the new
+  #   temperature takes effect immediately.
+  #   Called by the calendar pre-heat automation before applying a preset.
+  #   Fields:
+  #     preset      – comfort | eco | eco_low (eco_low uses the low eco temperature)
+  # ---------------------------------------------------------------------------
+  scout_apply_hall_temperatures:
+    alias: "Scout – Set hall temperatures and reapply preset"
+    mode: restart
+    fields:
+      preset:
+        description: "comfort, eco or eco_low – eco_low uses the low eco temperature"
+    sequence:
+      - variables:
+          comfort_temp: "{{ states('input_number.scout_hall_comfort_temp') | float(22) }}"
+          eco_temp:     "{{ states('input_number.scout_hall_eco_temp') | float(18) }}"
+          eco_low_temp: "{{ states('input_number.scout_hall_eco_low_temp') | float(14) }}"
+          # Select eco temperature based on preset string, not a boolean flag
+          active_eco_temp: >
+            {{ eco_low_temp if preset == 'eco_low' else eco_temp }}
+
+      # Set comfort temperature on all hall heaters
+      - service: number.set_value
+        target:
+          entity_id:
+            - number.hall_back_comfort_temperature
+            - number.hall_front_comfort_temperature
+            - number.hall_left_comfort_temperature
+            - number.hall_right_comfort_temperature
+        data:
+          value: "{{ comfort_temp }}"
+
+      # Set eco temperature on all hall heaters
+      # (uses the low temp for ECO keyword bookings, normal eco otherwise)
+      - service: number.set_value
+        target:
+          entity_id:
+            - number.hall_back_eco_temperature
+            - number.hall_front_eco_temperature
+            - number.hall_left_eco_temperature
+            - number.hall_right_eco_temperature
+        data:
+          value: "{{ active_eco_temp }}"
+
+      # Reapply the preset so the new temperatures take effect immediately
+      # Map eco_low → eco preset (same preset, just different temperature)
+      - service: script.scout_set_zone_a_preset
+        data:
+          preset: "{{ 'eco' if preset == 'eco_low' else preset }}"
+
+
+###############################################################################
+# SECTION 5 – AUTOMATIONS
+###############################################################################
+
+automation:
+
+  ###########################################################################
+  # A1 – CALENDAR PRE-HEAT  Zone A (Hall)
+  # Uses calendar.get_events to fetch all events in the pre-heat window
+  # rather than relying on state attributes which only expose the next event.
+  ###########################################################################
+  - id: scout_calendar_zone_a_preheat
+    alias: "[Calendar] Hall: Pre-heat"
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_manual_hold
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_opening_ice_active
+        state: "off"
+    action:
+      - service: calendar.get_events
+        target:
+          entity_id: calendar.pelsall_hall_bookings
+        data:
+          start_date_time: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          end_date_time: "{{ (now() + timedelta(minutes=states('input_number.scout_preheat_minutes') | int(120))).strftime('%Y-%m-%d %H:%M:%S') }}"
+        response_variable: hall_events
+      - variables:
+          eco_keywords: >
+            {{ states('input_text.scout_eco_keywords').split(',') | map('trim') | list }}
+          events_list: "{{ hall_events['calendar.pelsall_hall_bookings']['events'] | default([]) }}"
+          current_event_title: >
+            {{ state_attr('calendar.pelsall_hall_bookings', 'message') | default('') | lower
+               if is_state('calendar.pelsall_hall_bookings', 'on') else '' }}
+          event_title: >
+            {% if is_state('calendar.pelsall_hall_bookings', 'on') %}
+              {{ current_event_title }}
+            {% elif events_list | length > 0 %}
+              {{ events_list[0].summary | default('') | lower }}
+            {% else %}
+              {{ '' }}
+            {% endif %}
+          in_window: >
+            {{ is_state('calendar.pelsall_hall_bookings', 'on') or events_list | length > 0 }}
+          is_eco_booking: >
+            {% set found = eco_keywords | select('in', event_title) | list %}
+            {{ found | length > 0 }}
+          desired_preset: >
+            {% if in_window %}
+              {% set found = eco_keywords | select('in', event_title) | list %}
+              {{ 'eco' if found | length > 0 else 'comfort' }}
+            {% else %}
+              ice
+            {% endif %}
+          motion_recent: >
+            {% set timeout = states('input_number.scout_motion_timeout_minutes') | int(15) * 60 %}
+            {% set now_ts = as_timestamp(now()) %}
+            {% set sensors = [
+                 'input_datetime.scout_last_motion_hall',
+                 'input_datetime.scout_last_motion_office',
+                 'input_datetime.scout_last_motion_kitchen',
+                 'input_datetime.scout_last_motion_gents',
+                 'input_datetime.scout_last_motion_female'
+               ] %}
+            {% set last_any = sensors
+                 | map('states')
+                 | reject('eq', 'unknown')
+                 | map('as_timestamp')
+                 | list %}
+            {{ last_any | length > 0 and (now_ts - (last_any | max)) <= timeout }}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ desired_preset != 'ice' }}"
+            sequence:
+              - service: script.scout_apply_hall_temperatures
+                data:
+                  preset: "{{ 'eco_low' if is_eco_booking else desired_preset }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ desired_preset == 'ice' and not motion_recent }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id:
+                    - number.hall_back_eco_temperature
+                    - number.hall_front_eco_temperature
+                    - number.hall_left_eco_temperature
+                    - number.hall_right_eco_temperature
+                data:
+                  value: "{{ states('input_number.scout_hall_eco_temp') | float(18) }}"
+              - service: script.scout_set_zone_a_preset
+                data:
+                  preset: ice
+
+  ###########################################################################
+  # A2 – CALENDAR PRE-HEAT  Zone B (Office)
+  ###########################################################################
+  - id: scout_calendar_zone_b_preheat
+    alias: "[Calendar] Office: Pre-heat"
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_manual_hold
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_opening_ice_active
+        state: "off"
+    action:
+      - service: calendar.get_events
+        target:
+          entity_id: calendar.pelsall_office_bookings
+        data:
+          start_date_time: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          end_date_time: "{{ (now() + timedelta(minutes=states('input_number.scout_preheat_minutes') | int(120))).strftime('%Y-%m-%d %H:%M:%S') }}"
+        response_variable: office_events
+      - variables:
+          eco_keywords: >
+            {{ states('input_text.scout_eco_keywords').split(',') | map('trim') | list }}
+          events_list: "{{ office_events['calendar.pelsall_office_bookings']['events'] | default([]) }}"
+          current_event_title: >
+            {{ state_attr('calendar.pelsall_office_bookings', 'message') | default('') | lower
+               if is_state('calendar.pelsall_office_bookings', 'on') else '' }}
+          event_title: >
+            {% if is_state('calendar.pelsall_office_bookings', 'on') %}
+              {{ current_event_title }}
+            {% elif events_list | length > 0 %}
+              {{ events_list[0].summary | default('') | lower }}
+            {% else %}
+              {{ '' }}
+            {% endif %}
+          in_window: >
+            {{ is_state('calendar.pelsall_office_bookings', 'on') or events_list | length > 0 }}
+          desired_preset: >
+            {% if in_window %}
+              {% set found = eco_keywords | select('in', event_title) | list %}
+              {{ 'eco' if found | length > 0 else 'comfort' }}
+            {% else %}
+              ice
+            {% endif %}
+          motion_recent: >
+            {% set timeout = states('input_number.scout_motion_timeout_minutes') | int(15) * 60 %}
+            {% set now_ts = as_timestamp(now()) %}
+            {% set sensors = [
+                 'input_datetime.scout_last_motion_hall',
+                 'input_datetime.scout_last_motion_office',
+                 'input_datetime.scout_last_motion_kitchen',
+                 'input_datetime.scout_last_motion_gents',
+                 'input_datetime.scout_last_motion_female'
+               ] %}
+            {% set last_any = sensors
+                 | map('states')
+                 | reject('eq', 'unknown')
+                 | map('as_timestamp')
+                 | list %}
+            {{ last_any | length > 0 and (now_ts - (last_any | max)) <= timeout }}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ desired_preset != 'ice' or not motion_recent }}"
+            sequence:
+              - service: script.scout_set_zone_b_preset
+                data:
+                  preset: "{{ desired_preset }}" 
+
+  ###########################################################################
+  # A3 – SHARED ZONE PRE-HEAT  (Toilets + Kitchen)
+  #
+  # Turns on shared zone heaters when EITHER calendar has an event in the
+  # pre-heat window. Turns off when both calendars are inactive.
+  # Not affected by door/window sensors or seasonal lockout.
+  ###########################################################################
+  - id: scout_calendar_shared_zone_preheat
+    alias: "[Calendar] Shared zone: Pre-heat"
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition: []
+    action:
+      - service: calendar.get_events
+        target:
+          entity_id:
+            - calendar.pelsall_hall_bookings
+            - calendar.pelsall_office_bookings
+        data:
+          start_date_time: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          end_date_time: "{{ (now() + timedelta(minutes=states('input_number.scout_preheat_minutes') | int(120))).strftime('%Y-%m-%d %H:%M:%S') }}"
+        response_variable: shared_events
+      - variables:
+          a_events: "{{ shared_events['calendar.pelsall_hall_bookings']['events'] | default([]) }}"
+          b_events: "{{ shared_events['calendar.pelsall_office_bookings']['events'] | default([]) }}"
+          a_in_window: >
+            {{ is_state('calendar.pelsall_hall_bookings', 'on') or a_events | length > 0 }}
+          b_in_window: >
+            {{ is_state('calendar.pelsall_office_bookings', 'on') or b_events | length > 0 }}
+          either_in_window: "{{ a_in_window or b_in_window }}"
+      - variables:
+          motion_recent: >
+            {% set timeout = states('input_number.scout_motion_timeout_minutes') | int(15) * 60 %}
+            {% set now_ts = as_timestamp(now()) %}
+            {% set sensors = [
+                 'input_datetime.scout_last_motion_hall',
+                 'input_datetime.scout_last_motion_office',
+                 'input_datetime.scout_last_motion_kitchen',
+                 'input_datetime.scout_last_motion_gents',
+                 'input_datetime.scout_last_motion_female'
+               ] %}
+            {% set last_any = sensors
+                 | map('states')
+                 | reject('eq', 'unknown')
+                 | map('as_timestamp')
+                 | list %}
+            {{ last_any | length > 0 and (now_ts - (last_any | max)) <= timeout }}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ either_in_window }}"
+            sequence:
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.kitchen
+                    - climate.gents_toilet
+                    - climate.ladies_toilet
+                data:
+                  preset_mode: eco
+          # Only revert to ice if no booking AND no recent motion
+          - conditions:
+              - condition: template
+                value_template: "{{ not either_in_window and not motion_recent }}"
+            sequence:
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.kitchen
+                    - climate.gents_toilet
+                    - climate.ladies_toilet
+                data:
+                  preset_mode: ice
+
+  ###########################################################################
+  # A4 / A5 – EVENT ENDED → CLEAR MANUAL HOLD + REVERT
+  ###########################################################################
+  - id: scout_event_end_zone_a
+    alias: "[Calendar] Hall: Event ended"
+    trigger:
+      - platform: state
+        entity_id: calendar.pelsall_hall_bookings
+        from: "on"
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_a_manual_hold
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: scout_zone_a_manual_hold
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_boost_active
+                state: "off"
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_occupied_override
+                state: "off"
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_opening_ice_active
+                state: "off"
+            sequence:
+              - service: script.scout_set_zone_a_preset
+                data:
+                  preset: ice
+
+  - id: scout_event_end_zone_b
+    alias: "[Calendar] Office: Event ended"
+    trigger:
+      - platform: state
+        entity_id: calendar.pelsall_office_bookings
+        from: "on"
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_b_manual_hold
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: scout_zone_b_manual_hold
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_b_boost_active
+                state: "off"
+              - condition: state
+                entity_id: input_boolean.scout_zone_b_occupied_override
+                state: "off"
+              - condition: state
+                entity_id: input_boolean.scout_zone_b_opening_ice_active
+                state: "off"
+            sequence:
+              - service: script.scout_set_zone_b_preset
+                data:
+                  preset: ice
+
+  ###########################################################################
+  # A6 – ZONE A DOORS HELD OPEN → ICE
+  # Uses wait_for_trigger so the timeout reads the helper value at runtime.
+  # mode: restart means re-opening a door resets the timer.
+  ###########################################################################
+  - id: scout_zone_a_door_open_ice
+    alias: "[Openings] Hall: Door held open → ice"
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.scout_zone_a_doors_group
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+    action:
+      - variables:
+          ice_mins: "{{ states('input_number.scout_door_ice_minutes') | int(10) }}"
+      - wait_for_trigger:
+          - platform: state
+            entity_id: binary_sensor.scout_zone_a_doors_group
+            to: "off"
+        timeout:
+          minutes: "{{ ice_mins }}"
+        continue_on_timeout: true
+      - condition: state
+        entity_id: binary_sensor.scout_zone_a_doors_group
+        state: "on"
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.scout_zone_a_opening_ice_active
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_a_manual_hold
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.hall_back
+            - climate.hall_front
+            - climate.hall_left
+            - climate.hall_right
+        data:
+          preset_mode: ice
+      - service: persistent_notification.create
+        data:
+          title: "🏕 Hall – Heating paused (door open)"
+          message: >
+            A hall door has been open for {{ ice_mins }} minutes.
+            Heating is paused and will restore when all doors and windows are closed.
+          notification_id: scout_zone_a_opening_ice
+
+  ###########################################################################
+  # A7 – ZONE A WINDOWS HELD OPEN → ICE
+  ###########################################################################
+  - id: scout_zone_a_window_open_ice
+    alias: "[Openings] Hall: Window held open → ice"
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.scout_zone_a_windows_group
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+    action:
+      - variables:
+          ice_mins: "{{ states('input_number.scout_window_ice_minutes') | int(10) }}"
+      - wait_for_trigger:
+          - platform: state
+            entity_id: binary_sensor.scout_zone_a_windows_group
+            to: "off"
+        timeout:
+          minutes: "{{ ice_mins }}"
+        continue_on_timeout: true
+      - condition: state
+        entity_id: binary_sensor.scout_zone_a_windows_group
+        state: "on"
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.scout_zone_a_opening_ice_active
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_a_manual_hold
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.hall_back
+            - climate.hall_front
+            - climate.hall_left
+            - climate.hall_right
+        data:
+          preset_mode: ice
+      - service: persistent_notification.create
+        data:
+          title: "🏕 Hall – Heating paused (window open)"
+          message: >
+            A hall window has been open for {{ ice_mins }} minutes.
+            Heating is paused and will restore when all doors and windows are closed.
+          notification_id: scout_zone_a_opening_ice
+
+  ###########################################################################
+  # A8 – ZONE A ALL OPENINGS CLOSED → RESTORE
+  # Sets heaters directly rather than via scout_set_zone_a_preset to avoid
+  # being silently blocked by manual_hold or other guards in that script.
+  ###########################################################################
+  - id: scout_zone_a_all_closed_restore
+    alias: "[Openings] Hall: All closed, restore"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.scout_zone_a_all_openings_group
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_opening_ice_active
+        state: "on"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.scout_zone_a_opening_ice_active
+            - input_boolean.scout_zone_a_manual_hold
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: scout_zone_a_opening_ice
+      - variables:
+          cal_on:      "{{ is_state('calendar.pelsall_hall_bookings', 'on') }}"
+          manual_on:   "{{ is_state('input_boolean.scout_zone_a_occupied_override', 'on') }}"
+          boost_on:    "{{ is_state('input_boolean.scout_zone_a_boost_active', 'on') }}"
+          lockout_on:  "{{ is_state('input_boolean.scout_seasonal_lockout_active', 'on') }}"
+          event_title: "{{ state_attr('calendar.pelsall_hall_bookings', 'message') | default('') | lower }}"
+          eco_keywords: "{{ states('input_text.scout_eco_keywords').split(',') | map('trim') | list }}"
+          restore_preset: >
+            {% if boost_on %}
+              comfort
+            {% elif lockout_on %}
+              ice
+            {% elif cal_on %}
+              {% set found = eco_keywords | select('in', event_title) | list %}
+              {{ 'eco' if found | length > 0 else 'comfort' }}
+            {% elif manual_on %}
+              eco
+            {% else %}
+              ice
+            {% endif %}
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.hall_back
+            - climate.hall_front
+            - climate.hall_left
+            - climate.hall_right
+        data:
+          preset_mode: "{{ restore_preset }}"
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.scout_zone_a_expected_preset
+        data:
+          option: "{{ restore_preset }}"
+
+
+  ###########################################################################
+  # A9 – ZONE B DOORS HELD OPEN → ICE
+  ###########################################################################
+  - id: scout_zone_b_door_open_ice
+    alias: "[Openings] Office: Door held open → ice"
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.scout_zone_b_doors_group
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+    action:
+      - variables:
+          ice_mins: "{{ states('input_number.scout_door_ice_minutes') | int(10) }}"
+      - wait_for_trigger:
+          - platform: state
+            entity_id: binary_sensor.scout_zone_b_doors_group
+            to: "off"
+        timeout:
+          minutes: "{{ ice_mins }}"
+        continue_on_timeout: true
+      - condition: state
+        entity_id: binary_sensor.scout_zone_b_doors_group
+        state: "on"
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.scout_zone_b_opening_ice_active
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_b_manual_hold
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.office
+        data:
+          preset_mode: ice
+      - service: persistent_notification.create
+        data:
+          title: "🏕 Office – Heating paused (door open)"
+          message: >
+            An office door has been open for {{ ice_mins }} minutes.
+            Heating is paused and will restore when all doors and windows are closed.
+          notification_id: scout_zone_b_opening_ice
+
+  ###########################################################################
+  # A10 – ZONE B WINDOWS HELD OPEN → ICE
+  ###########################################################################
+  - id: scout_zone_b_window_open_ice
+    alias: "[Openings] Office: Window held open → ice"
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.scout_zone_b_windows_group
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+    action:
+      - variables:
+          ice_mins: "{{ states('input_number.scout_window_ice_minutes') | int(10) }}"
+      - wait_for_trigger:
+          - platform: state
+            entity_id: binary_sensor.scout_zone_b_windows_group
+            to: "off"
+        timeout:
+          minutes: "{{ ice_mins }}"
+        continue_on_timeout: true
+      - condition: state
+        entity_id: binary_sensor.scout_zone_b_windows_group
+        state: "on"
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.scout_zone_b_opening_ice_active
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_b_manual_hold
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.office
+        data:
+          preset_mode: ice
+      - service: persistent_notification.create
+        data:
+          title: "🏕 Office – Heating paused (window open)"
+          message: >
+            The office window has been open for {{ ice_mins }} minutes.
+            Heating is paused and will restore when all doors and windows are closed.
+          notification_id: scout_zone_b_opening_ice
+
+  ###########################################################################
+  # A11 – ZONE B ALL OPENINGS CLOSED → RESTORE
+  ###########################################################################
+  - id: scout_zone_b_all_closed_restore
+    alias: "[Openings] Office: All closed, restore"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.scout_zone_b_all_openings_group
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_opening_ice_active
+        state: "on"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.scout_zone_b_opening_ice_active
+            - input_boolean.scout_zone_b_manual_hold
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: scout_zone_b_opening_ice
+      - variables:
+          cal_on:      "{{ is_state('calendar.pelsall_office_bookings', 'on') }}"
+          manual_on:   "{{ is_state('input_boolean.scout_zone_b_occupied_override', 'on') }}"
+          boost_on:    "{{ is_state('input_boolean.scout_zone_b_boost_active', 'on') }}"
+          lockout_on:  "{{ is_state('input_boolean.scout_seasonal_lockout_active', 'on') }}"
+          event_title: "{{ state_attr('calendar.pelsall_office_bookings', 'message') | default('') | lower }}"
+          eco_keywords: "{{ states('input_text.scout_eco_keywords').split(',') | map('trim') | list }}"
+          restore_preset: >
+            {% if boost_on %}
+              comfort
+            {% elif lockout_on %}
+              ice
+            {% elif cal_on %}
+              {% set found = eco_keywords | select('in', event_title) | list %}
+              {{ 'eco' if found | length > 0 else 'comfort' }}
+            {% elif manual_on %}
+              eco
+            {% else %}
+              ice
+            {% endif %}
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.office
+        data:
+          preset_mode: "{{ restore_preset }}"
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.scout_zone_b_expected_preset
+        data:
+          option: "{{ restore_preset }}"
+
+
+
+  ###########################################################################
+  # A11b – SHARED ZONE (TOILETS/KITCHEN) WINDOW HELD OPEN → ICE
+  #
+  # If any of the three shared area windows are held open for the configured
+  # window timeout, the shared zone heaters drop to ice.
+  # Restores automatically when all three windows are closed.
+  # Uses the same window timeout as Zone A/B.
+  ###########################################################################
+  - id: scout_shared_window_open_ice
+    alias: "[Openings] Shared zone: Window held open → ice"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.female_toilets_contact_sensor
+        to: "on"
+        for:
+          minutes: "{{ states('input_number.scout_window_ice_minutes') | int(10) }}"
+      - platform: state
+        entity_id: input_boolean.gents_toilet_contact_sensor
+        to: "on"
+        for:
+          minutes: "{{ states('input_number.scout_window_ice_minutes') | int(10) }}"
+      - platform: state
+        entity_id: input_boolean.kitchen_contact_sensor
+        to: "on"
+        for:
+          minutes: "{{ states('input_number.scout_window_ice_minutes') | int(10) }}"
+    condition: []
+    action:
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.scout_shared_opening_ice_active
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: ice
+      - service: persistent_notification.create
+        data:
+          title: "🏕 Shared zone – Heating paused (window open)"
+          message: >
+            A window in the toilets or kitchen has been open for
+            {{ states('input_number.scout_window_ice_minutes') | int }} minutes.
+            Heating is paused and will restore when all windows are closed.
+          notification_id: scout_shared_opening_ice
+
+  - id: scout_shared_all_closed_restore
+    alias: "[Openings] Shared zone: All windows closed, restore"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.female_toilets_contact_sensor
+        to: "off"
+      - platform: state
+        entity_id: input_boolean.gents_toilet_contact_sensor
+        to: "off"
+      - platform: state
+        entity_id: input_boolean.kitchen_contact_sensor
+        to: "off"
+    condition:
+      # All three must be closed
+      - condition: state
+        entity_id: input_boolean.female_toilets_contact_sensor
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.gents_toilet_contact_sensor
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.kitchen_contact_sensor
+        state: "off"
+      # Only restore if ice was actually triggered by an opening
+      - condition: state
+        entity_id: input_boolean.scout_shared_opening_ice_active
+        state: "on"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_shared_opening_ice_active
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: scout_shared_opening_ice
+      # Restore to eco if either calendar is active, else ice
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: >
+            {% if is_state('calendar.pelsall_hall_bookings', 'on')
+               or is_state('calendar.pelsall_office_bookings', 'on') %}
+              eco
+            {% elif is_state('input_boolean.hall_motion_sensor', 'on')
+               or is_state('input_boolean.office_motion_sensor', 'on')
+               or is_state('input_boolean.kitchen_motion_sensor', 'on')
+               or is_state('input_boolean.gents_motion_sensor', 'on')
+               or is_state('input_boolean.female_motion_sensor', 'on') %}
+              eco
+            {% else %}
+              ice
+            {% endif %}
+
+  ###########################################################################
+  # A12 – INTERNAL DOOR + EXTERIOR OPENING COMBINATION
+  #
+  # The internal door on its own does not affect heating – both zones just
+  # share air, which is harmless if the building envelope is intact.
+  #
+  # It only becomes a problem when an exterior door or window is ALSO open,
+  # because then the internal door creates a through-path for heat to escape
+  # outside. In that case both zones drop to ice.
+  #
+  # This automation runs every minute when the internal door is open and
+  # checks whether any exterior opening in either zone is also open.
+  # When the combined condition clears (either the internal door closes OR
+  # all exterior openings close) it restores both zones.
+  ###########################################################################
+  - id: scout_internal_door_with_exterior_open
+    alias: "[Openings] Internal door + exterior: both zones → ice"
+    trigger:
+      # Re-evaluate every minute while the internal door is open
+      - platform: state
+        entity_id: input_boolean.office_internal_door_contact_sensor
+        to: "on"
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      # Internal door must be open
+      - condition: state
+        entity_id: input_boolean.office_internal_door_contact_sensor
+        state: "on"
+      # AND at least one exterior opening must also be open
+      - condition: template
+        value_template: >
+          {{ is_state('binary_sensor.scout_zone_a_all_openings_group', 'on')
+             or is_state('binary_sensor.scout_zone_b_all_openings_group', 'on') }}
+    action:
+      - service: input_boolean.turn_on
+        target:
+          entity_id:
+            - input_boolean.scout_zone_a_opening_ice_active
+            - input_boolean.scout_zone_b_opening_ice_active
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.hall_back
+            - climate.hall_front
+            - climate.hall_left
+            - climate.hall_right
+            - climate.office
+        data:
+          preset_mode: ice
+      - service: persistent_notification.create
+        data:
+          title: "🏕 Scout Hut – Internal door open with exterior opening"
+          message: >
+            The internal door is open and at least one exterior door or window
+            is also open, creating a heat-loss path to outside.
+            Heating in both zones is paused until the internal door or all
+            exterior openings are closed.
+          notification_id: scout_internal_door_exterior_open
+
+  - id: scout_internal_door_exterior_cleared
+    alias: "[Openings] Internal door + exterior: cleared, restore"
+    trigger:
+      # Internal door closed
+      - platform: state
+        entity_id: input_boolean.office_internal_door_contact_sensor
+        to: "off"
+      # All Zone A exterior openings closed
+      - platform: state
+        entity_id: binary_sensor.scout_zone_a_all_openings_group
+        to: "off"
+      # All Zone B exterior openings closed
+      - platform: state
+        entity_id: binary_sensor.scout_zone_b_all_openings_group
+        to: "off"
+    condition:
+      # Only act if the combined condition has fully cleared:
+      # internal door must be closed OR all exterior openings must be closed
+      - condition: template
+        value_template: >
+          {{ is_state('input_boolean.office_internal_door_contact_sensor', 'off')
+             or (is_state('binary_sensor.scout_zone_a_all_openings_group', 'off')
+                 and is_state('binary_sensor.scout_zone_b_all_openings_group', 'off')) }}
+      # Only restore if this automation was actually responsible for the ice
+      # (don't fight A8/A11 if a zone still has its own opening active)
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: scout_internal_door_exterior_open
+      # Restore each zone only if its own exterior openings are all closed
+      # and the zone's opening ice flag wasn't set by A6/A7/A9/A10 for a
+      # different reason (i.e. one of its own sensors was already held open).
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.scout_zone_a_all_openings_group
+                state: "off"
+            sequence:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.scout_zone_a_opening_ice_active
+              - service: script.scout_restore_zone_a
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.scout_zone_b_all_openings_group
+                state: "off"
+            sequence:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.scout_zone_b_opening_ice_active
+              - service: script.scout_restore_zone_b
+
+  ###########################################################################
+  # A13–A16 – MANUAL OCCUPIED OVERRIDES
+  ###########################################################################
+  - id: scout_manual_override_on_zone_a
+    alias: "[Override] Hall: Occupied override on"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.scout_zone_a_occupied_override
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+    action:
+      - service: script.scout_set_zone_a_preset
+        data:
+          preset: eco
+
+  - id: scout_manual_override_off_zone_a
+    alias: "[Override] Hall: Occupied override off"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.scout_zone_a_occupied_override
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: calendar.pelsall_hall_bookings
+        state: "off"
+    action:
+      # Clear any manual hold that may have been incorrectly set when the
+      # override turned the heater to eco – this was not a Rointe app change
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_a_manual_hold
+      # Set ice directly and update the expected preset tracker so drift
+      # detection doesn't immediately re-trigger a false manual hold
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.hall_back
+            - climate.hall_front
+            - climate.hall_left
+            - climate.hall_right
+        data:
+          preset_mode: ice
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.scout_zone_a_expected_preset
+        data:
+          option: ice
+
+  - id: scout_manual_override_on_zone_b
+    alias: "[Override] Office: Occupied override on"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.scout_zone_b_occupied_override
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+    action:
+      - service: script.scout_set_zone_b_preset
+        data:
+          preset: eco
+
+  - id: scout_manual_override_off_zone_b
+    alias: "[Override] Office: Occupied override off"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.scout_zone_b_occupied_override
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: calendar.pelsall_office_bookings
+        state: "off"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_b_manual_hold
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.office
+        data:
+          preset_mode: ice
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.scout_zone_b_expected_preset
+        data:
+          option: ice
+
+  ###########################################################################
+  # A17–A24 – MOTION-DRIVEN HEATING
+  #
+  # Two behaviours depending on whether a calendar event is active:
+  #
+  # DURING A BOOKING:
+  #   Motion clears for timeout → drop to ECO (save energy in empty room)
+  #   Motion returns            → restore event preset (COMFORT or ECO)
+  #
+  # OUTSIDE A BOOKING:
+  #   Motion detected           → turn zone on to ECO (someone is in)
+  #   No motion for timeout     → drop back to ICE
+  #
+  # All usual guards apply in both cases: automation enabled, no manual
+  # hold, no boost active, no opening ice active, seasonal lockout.
+  ###########################################################################
+
+  # ── A17: No motion during booking → eco ───────────────────────────────────
+  - id: scout_motion_eco_zone_a
+    alias: "[Motion] Hall: No motion during booking → eco"
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_manual_hold
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_opening_ice_active
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_hall_bookings
+        state: "on"
+      # Only drop to eco if last motion was more than timeout ago
+      - condition: template
+        value_template: >
+          {% set last = states('input_datetime.scout_last_motion_hall') %}
+          {% set timeout = states('input_number.scout_motion_timeout_minutes') | int(15) %}
+          {{ last != 'unknown' and
+             (as_timestamp(now()) - as_timestamp(last)) > (timeout * 60) }}
+    action:
+      - service: script.scout_set_zone_a_preset
+        data:
+          preset: eco
+
+  # ── A18: Motion during booking → update timestamp + restore (Zone A) ────────
+  - id: scout_motion_restore_zone_a
+    alias: "[Motion] Hall: Motion returns during booking"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.hall_motion_sensor
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_manual_hold
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_opening_ice_active
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_hall_bookings
+        state: "on"
+    action:
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.scout_last_motion_hall
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+      - service: script.scout_restore_zone_a
+
+  # ── A19: No motion during booking → eco (Zone B) ──────────────────────────
+  - id: scout_motion_eco_zone_b
+    alias: "[Motion] Office: No motion during booking → eco"
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_manual_hold
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_opening_ice_active
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_office_bookings
+        state: "on"
+      - condition: template
+        value_template: >
+          {% set last = states('input_datetime.scout_last_motion_office') %}
+          {% set timeout = states('input_number.scout_motion_timeout_minutes') | int(15) %}
+          {{ last != 'unknown' and
+             (as_timestamp(now()) - as_timestamp(last)) > (timeout * 60) }}
+    action:
+      - service: script.scout_set_zone_b_preset
+        data:
+          preset: eco
+
+  # ── A20: Motion during booking → update timestamp + restore (Zone B) ────────
+  - id: scout_motion_restore_zone_b
+    alias: "[Motion] Office: Motion returns during booking"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.office_motion_sensor
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_manual_hold
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_opening_ice_active
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_office_bookings
+        state: "on"
+    action:
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.scout_last_motion_office
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+      - service: script.scout_restore_zone_b
+
+  # ── A21: Motion detected OUTSIDE booking → turn zone on to eco ────────────
+  - id: scout_motion_unscheduled_zone_a
+    alias: "[Motion] Hall: Motion outside booking → eco"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.hall_motion_sensor
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_opening_ice_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_seasonal_lockout_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.alarm_main
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_hall_bookings
+        state: "off"
+    action:
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.scout_last_motion_hall
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+      - service: script.scout_set_zone_a_preset
+        data:
+          preset: eco
+
+  - id: scout_motion_unscheduled_zone_b
+    alias: "[Motion] Office: Motion outside booking → eco"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.office_motion_sensor
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_opening_ice_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_seasonal_lockout_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.alarm_office
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_office_bookings
+        state: "off"
+    action:
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.scout_last_motion_office
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+      - service: script.scout_set_zone_b_preset
+        data:
+          preset: eco
+
+  # ── A22: No motion OUTSIDE booking → drop back to ice ─────────────────────
+  # Watches ALL motion sensors. Building considered empty only when every
+  # sensor has been clear for the full timeout period.
+  - id: scout_motion_unscheduled_ice_zone_a
+    alias: "[Motion] Hall: No motion outside booking → ice"
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_occupied_override
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_hall_bookings
+        state: "off"
+      # Check last motion across ALL sensors – don't switch off if anyone
+      # has been seen anywhere in the building within the timeout
+      - condition: template
+        value_template: >
+          {% set timeout = states('input_number.scout_motion_timeout_minutes') | int(15) * 60 %}
+          {% set now_ts = as_timestamp(now()) %}
+          {% set sensors = [
+               'input_datetime.scout_last_motion_hall',
+               'input_datetime.scout_last_motion_office',
+               'input_datetime.scout_last_motion_kitchen',
+               'input_datetime.scout_last_motion_gents',
+               'input_datetime.scout_last_motion_female'
+             ] %}
+          {% set last_any = sensors
+               | map('states')
+               | reject('eq', 'unknown')
+               | map('as_timestamp')
+               | list %}
+          {{ last_any | length == 0
+             or (now_ts - (last_any | max)) > timeout }}
+    action:
+      - service: script.scout_set_zone_a_preset
+        data:
+          preset: ice
+
+  - id: scout_motion_unscheduled_ice_zone_b
+    alias: "[Motion] Office: No motion outside booking → ice"
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_occupied_override
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_office_bookings
+        state: "off"
+      - condition: template
+        value_template: >
+          {% set timeout = states('input_number.scout_motion_timeout_minutes') | int(15) * 60 %}
+          {% set now_ts = as_timestamp(now()) %}
+          {% set sensors = [
+               'input_datetime.scout_last_motion_hall',
+               'input_datetime.scout_last_motion_office',
+               'input_datetime.scout_last_motion_kitchen',
+               'input_datetime.scout_last_motion_gents',
+               'input_datetime.scout_last_motion_female'
+             ] %}
+          {% set last_any = sensors
+               | map('states')
+               | reject('eq', 'unknown')
+               | map('as_timestamp')
+               | list %}
+          {{ last_any | length == 0
+             or (now_ts - (last_any | max)) > timeout }}
+    action:
+      - service: script.scout_set_zone_b_preset
+        data:
+          preset: ice
+
+  # ── A23: Any motion outside booking → update timestamps + shared zone eco ────
+  - id: scout_motion_unscheduled_shared
+    alias: "[Motion] Shared: Motion outside booking → eco"
+    trigger:
+      - platform: state
+        entity_id:
+          - input_boolean.hall_motion_sensor
+          - input_boolean.office_motion_sensor
+          - input_boolean.kitchen_motion_sensor
+          - input_boolean.gents_motion_sensor
+          - input_boolean.female_motion_sensor
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_seasonal_lockout_active
+        state: "off"
+      - condition: template
+        value_template: >
+          {{ not (is_state('input_boolean.alarm_main', 'on')
+                  and is_state('input_boolean.alarm_office', 'on')) }}
+      - condition: template
+        value_template: >
+          {{ not is_state('calendar.pelsall_hall_bookings', 'on')
+             and not is_state('calendar.pelsall_office_bookings', 'on') }}
+    action:
+      # Record timestamp for whichever sensor triggered
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.entity_id == 'input_boolean.hall_motion_sensor' }}"
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.scout_last_motion_hall
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.entity_id == 'input_boolean.office_motion_sensor' }}"
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.scout_last_motion_office
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.entity_id == 'input_boolean.kitchen_motion_sensor' }}"
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.scout_last_motion_kitchen
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.entity_id == 'input_boolean.gents_motion_sensor' }}"
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.scout_last_motion_gents
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.entity_id == 'input_boolean.female_motion_sensor' }}"
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.scout_last_motion_female
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: eco
+
+  # ── A24: No motion anywhere outside booking → shared zone ice ─────────────
+  - id: scout_motion_unscheduled_ice_shared
+    alias: "[Motion] Shared: No motion outside booking → ice"
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: template
+        value_template: >
+          {{ not is_state('calendar.pelsall_hall_bookings', 'on')
+             and not is_state('calendar.pelsall_office_bookings', 'on') }}
+      - condition: template
+        value_template: >
+          {% set timeout = states('input_number.scout_motion_timeout_minutes') | int(15) * 60 %}
+          {% set now_ts = as_timestamp(now()) %}
+          {% set sensors = [
+               'input_datetime.scout_last_motion_hall',
+               'input_datetime.scout_last_motion_office',
+               'input_datetime.scout_last_motion_kitchen',
+               'input_datetime.scout_last_motion_gents',
+               'input_datetime.scout_last_motion_female'
+             ] %}
+          {% set last_any = sensors
+               | map('states')
+               | reject('eq', 'unknown')
+               | map('as_timestamp')
+               | list %}
+          {{ last_any | length == 0
+             or (now_ts - (last_any | max)) > timeout }}
+    action:
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: ice
+
+  ###########################################################################
+  # A25 / A26 – ROINTE APP DRIFT DETECTION
+  ###########################################################################
+  - id: scout_manual_drift_zone_a
+    alias: "[App Detection] Hall: Rointe app change"
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: calendar.pelsall_hall_bookings
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_boost_active
+        state: "off"
+    action:
+      - variables:
+          actual:   "{{ state_attr('climate.hall_back', 'preset_mode') | lower }}"
+          expected: "{{ states('input_select.scout_zone_a_expected_preset') | lower }}"
+          hold_on:  "{{ is_state('input_boolean.scout_zone_a_manual_hold', 'on') }}"
+          drift:    "{{ expected != 'unknown' and actual != expected }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ drift and not hold_on }}"
+            sequence:
+              - service: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.scout_zone_a_manual_hold
+              - service: persistent_notification.create
+                data:
+                  title: "🏕 Hall – Manual control detected"
+                  message: >
+                    Hall heating was changed via the Rointe app
+                    (expected {{ expected }}, heater is on {{ actual }}).
+                    Automation is paused for this session and resumes at event end.
+                  notification_id: scout_zone_a_manual_hold
+          - conditions:
+              - condition: template
+                value_template: "{{ hold_on and not drift }}"
+            sequence:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.scout_zone_a_manual_hold
+              - service: persistent_notification.dismiss
+                data:
+                  notification_id: scout_zone_a_manual_hold
+
+  - id: scout_manual_drift_zone_b
+    alias: "[App Detection] Office: Rointe app change"
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+      - condition: state
+        entity_id: calendar.pelsall_office_bookings
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_boost_active
+        state: "off"
+    action:
+      - variables:
+          actual:   "{{ state_attr('climate.office', 'preset_mode') | lower }}"
+          expected: "{{ states('input_select.scout_zone_b_expected_preset') | lower }}"
+          hold_on:  "{{ is_state('input_boolean.scout_zone_b_manual_hold', 'on') }}"
+          drift:    "{{ expected != 'unknown' and actual != expected }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ drift and not hold_on }}"
+            sequence:
+              - service: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.scout_zone_b_manual_hold
+              - service: persistent_notification.create
+                data:
+                  title: "🏕 Office – Manual control detected"
+                  message: >
+                    Office heating was changed via the Rointe app
+                    (expected {{ expected }}, heater is on {{ actual }}).
+                    Automation is paused for this session and resumes at event end.
+                  notification_id: scout_zone_b_manual_hold
+          - conditions:
+              - condition: template
+                value_template: "{{ hold_on and not drift }}"
+            sequence:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.scout_zone_b_manual_hold
+              - service: persistent_notification.dismiss
+                data:
+                  notification_id: scout_zone_b_manual_hold
+
+  ###########################################################################
+  # A27 / A28 – BOOST
+  ###########################################################################
+  - id: scout_boost_zone_a_automation
+    alias: "[Override] Hall: Boost"
+    # mode: restart means firing the boost event again resets the timer.
+    # Turning on scout_zone_a_boost_cancel ends the boost early.
+    mode: restart
+    trigger:
+      - platform: event
+        event_type: scout_boost_zone_a
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        state: "on"
+    action:
+      # Clear any leftover cancel flag from a previous boost
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_a_boost_cancel
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.scout_zone_a_boost_active
+      - service: script.scout_set_zone_a_preset
+        data:
+          preset: comfort
+          from_boost: true
+      # Shared zone follows the boost
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: comfort
+      - variables:
+          boost_mins: >
+            {{ states('input_select.scout_boost_duration')
+               | regex_replace('[^0-9]', '') | int(60) }}
+      # Wait for either the timer to expire or the cancel flag to be set
+      - wait_for_trigger:
+          - platform: state
+            entity_id: input_boolean.scout_zone_a_boost_cancel
+            to: "on"
+        timeout:
+          minutes: "{{ boost_mins }}"
+        continue_on_timeout: true
+      # Clean up regardless of whether we timed out or were cancelled
+      - service: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.scout_zone_a_boost_active
+            - input_boolean.scout_zone_a_boost_cancel
+      - service: script.scout_restore_zone_a
+      # Restore shared zone
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: >
+            {% if is_state('calendar.pelsall_hall_bookings', 'on')
+               or is_state('calendar.pelsall_office_bookings', 'on')
+               or is_state('input_boolean.scout_zone_b_boost_active', 'on') %}
+              eco
+            {% else %}
+              ice
+            {% endif %}
+
+  - id: scout_boost_zone_b_automation
+    alias: "[Override] Office: Boost"
+    mode: restart
+    trigger:
+      - platform: event
+        event_type: scout_boost_zone_b
+    condition:
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        state: "on"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_b_boost_cancel
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.scout_zone_b_boost_active
+      - service: script.scout_set_zone_b_preset
+        data:
+          preset: comfort
+          from_boost: true
+      # Shared zone follows the boost
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: comfort
+      - variables:
+          boost_mins: >
+            {{ states('input_select.scout_boost_duration')
+               | regex_replace('[^0-9]', '') | int(60) }}
+      - wait_for_trigger:
+          - platform: state
+            entity_id: input_boolean.scout_zone_b_boost_cancel
+            to: "on"
+        timeout:
+          minutes: "{{ boost_mins }}"
+        continue_on_timeout: true
+      - service: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.scout_zone_b_boost_active
+            - input_boolean.scout_zone_b_boost_cancel
+      - service: script.scout_restore_zone_b
+      # Restore shared zone
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: >
+            {% if is_state('calendar.pelsall_hall_bookings', 'on')
+               or is_state('calendar.pelsall_office_bookings', 'on')
+               or is_state('input_boolean.scout_zone_a_boost_active', 'on') %}
+              eco
+            {% else %}
+              ice
+            {% endif %}
+
+  ###########################################################################
+  # A29 – SMART SEASONAL LOCKOUT
+  #
+  # Uses AccuWeather's weather.get_forecasts to fetch the next 3 days of
+  # daily forecasts. If ALL 3 forecast high temperatures are at or above
+  # the configured threshold, the lockout engages.
+  #
+  # This is forward-looking: a single warm day in a cold spell won't lock
+  # out heating, and the first cold day after a warm week won't switch it
+  # back on until the forecast genuinely warrants it.
+  #
+  # Also checks the current RealFeel temperature (feels-like, accounting
+  # for wind chill and humidity) to release the lockout quickly if it
+  # turns genuinely cold mid-season.
+  ###########################################################################
+  - id: scout_seasonal_lockout_check
+    alias: "[Seasonal] Lockout: Daily check"
+    trigger:
+      - platform: time
+        at: "08:00:00"
+      # Also re-check if the threshold slider is adjusted on the dashboard
+      - platform: state
+        entity_id: input_number.scout_seasonal_lockout_temp
+    action:
+      # Step 1: Fetch 3-day daily forecast from AccuWeather
+      - service: weather.get_forecasts
+        target:
+          entity_id: weather.1st_pelsall_scouts
+        data:
+          type: daily
+        response_variable: forecast_data
+      - variables:
+          threshold:  "{{ states('input_number.scout_seasonal_lockout_temp') | float(15) }}"
+          lockout_on: "{{ is_state('input_boolean.scout_seasonal_lockout_active', 'on') }}"
+          # Extract high AND low temps from the next 3 forecast days.
+          # AccuWeather daily forecast uses:
+          #   temperature     = daytime high
+          #   templow         = overnight low
+          forecasts:  "{{ forecast_data['weather.1st_pelsall_scouts']['forecast'][:3] }}"
+          day1_high:  "{{ forecasts[0].temperature | float(0) if forecasts | length > 0 else 0 }}"
+          day2_high:  "{{ forecasts[1].temperature | float(0) if forecasts | length > 1 else 0 }}"
+          day3_high:  "{{ forecasts[2].temperature | float(0) if forecasts | length > 2 else 0 }}"
+          day1_low:   "{{ forecasts[0].templow | float(0) if forecasts | length > 0 else 0 }}"
+          day2_low:   "{{ forecasts[1].templow | float(0) if forecasts | length > 1 else 0 }}"
+          day3_low:   "{{ forecasts[2].templow | float(0) if forecasts | length > 2 else 0 }}"
+          # Lock out only if ALL 3 highs AND ALL 3 lows are above threshold.
+          # A 16°C high with a 3°C low overnight still needs heating.
+          all_warm:   >
+            {{ day1_high >= threshold and day2_high >= threshold and day3_high >= threshold
+               and day1_low >= threshold and day2_low >= threshold and day3_low >= threshold }}
+          # Use RealFeel for release check – feels colder than raw temp on windy/humid days
+          realfeel:   "{{ states('sensor.1st_pelsall_scouts_realfeel_temperature') | float(99) }}"
+          # Release if any high OR any low drops below threshold, or RealFeel is cold
+          any_cold:   >
+            {{ day1_high < threshold or day2_high < threshold or day3_high < threshold
+               or day1_low < threshold or day2_low < threshold or day3_low < threshold
+               or realfeel < threshold }}
+          avg_high_display: "{{ ((day1_high + day2_high + day3_high) / 3) | round(1) }}"
+          avg_low_display:  "{{ ((day1_low + day2_low + day3_low) / 3) | round(1) }}"
+      - choose:
+          # Engage lockout when all 3 forecast days are warm
+          - conditions:
+              - condition: template
+                value_template: "{{ all_warm and not lockout_on }}"
+            sequence:
+              - service: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.scout_seasonal_lockout_active
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.hall_back
+                    - climate.hall_front
+                    - climate.hall_left
+                    - climate.hall_right
+                    - climate.office
+                    - climate.kitchen
+                    - climate.gents_toilet
+                    - climate.ladies_toilet
+                data:
+                  preset_mode: ice
+              - service: persistent_notification.create
+                data:
+                  title: "🏕 Pelsall Scout Hut – Seasonal lockout engaged"
+                  message: >
+                    The next 3 days are forecast above {{ threshold }}°C for both highs and lows
+                    (highs: {{ day1_high }}° / {{ day2_high }}° / {{ day3_high }}°, avg {{ avg_high_display }}°C —
+                    lows: {{ day1_low }}° / {{ day2_low }}° / {{ day3_low }}°, avg {{ avg_low_display }}°C).
+                    Heating is locked out for the season.
+                    A Boost will still work if heating is genuinely needed.
+                  notification_id: scout_seasonal_lockout
+
+          # Release lockout when forecasts or RealFeel drop back below threshold
+          - conditions:
+              - condition: template
+                value_template: "{{ any_cold and lockout_on }}"
+            sequence:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.scout_seasonal_lockout_active
+              - service: persistent_notification.dismiss
+                data:
+                  notification_id: scout_seasonal_lockout
+              - service: persistent_notification.create
+                data:
+                  title: "🏕 Pelsall Scout Hut – Seasonal lockout released"
+                  message: >
+                    Colder weather is forecast — highs: {{ day1_high }}° / {{ day2_high }}° / {{ day3_high }}°,
+                    lows: {{ day1_low }}° / {{ day2_low }}° / {{ day3_low }}°,
+                    RealFeel now {{ realfeel }}°C. Heating automation is active again.
+                  notification_id: scout_seasonal_lockout_off
+              - service: script.scout_restore_zone_a
+              - service: script.scout_restore_zone_b
+
+  ###########################################################################
+  # A30 – AUTOMATION RE-ENABLED → IMMEDIATE RE-EVALUATION
+  ###########################################################################
+  - id: scout_automation_reenabled_zone_a
+    alias: "[Override] Hall: Automation re-enabled"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.scout_zone_a_automation_enabled
+        to: "on"
+    action:
+      - service: script.scout_restore_zone_a
+
+  - id: scout_automation_reenabled_zone_b
+    alias: "[Override] Office: Automation re-enabled"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.scout_zone_b_automation_enabled
+        to: "on"
+    action:
+      - service: script.scout_restore_zone_b
+
+  ###########################################################################
+  # A31 – NIGHTLY SAFETY NET  (00:05)
+  ###########################################################################
+  - id: scout_nightly_ice_reset
+    alias: "[Seasonal] Nightly safety net"
+    trigger:
+      - platform: time
+        at: "00:05:00"
+    condition:
+      - condition: state
+        entity_id: calendar.pelsall_hall_bookings
+        state: "off"
+      - condition: state
+        entity_id: calendar.pelsall_office_bookings
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_boost_active
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_boost_active
+        state: "off"
+    action:
+      - service: climate.set_preset_mode
+        target:
+          entity_id:
+            - climate.hall_back
+            - climate.hall_front
+            - climate.hall_left
+            - climate.hall_right
+            - climate.office
+            - climate.kitchen
+            - climate.gents_toilet
+            - climate.ladies_toilet
+        data:
+          preset_mode: ice
+
+
+
+
+  ###########################################################################
+  # A33 – ALARM SET: CANCEL MANUAL/MOTION HEATING  (Zone A)
+  #
+  # When the Zone A alarm is armed, the building is being locked up.
+  # Any heating that was triggered by motion or manual override should stop.
+  # Calendar events and boosts are left alone – those are valid scheduled
+  # reasons to have heating on (e.g. a late-running session).
+  #
+  # Clears:
+  #   - Manual occupied override (someone forgot to turn it off)
+  #   - Motion-triggered eco (building appeared occupied but is now empty)
+  # Does NOT clear:
+  #   - Active calendar event
+  #   - Active boost
+  ###########################################################################
+  - id: scout_alarm_zone_a_set
+    alias: "[Override] Hall: Alarm set, cancel manual heating"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.alarm_main
+        to: "on"
+    condition:
+      # Only act if no calendar event is running – if a session is scheduled
+      # the heating should stay on regardless of the alarm state
+      - condition: state
+        entity_id: calendar.pelsall_hall_bookings
+        state: "off"
+      # And no boost running
+      - condition: state
+        entity_id: input_boolean.scout_zone_a_boost_active
+        state: "off"
+    action:
+      # Clear the occupied override if it was on
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_a_occupied_override
+      # Revert Zone A to ice
+      - service: script.scout_set_zone_a_preset
+        data:
+          preset: ice
+      # Revert shared zone to ice if Zone B alarm is also set or no office event
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: calendar.pelsall_office_bookings
+                state: "off"
+              - condition: state
+                entity_id: input_boolean.scout_zone_b_boost_active
+                state: "off"
+            sequence:
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.kitchen
+                    - climate.gents_toilet
+                    - climate.ladies_toilet
+                data:
+                  preset_mode: ice
+      - service: persistent_notification.create
+        data:
+          title: "🏕 Hall – Heating cancelled (alarm set)"
+          message: >
+            The Zone A alarm was set. Manual and motion-triggered heating
+            has been cancelled. Calendar events and boosts are unaffected.
+          notification_id: scout_alarm_zone_a
+
+  ###########################################################################
+  # A34 – ALARM SET: CANCEL MANUAL/MOTION HEATING  (Zone B)
+  ###########################################################################
+  - id: scout_alarm_zone_b_set
+    alias: "[Override] Office: Alarm set, cancel manual heating"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.alarm_office
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: calendar.pelsall_office_bookings
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.scout_zone_b_boost_active
+        state: "off"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scout_zone_b_occupied_override
+      - service: script.scout_set_zone_b_preset
+        data:
+          preset: ice
+      # Revert shared zone to ice if Zone A alarm is also set or no hall event
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: calendar.pelsall_hall_bookings
+                state: "off"
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_boost_active
+                state: "off"
+            sequence:
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.kitchen
+                    - climate.gents_toilet
+                    - climate.ladies_toilet
+                data:
+                  preset_mode: ice
+      - service: persistent_notification.create
+        data:
+          title: "🏕 Office – Heating cancelled (alarm set)"
+          message: >
+            The Zone B alarm was set. Manual and motion-triggered heating
+            has been cancelled. Calendar events and boosts are unaffected.
+          notification_id: scout_alarm_zone_b
+
+  ###########################################################################
+  # A35 – ALARM UNSET: RE-EVALUATE
+  # When the alarm is cleared, re-evaluate in case a calendar event started
+  # while the building was locked (e.g. pre-heat window for next session).
+  ###########################################################################
+  - id: scout_alarm_zone_a_unset
+    alias: "[Override] Hall: Alarm cleared, re-evaluate"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.alarm_main
+        to: "off"
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: scout_alarm_zone_a
+      - service: automation.trigger
+        target:
+          entity_id: automation.scout_calendar_zone_a_preheat
+
+  - id: scout_alarm_zone_b_unset
+    alias: "[Override] Office: Alarm cleared, re-evaluate"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.alarm_office
+        to: "off"
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: scout_alarm_zone_b
+      - service: automation.trigger
+        target:
+          entity_id: automation.scout_calendar_zone_b_preheat
+
+  ###########################################################################
+  # A32 – STARTUP / RESTART INITIALISATION
+  #
+  # Fires when Home Assistant starts or restarts. Clears any flags that
+  # may have been left in an unknown state (boost active, opening ice active)
+  # and then immediately evaluates what each zone should be running based
+  # on the current calendar, motion, and seasonal lockout state.
+  #
+  # Priority on startup:
+  #   1. Seasonal lockout active → everything to ice
+  #   2. Calendar event currently active → pre-heat logic re-evaluates
+  #   3. Any motion sensor currently on → zones with motion to eco
+  #   4. Nothing active → everything to ice
+  #
+  # Boost flags are always cleared on restart – a boost cannot survive
+  # a restart since the delay/wait timer is lost. Opening ice flags are
+  # also cleared; the physical sensor state is re-read directly.
+  ###########################################################################
+  - id: scout_startup_initialise
+    alias: "[Startup] Initialise all zones on HA start"
+    trigger:
+      - platform: homeassistant
+        event: start
+    action:
+      # Small delay to allow integrations (Rointe, calendars, AccuWeather)
+      # to finish loading before we read their state
+      - delay:
+          seconds: 30
+
+      # ── Step 1: Clear all transient flags ─────────────────────────────────
+      # Boost timers are lost on restart – clear the active flags
+      - service: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.scout_zone_a_boost_active
+            - input_boolean.scout_zone_b_boost_active
+            - input_boolean.scout_zone_a_boost_cancel
+            - input_boolean.scout_zone_b_boost_cancel
+      # Clear manual holds – drift detection will re-detect if still needed
+      - service: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.scout_zone_a_manual_hold
+            - input_boolean.scout_zone_b_manual_hold
+      # Re-evaluate opening ice flags from actual sensor state
+      # (don't just clear them – a window might genuinely still be open)
+      - service: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.scout_zone_a_opening_ice_active
+            - input_boolean.scout_zone_b_opening_ice_active
+            - input_boolean.scout_shared_opening_ice_active
+
+      # ── Step 2: Re-run the seasonal lockout check ──────────────────────────
+      - service: automation.trigger
+        target:
+          entity_id: automation.scout_seasonal_lockout_check
+
+      # ── Step 3: Re-evaluate Zone A ────────────────────────────────────────
+      - choose:
+          # If a door/window is genuinely still open, re-engage opening ice
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.scout_zone_a_any_exterior_opening_open
+                state: "on"
+            sequence:
+              - service: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.scout_zone_a_opening_ice_active
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.hall_back
+                    - climate.hall_front
+                    - climate.hall_left
+                    - climate.hall_right
+                data:
+                  preset_mode: ice
+          # Otherwise let the calendar pre-heat automation re-evaluate
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_automation_enabled
+                state: "on"
+            sequence:
+              - service: automation.trigger
+                target:
+                  entity_id: automation.scout_calendar_zone_a_preheat
+
+      # ── Step 4: Re-evaluate Zone B ────────────────────────────────────────
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.scout_zone_b_any_exterior_opening_open
+                state: "on"
+            sequence:
+              - service: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.scout_zone_b_opening_ice_active
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.office
+                data:
+                  preset_mode: ice
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_b_automation_enabled
+                state: "on"
+            sequence:
+              - service: automation.trigger
+                target:
+                  entity_id: automation.scout_calendar_zone_b_preheat
+
+      # ── Step 5: Re-evaluate shared zone ───────────────────────────────────
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ is_state('input_boolean.female_toilets_contact_sensor', 'on')
+                     or is_state('input_boolean.gents_toilet_contact_sensor', 'on')
+                     or is_state('input_boolean.kitchen_contact_sensor', 'on') }}
+            sequence:
+              - service: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.scout_shared_opening_ice_active
+              - service: climate.set_preset_mode
+                target:
+                  entity_id:
+                    - climate.kitchen
+                    - climate.gents_toilet
+                    - climate.ladies_toilet
+                data:
+                  preset_mode: ice
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.scout_zone_a_automation_enabled
+                state: "on"
+            sequence:
+              - service: automation.trigger
+                target:
+                  entity_id: automation.scout_calendar_shared_zone_preheat
+
+###############################################################################
+# REMAINING PLACEHOLDERS  – search REPLACE_ME
+# =============================================================================
+#
+#  Zone A (Hall) heaters  – 4 Rointe climate entities
+#    climate.hall_back
+#    climate.hall_front
+#    climate.hall_left
+#    climate.hall_right
+#
+#  Zone B (Office) heater
+#    climate.office
+#
+#  Shared zone (Toilets / Kitchen) heater(s)
+#    climate.kitchen  (add more lines if needed)
+#
+#  Motion sensors
+#    input_boolean.hall_motion_sensor    – Hall PIR / presence sensor
+#    input_boolean.office_motion_sensor  – Office PIR / presence sensor
+#
+#  Drift detection (use your first/representative heater in each zone)
+#    climate.hall_back – e.g. climate.hall_radiator_1
+#    climate.office – e.g. climate.office_radiator_1
+#
+# =============================================================================
+# FULLY CONFIGURED (no changes needed)
+# =============================================================================
+#
+#  Calendars:   calendar.pelsall_hall_bookings
+#               calendar.pelsall_office_bookings
+#
+#  Zone A doors:    input_boolean.front_door_contact_sensor
+#                   input_boolean.front_fire_door_contact_sensor
+#                   input_boolean.rear_fire_door_left_contact_sensor
+#                   input_boolean.rear_fire_door_right_contact_sensor
+#                   input_boolean.office_internal_door_contact_sensor
+#
+#  Zone A windows:  input_boolean.hall_front_left_contact_sensor
+#                   input_boolean.hall_front_right_contact_sensor
+#                   input_boolean.hall_right_back_contact_sensor
+#                   input_boolean.hall_right_front_contact_sensor
+#                   input_boolean.hall_right_middle_contact_sensor
+#
+#  Zone B doors:    input_boolean.office_external_door_contact_sensor
+#                   input_boolean.office_internal_door_contact_sensor
+#
+#  Zone B windows:  input_boolean.office_window_contact_sensor
+#
+#  Shared (info only, fed to water heater package):
+#                   input_boolean.female_toilets_contact_sensor
+#                   input_boolean.gents_toilet_contact_sensor
+#                   input_boolean.kitchen_contact_sensor
+#
+#  Weather:     weather.1st_pelsall_scouts
+###############################################################################
