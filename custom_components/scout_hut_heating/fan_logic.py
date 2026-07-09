@@ -39,10 +39,12 @@ def fan_decision(
 
     Arguments:
         summer: the summer-cooling regime is enabled.
-        occupied: the hall is occupied or within a pre-heat window. Only gates the
-            summer breeze; winter destratification runs regardless of occupancy so
-            it can knock down the hot ceiling layer and cut roof heat-loss even
-            when people are only in the office.
+        occupied: someone is there for the breeze to cool — recent hall motion
+            or a hall event actually running (not the pre-heat window: a fan
+            cannot pre-cool a room). Only gates the summer breeze; winter
+            destratification runs regardless of occupancy so it can knock down
+            the hot ceiling layer and cut roof heat-loss even when people are
+            only in the office.
         warm: floor temperature is above the cooling threshold; ``None`` when the
             floor temperature is unavailable.
         overheated: the room is at/above the fan-cooling ceiling (~35 °C, skin
