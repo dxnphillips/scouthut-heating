@@ -108,21 +108,37 @@ class FakeHass:
 class FakeNum:
     def __init__(self, value):
         self.native_value = value
+        self._default = value
+
+    def restore_default(self):
+        self.native_value = self._default
 
 
 class FakeSwitch:
     def __init__(self, is_on):
         self.is_on = is_on
+        self._default = is_on
+
+    def restore_default(self):
+        self.is_on = self._default
 
 
 class FakeText:
     def __init__(self, value):
         self.native_value = value
+        self._default = value
+
+    def restore_default(self):
+        self.native_value = self._default
 
 
 class FakeSelect:
     def __init__(self, option):
         self.current_option = option
+        self._default = option
+
+    def restore_default(self):
+        self.current_option = self._default
 
 
 def default_config() -> dict:

@@ -62,7 +62,12 @@ restart needed to change them:
 - **Switches:** hall/office automation enabled, hall/office occupied override,
   water heater manual override.
 - **Text:** ECO keyword blocklist (comma-separated).
-- **Buttons:** boost hall, boost office, and cancel-boost for each.
+- **Buttons:** boost hall, boost office, cancel-boost for each, and **Reset
+  tunables to defaults** (restores every number/switch/select/text above to its
+  built-in default; deliberately does not clear boosts, manual holds or a
+  latched fan fault). Restored number values are clamped into the current
+  slider bounds on startup, so an upgrade that tightens a range heals old
+  out-of-range values automatically.
 - **Diagnostic sensors/binary sensors:** current & expected preset per zone,
   water state, seasonal lockout, opening-ice flags, manual-hold flags, boost
   flags.

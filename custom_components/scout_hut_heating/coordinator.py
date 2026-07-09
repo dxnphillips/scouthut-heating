@@ -563,6 +563,25 @@ class ScoutController:
             await self._async_push_hall_temps(eco_low=self._eco_keyword_active(ZONE_A))
             await self._async_set_preset(ZONE_A, self.applied[ZONE_A], force=True)
 
+    async def async_reset_tunables(self) -> None:
+        """Restore every tunable helper to its built-in default.
+
+        Called by the "Reset tunables to defaults" button. Resets numbers,
+        switches, the boost-duration select and the ECO keyword text, then
+        re-evaluates everything that depends on them (seasonal lockout, hall
+        setpoints, and one full reconcile). It does not touch boosts, manual
+        holds or the latched fan fault — resetting sliders must not silently
+        re-arm a faulted fan.
+        """
+        for registry in (self._numbers, self._switches, self._selects, self._texts):
+            for entity in registry.values():
+                restore = getattr(entity, "restore_default", None)
+                if restore is not None:
+                    restore()
+        await self._async_seasonal_check()
+        await self.async_hall_temps_changed()
+        await self.async_reconcile()
+
     async def async_fan_rearm(self) -> None:
         """Clear an inferred fan fault. This is the deliberate HA-side re-arm.
 
