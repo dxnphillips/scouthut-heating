@@ -120,6 +120,11 @@ FAN_DIRECTION_SETTLE = 1.5  # seconds
 # once the 3-day average drops this far below it (or on a cold-snap RealFeel),
 # so a forecast hovering at the threshold cannot flap the lockout hourly.
 SEASONAL_RELEASE_BAND = 0.5  # °C
+# A RealFeel "cold snap" only releases the lockout when it is this far BELOW
+# the threshold. Ordinary summer nights dip a degree or two under the
+# threshold; without this band every mild night released the lockout (and
+# flipped the fans to the winter regime) until the next warm morning.
+SEASONAL_SNAP_BAND = 2.0  # °C
 
 # O1 power above this means the fans are genuinely moving air (a closed master
 # with the transformer dial at zero draws next to nothing). Just below the
@@ -920,11 +925,15 @@ class ScoutController:
         if not means:
             return None, False, False
         avg = sum(means) / len(means)
-        release = avg <= threshold - SEASONAL_RELEASE_BAND or realfeel < threshold
-        # Engage must exclude every release condition, or a warm 3-day average
-        # with a cold-snap RealFeel would satisfy both and flap the lockout
-        # (and its notification) on every hourly check.
-        engage = avg >= threshold and realfeel >= threshold
+        # A genuine cold snap (RealFeel well below the threshold) releases the
+        # lockout; a mild summer night a degree under it does not. Engage
+        # excludes every release condition so the two can never both be true —
+        # otherwise the lockout would flap on every hourly check.
+        release = (
+            avg <= threshold - SEASONAL_RELEASE_BAND
+            or realfeel < threshold - SEASONAL_SNAP_BAND
+        )
+        engage = avg >= threshold and realfeel >= threshold - SEASONAL_SNAP_BAND
         return avg, engage, release
 
     # ------------------------------------------------------------------
@@ -1657,13 +1666,17 @@ class ScoutController:
         stale_min = self.number("fan_sensor_stale_minutes")
         seen_value = False
         for power in self._power_sensors():
-            if self._stale(power, stale_min):
-                continue
             value = self._num_state(power)
-            if value is not None:
-                seen_value = True
-                if value > threshold:
-                    return True
+            if value is None:
+                continue
+            # Any readable value proves the sensors exist — a summer's worth of
+            # unchanging 0 W must NOT fall through to the preset fallback,
+            # which would call an idle eco preset "demand". Freshness gates
+            # only the positive trigger, so a frozen high reading cannot
+            # assert demand either.
+            seen_value = True
+            if value > threshold and not self._stale(power, stale_min):
+                return True
         if seen_value:
             return False
         return any(self.applied[z] in (PRESET_COMFORT, PRESET_ECO) for z in (ZONE_A, ZONE_B))

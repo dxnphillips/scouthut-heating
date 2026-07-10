@@ -71,3 +71,16 @@ def test_cold_realfeel_blocks_engage_so_lockout_cannot_flap():
     # and release simultaneously, toggling the lockout every hourly check.
     _, warm, cold = D(_days(33, 15), 15, 10)
     assert warm is False and cold is True
+
+
+def test_mild_summer_night_does_not_release_the_lockout():
+    # July night: warm 3-day average, RealFeel a degree or two under the
+    # threshold. Without the snap band this released the lockout nightly and
+    # flipped the fans to the winter regime until the next warm morning.
+    _, warm, cold = D(_days(28, 16), 15, 13.5)
+    assert warm is True and cold is False
+
+
+def test_genuine_cold_snap_still_releases():
+    _, warm, cold = D(_days(28, 16), 15, 10)  # RealFeel well below threshold
+    assert warm is False and cold is True

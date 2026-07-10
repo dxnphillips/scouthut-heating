@@ -191,8 +191,9 @@ this priority (highest wins):
    counts when an exterior opening is also open).
 3. **Boost active** → `comfort` (bypasses the seasonal lockout).
 4. **Seasonal lockout** (3-day *average* forecast temperature at/above the
-   threshold **and** RealFeel at/above it too — so a warm spell with a cold
-   snap can never flap the lockout; releases on a cold snap or low RealFeel)
+   threshold; releases when the average falls half a degree below it, or on a
+   **genuine cold snap** — RealFeel more than 2 °C under the threshold. Mild
+   summer nights a degree under it neither release the lockout nor flap it)
    → `ice`.
 5. **Alarm set with no booking** → `ice` and clears the occupied override.
 6. **Booking or pre-heat window** (optimum start — see below) → `comfort`.

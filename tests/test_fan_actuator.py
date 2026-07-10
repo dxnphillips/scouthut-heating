@@ -301,3 +301,54 @@ def test_manual_master_kill_still_latches_with_fault_boolean_mapped():
     run(ctrl._reconcile_fans())
     assert ctrl.fan_fault_latched is True  # inferred latch fired
     assert ctrl.fan_fault_effective is True  # OR'd into the effective fault
+
+
+# --- Heat demand: stale power sensors must not fall through to presets ----------
+
+def _power_ctrl():
+    from custom_components.scout_hut_heating.const import CONF_ROINTE_POWER
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_ROINTE_POWER: ["sensor.rointe_power"]}
+    )
+    return ctrl, hass
+
+
+def _age(hass, eid, minutes):
+    from datetime import timedelta
+
+    st = hass.states.get(eid)
+    st.last_updated -= timedelta(minutes=minutes)
+    st.last_reported = st.last_updated
+
+
+def test_stale_zero_power_reading_is_still_no_demand():
+    from scout_testkit import PRESET_ECO, ZA
+
+    ctrl, hass = _power_ctrl()
+    hass.states.set("sensor.rointe_power", "0")
+    _age(hass, "sensor.rointe_power", 600)  # cloud silent all summer at 0 W
+    ctrl.applied[ZA] = PRESET_ECO  # a heating preset is applied...
+    assert ctrl._heat_demand() is False  # ...but 0 W is 0 W, not demand
+
+
+def test_fresh_power_above_threshold_is_demand():
+    ctrl, hass = _power_ctrl()
+    hass.states.set("sensor.rointe_power", "450")
+    assert ctrl._heat_demand() is True
+
+
+def test_frozen_high_reading_cannot_assert_demand():
+    ctrl, hass = _power_ctrl()
+    hass.states.set("sensor.rointe_power", "450")
+    _age(hass, "sensor.rointe_power", 600)  # frozen mid-heating weeks ago
+    assert ctrl._heat_demand() is False
+
+
+def test_no_readable_sensors_falls_back_to_presets():
+    from scout_testkit import PRESET_COMFORT, ZA
+
+    ctrl, hass = _power_ctrl()
+    hass.states.set("sensor.rointe_power", "unavailable")
+    ctrl.applied[ZA] = PRESET_COMFORT
+    assert ctrl._heat_demand() is True
