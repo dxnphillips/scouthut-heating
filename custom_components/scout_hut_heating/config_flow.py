@@ -53,6 +53,63 @@ from .const import (
 
 BINARY = ["binary_sensor", "input_boolean"]
 
+# Every key shown on each step, used by the options flow to apply a submission:
+# an optional entity field the user CLEARS is simply omitted from user_input
+# (HA selector behaviour), so a plain dict.update() would keep the old value
+# forever and no mapping could ever be removed.
+ZONES_KEYS = (
+    CONF_HALL_CLIMATES,
+    CONF_OFFICE_CLIMATES,
+    CONF_SHARED_CLIMATES,
+    CONF_HALL_COMFORT_NUMBERS,
+    CONF_HALL_ECO_NUMBERS,
+)
+MOTION_KEYS = (
+    CONF_MOTION_HALL,
+    CONF_MOTION_OFFICE,
+    CONF_MOTION_KITCHEN,
+    CONF_MOTION_GENTS,
+    CONF_MOTION_FEMALE,
+)
+OPENINGS_KEYS = (
+    CONF_ZONE_A_DOORS,
+    CONF_ZONE_A_WINDOWS,
+    CONF_ZONE_B_DOORS,
+    CONF_ZONE_B_WINDOWS,
+    CONF_SHARED_WINDOWS,
+    CONF_INTERNAL_DOOR,
+)
+EXTRAS_KEYS = (
+    CONF_CALENDAR_HALL,
+    CONF_CALENDAR_OFFICE,
+    CONF_WEATHER,
+    CONF_REALFEEL,
+    CONF_ALARM_MAIN,
+    CONF_ALARM_OFFICE,
+    CONF_WATER_SWITCH,
+)
+FANS_KEYS = (
+    CONF_FAN_MASTER,
+    CONF_FAN_DIRECTION,
+    CONF_FAN_REVERSE,
+    CONF_CEILING_TEMP,
+    CONF_FLOOR_TEMP,
+    CONF_ROINTE_POWER,
+    CONF_FAN_O1_POWER,
+    CONF_FAN_O2_POWER,
+    CONF_FAN_FAULT,
+)
+
+
+def _apply_step(data: dict[str, Any], user_input: dict[str, Any], keys: tuple[str, ...]) -> None:
+    """Apply one step's submission: absent/empty optionals are removed."""
+    for key in keys:
+        value = user_input.get(key)
+        if value in (None, "", []):
+            data.pop(key, None)
+        else:
+            data[key] = value
+
 
 def _sel(domain: str | list[str], multiple: bool = False) -> selector.EntitySelector:
     return selector.EntitySelector(
@@ -210,7 +267,7 @@ class ScoutOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
-            self._data.update(user_input)
+            _apply_step(self._data, user_input, ZONES_KEYS)
             return await self.async_step_motion()
         return self.async_show_form(step_id="init", data_schema=_zones_schema(self._data))
 
@@ -218,7 +275,7 @@ class ScoutOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
-            self._data.update(user_input)
+            _apply_step(self._data, user_input, MOTION_KEYS)
             return await self.async_step_openings()
         return self.async_show_form(step_id="motion", data_schema=_motion_schema(self._data))
 
@@ -226,7 +283,7 @@ class ScoutOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
-            self._data.update(user_input)
+            _apply_step(self._data, user_input, OPENINGS_KEYS)
             return await self.async_step_extras()
         return self.async_show_form(
             step_id="openings", data_schema=_openings_schema(self._data)
@@ -236,7 +293,7 @@ class ScoutOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
-            self._data.update(user_input)
+            _apply_step(self._data, user_input, EXTRAS_KEYS)
             return await self.async_step_fans()
         return self.async_show_form(step_id="extras", data_schema=_extras_schema(self._data))
 
@@ -244,6 +301,6 @@ class ScoutOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
-            self._data.update(user_input)
+            _apply_step(self._data, user_input, FANS_KEYS)
             return self.async_create_entry(title="", data=self._data)
         return self.async_show_form(step_id="fans", data_schema=_fans_schema(self._data))

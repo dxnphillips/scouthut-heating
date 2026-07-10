@@ -72,8 +72,14 @@ E = {
 
 class FakeState:
     def __init__(self, state, attrs=None):
+        from homeassistant.util import dt as dt_util
+
         self.state = state
         self.attributes = attrs or {}
+        # Fresh by default, like a live entity; tests can age these to
+        # exercise the staleness logic.
+        self.last_updated = dt_util.utcnow()
+        self.last_reported = self.last_updated
 
 
 class FakeStates:
@@ -88,20 +94,28 @@ class FakeStates:
 
 
 class FakeServices:
-    def __init__(self):
+    def __init__(self, states=None):
         self.calls = []
+        self._states = states
 
     async def async_call(
         self, domain, service, data=None, blocking=False, target=None, return_response=False, **kw
     ):
         self.calls.append({"domain": domain, "service": service, "data": data or {}, "target": target})
+        # Echo switch commands into the fake state machine, like a real switch
+        # would: the coordinator now reconciles against actual states.
+        if self._states is not None and domain == "switch" and service in ("turn_on", "turn_off"):
+            ids = (data or {}).get("entity_id")
+            for eid in ids if isinstance(ids, list) else [ids]:
+                if eid:
+                    self._states.set(eid, "on" if service == "turn_on" else "off")
         return {} if return_response else None
 
 
 class FakeHass:
     def __init__(self):
         self.states = FakeStates()
-        self.services = FakeServices()
+        self.services = FakeServices(self.states)
         self.data = {}
 
 
@@ -121,6 +135,9 @@ class FakeSwitch:
     def __init__(self, is_on):
         self.is_on = is_on
         self._default = is_on
+
+    def force_off(self):
+        self.is_on = False
 
     def restore_default(self):
         self.is_on = self._default
@@ -228,6 +245,10 @@ def advance(ctrl, minutes):
             ctrl.boost_until[zone] = ts - delta
     for zone in list(ctrl._last_apply):
         ctrl._last_apply[zone] = ctrl._last_apply[zone] - delta
+    for attr in ("fan_last_on", "fan_last_off", "fan_master_off_since", "fan_action_grace_until"):
+        ts = getattr(ctrl, attr)
+        if ts is not None:
+            setattr(ctrl, attr, ts - delta)
     for zone, sample in ctrl._warmup_start.items():
         if sample is not None:
             ctrl._warmup_start[zone] = (sample[0] - delta, *sample[1:])
@@ -248,9 +269,26 @@ def set_preset_state(hass, entity_id, preset):
 
 
 def booking(ctrl, zone, title=""):
-    """Simulate an active booking / pre-heat window for a zone."""
+    """Simulate a RUNNING booking (the calendar event has started)."""
     ctrl.cal_window[zone] = True
     ctrl.cal_title[zone] = title.lower()
+    cal = ctrl.config.get(C.ZONE_CALENDAR[zone])
+    if cal:
+        ctrl.hass.states.set(cal, "on", {"message": title})
+
+
+def preheat_window(ctrl, zone, title=""):
+    """Simulate an upcoming event inside the pre-heat window (not started)."""
+    ctrl.cal_window[zone] = True
+    ctrl.cal_title[zone] = title.lower()
+
+
+def end_booking(ctrl, zone):
+    """End a running booking: calendar entity off, look-ahead window closed."""
+    ctrl.cal_window[zone] = False
+    cal = ctrl.config.get(C.ZONE_CALENDAR[zone])
+    if cal:
+        ctrl.hass.states.set(cal, "off")
 
 
 def motion(ctrl, area):

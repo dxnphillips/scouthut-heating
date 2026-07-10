@@ -43,9 +43,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    controller: ScoutController | None = hass.data[DOMAIN].pop(entry.entry_id, None)
-    if controller is not None:
-        controller.async_stop()
+    if unload_ok:
+        # Only tear the controller down when the platforms really unloaded —
+        # otherwise live entities would be left driving a stopped controller.
+        controller: ScoutController | None = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if controller is not None:
+            controller.async_stop()
     return unload_ok
 
 

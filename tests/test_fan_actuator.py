@@ -192,10 +192,10 @@ def test_fans_running_requires_real_power_when_metered():
 # --- No pre-cooling: the breeze needs someone to cool ---------------------------
 
 def test_preheat_window_does_not_start_the_summer_breeze():
-    from scout_testkit import ZA, booking
+    from scout_testkit import ZA, preheat_window
 
     ctrl, _ = fan_controller()
-    booking(ctrl, ZA)  # pre-heat window / upcoming event, hall still empty
+    preheat_window(ctrl, ZA)  # upcoming event, hall still empty
     assert ctrl._cooling_occupied() is False
 
 
@@ -213,3 +213,41 @@ def test_hall_motion_starts_the_breeze():
     ctrl, _ = fan_controller()
     motion(ctrl, "hall")
     assert ctrl._cooling_occupied() is True
+
+
+# --- Fault inference: the latch must be reachable --------------------------------
+
+def test_unexpected_master_off_latches_fault_instead_of_hammering():
+    from scout_testkit import PRESET_COMFORT, ZA, advance
+
+    ctrl, hass = fan_controller()
+    ctrl.applied[ZA] = PRESET_COMFORT  # heat demand (fallback path), sensor lost
+    run(ctrl._reconcile_fans())  # winter run-on-loss: fans commanded on
+    turn_ons = [c for c in hass.services.calls if c["service"] == "turn_on"
+                and c["data"].get("entity_id") == MASTER]
+    assert len(turn_ons) == 1 and ctrl.fan_master_expected is True
+
+    off(hass, MASTER)  # Shelly latched its own fault / someone hit the switch
+    run(ctrl._reconcile_fans())
+    turn_ons = [c for c in hass.services.calls if c["service"] == "turn_on"
+                and c["data"].get("entity_id") == MASTER]
+    assert len(turn_ons) == 1  # NOT re-commanded: that would re-arm the Shelly
+
+    advance(ctrl, 2)  # past FAN_FAULT_GRACE
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_fault_latched is True
+    turn_ons = [c for c in hass.services.calls if c["service"] == "turn_on"
+                and c["data"].get("entity_id") == MASTER]
+    assert len(turn_ons) == 1  # still exactly one command ever sent
+
+
+def test_reverse_press_gives_up_and_latches_after_repeated_failures():
+    ctrl, hass = fan_controller()
+    on(hass, MASTER)  # running forward, want reverse; script absent: relay never moves
+    for _ in range(3):
+        run(ctrl._async_ensure_fans(True, "reverse"))
+        ctrl.fan_action_grace_until = None  # grace expired, nothing changed
+    assert len(button_presses(hass)) == 3
+    run(ctrl._async_ensure_fans(True, "reverse"))
+    assert len(button_presses(hass)) == 3  # no fourth press
+    assert ctrl.fan_fault_latched is True

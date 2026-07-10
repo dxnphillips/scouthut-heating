@@ -109,7 +109,19 @@ def test_someone_elsewhere_rests_hall_at_eco():
     assert ctrl._desired_zone(ZA) == PRESET_ECO
 
 
-def test_preheat_window_without_motion_is_eco():
+def test_preheat_window_holds_comfort_while_empty():
+    # The pre-heat window exists to reach the comfort target by event start:
+    # the empty-room demotion applies only once the event is running.
     ctrl, _ = make_controller()
     ctrl.cal_window[ZA] = True  # event within pre-heat window, not yet started
-    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_alarm_clears_the_occupied_override():
+    # Original A33/A34: arming with no booking cancels a lingering override,
+    # or it would silently resume heating the empty zone at disarm.
+    ctrl, hass = make_controller()
+    ctrl._switches["zone_a_occupied_override"].is_on = True
+    on(hass, E["alarm_main"])
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl.switch_on("zone_a_occupied_override") is False

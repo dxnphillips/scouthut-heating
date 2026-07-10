@@ -48,7 +48,11 @@ entities you leave blank simply switches itself off.
 | **Calendars, weather & alarm** | Hall & office booking calendars, weather entity, RealFeel sensor, the two alarm booleans, and the water-heater switch |
 | **Ceiling fans & cooling** | Shelly fan master/direction switches and reverse button, the ceiling temperature sensor, the O1/O2 power sensors, and the Shelly fault boolean — all optional; leave blank to keep the fans off. The floor temperature and the Rointe *Effective Power* sensors are auto-detected from the heaters, so you normally leave them blank |
 
-You can re-map any of these later via the integration's **Configure** button.
+You can re-map any of these later via the integration's **Configure** button —
+including *clearing* a mapping (leave the field empty and the entity is
+unmapped). Safety latches and long-running clocks (manual holds, boosts, the
+inferred fan fault, the water hygiene clock) are persisted and survive a Home
+Assistant restart.
 
 ### Tunable controls (created automatically)
 
@@ -59,9 +63,11 @@ sidebar dashboard (Heating + Fans views) with your *real* entity ids —
 including the mapped Rointe and Shelly entities — and pressing it again
 regenerates it after new hardware is mapped. Ready-made YAML equivalents are
 in [`docs/heating_dashboard.yaml`](docs/heating_dashboard.yaml) and
-[`docs/fan_dashboard.yaml`](docs/fan_dashboard.yaml) as the manual fallback
-(dashboard auto-creation touches a semi-internal Home Assistant API; if a
-future HA release reshapes it the button fails soft with a notification):
+[`docs/fan_dashboard.yaml`](docs/fan_dashboard.yaml) as the manual fallback.
+Dashboard auto-creation touches a semi-internal Home Assistant API: on recent
+HA versions the dashboard is written to storage and a notification asks for
+one restart to surface it in the sidebar; if a future release reshapes the API
+entirely, the button fails soft and points at the YAML files:
 
 - **Numbers:** pre-heat lead time (the *maximum* — see optimum start below),
   hall/office learned warm-up rates, no-motion eco timeout, door/window ice
@@ -154,9 +160,14 @@ Shelly fault still forces the fans off.
 **Fault handling.** If the Shelly publishes its fault as a boolean, map it and
 the integration reads it directly. Until then it **infers** a fault from an
 unexpected master-off (surviving the legitimate reversal dwell), refuses to
-command the fans on, and notifies. Re-arming is deliberate — turn the Shelly
+command the fans on, and notifies. Crucially, while the master reads
+unexpectedly off the integration **never re-commands it**: turning O1 on is
+the Shelly script's re-arm gesture, so re-sending would defeat its own stall
+latch and keep re-energising a faulted motor. Repeated reverse-button presses
+that never move the direction relay (script missing/broken) also latch a
+fault instead of retrying forever. Re-arming is deliberate — turn the Shelly
 master back on, then toggle **Ceiling fans enabled** off→on; the integration
-never auto-rearms in a loop. Before any reversal it also reminds whoever is
+never auto-rearms in a loop, and the latch survives a Home Assistant restart. Before any reversal it also reminds whoever is
 there to **set the transformer dial high** first (HA cannot check the dial).
 
 ---
@@ -175,11 +186,15 @@ this priority (highest wins):
    counts when an exterior opening is also open).
 3. **Boost active** → `comfort` (bypasses the seasonal lockout).
 4. **Seasonal lockout** (3-day *average* forecast temperature at/above the
-   threshold; releases on a cold snap or low RealFeel) → `ice`.
+   threshold **and** RealFeel at/above it too — so a warm spell with a cold
+   snap can never flap the lockout; releases on a cold snap or low RealFeel)
+   → `ice`.
 5. **Alarm set with no booking** → `ice` and clears the occupied override.
-6. **Booking or pre-heat window** (optimum start — see below) → `comfort`,
-   dropping to `eco` while
-   unoccupied; events matching an ECO keyword stay on the lower `eco` setpoint.
+6. **Booking or pre-heat window** (optimum start — see below) → `comfort`.
+   An unoccupied room drops to `eco` only once the event has actually
+   started — the pre-heat window always heats at comfort, since its whole
+   purpose is reaching the comfort target by event start. Events matching an
+   ECO keyword stay on the lower `eco` setpoint throughout.
 7. **Occupied override or recent motion** → `eco`.
 8. **Zone empty** → `eco` while someone is still elsewhere in the building,
    `ice` once the building is empty.
@@ -215,7 +230,11 @@ cooling prediction.
 The **shared zone** follows either calendar / any motion / boost, and the
 **water heater** turns on for its own pre-heat window, kitchen/toilet motion
 (within the keep-alive) or the manual override, and off when the building is
-alarmed. Two safeguards for the 15 L point-of-use tank override even the
+alarmed. The switch is reconciled against its **real state**, not the last
+command — a manual flip or a Shelly reboot is re-asserted on the next tick, so
+frost protection cannot be defeated by one toggle, and the hygiene clock only
+counts genuinely-powered time. Two safeguards for the 15 L point-of-use tank
+override even the
 alarm: it is powered whenever the shared zone nears freezing (≤3 °C, releasing
 at 5 °C — the Speedflow's own frost stat only works while powered), and if the
 tank has gone a week without a completed reheat it runs a 45-minute hygiene

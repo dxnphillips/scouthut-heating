@@ -46,9 +46,20 @@ class ScoutSwitch(ScoutEntity, RestoreEntity, SwitchEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        if (last := await self.async_get_last_state()) is not None:
+        # Only trust a real on/off: restoring "unknown"/"unavailable" as off
+        # would silently disable default-on safety switches (automation
+        # enables, fans enabled) after an unclean restart.
+        if (last := await self.async_get_last_state()) is not None and last.state in (
+            "on",
+            "off",
+        ):
             self._attr_is_on = last.state == "on"
         self._controller.register_switch(self._key, self)
+
+    def force_off(self) -> None:
+        """Turn off from within the reconciler (no side effects, no reconcile)."""
+        self._attr_is_on = False
+        self.async_write_ha_state()
 
     def restore_default(self) -> None:
         """Reset to the built-in default (used by the reset button).

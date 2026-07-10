@@ -198,3 +198,15 @@ def test_regular_use_defers_the_hygiene_cycle():
     advance(ctrl, 5 * 24 * 60)  # five more days: only five since last hot
     run(ctrl.async_reconcile())
     assert ctrl.water_on is False
+
+
+def test_external_flip_is_reasserted():
+    # Frost protection must not be defeatable by one manual toggle: the
+    # reconciler compares against the REAL switch, not its last command.
+    ctrl, hass = make_controller()
+    _shared_temp(hass, 2.0)  # frost: tank must stay powered
+    run(ctrl.async_reconcile())
+    assert hass.states.get(E["water"]).state == "on"
+    hass.states.set(E["water"], "off")  # someone flips it off
+    run(ctrl.async_reconcile())
+    assert hass.states.get(E["water"]).state == "on"  # re-asserted
