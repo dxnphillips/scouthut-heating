@@ -86,3 +86,37 @@ def test_partial_override_fills_other_side():
         "number.hall_back_eco_temperature",
         "number.hall_front_eco_temperature",
     ]
+
+
+def test_power_discovery_prefers_effective_power_over_nominal():
+    # Rointe devices expose both a constant nominal "power" (the rating,
+    # always fresh and above the demand threshold) and the live "effective
+    # power". Discovery must pick only the effective one, or heat demand
+    # reads permanently on.
+    ctrl, hass = make_controller()
+    set_registry(
+        entries_by_device={
+            "dev_hall_back": [
+                "sensor.hall_back_power",           # nominal rating (constant)
+                "sensor.hall_back_effective_power",  # live element draw
+                "sensor.hall_back_energy",
+            ],
+        },
+        entity_devices={"climate.hall_back": "dev_hall_back"},
+    )
+    assert ctrl._power_sensors() == ["sensor.hall_back_effective_power"]
+
+    hass.states.set("sensor.hall_back_power", "1300")  # rating, fresh
+    hass.states.set("sensor.hall_back_effective_power", "0")  # element idle
+    assert ctrl._heat_demand() is False
+
+
+def test_power_discovery_falls_back_without_an_effective_sibling():
+    ctrl, _ = make_controller()
+    set_registry(
+        entries_by_device={
+            "dev_hall_back": ["sensor.hall_back_power"],
+        },
+        entity_devices={"climate.hall_back": "dev_hall_back"},
+    )
+    assert ctrl._power_sensors() == ["sensor.hall_back_power"]
