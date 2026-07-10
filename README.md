@@ -187,7 +187,9 @@ this priority (highest wins):
 
 1. **Automation disabled / manual hold** → the integration leaves the heater
    alone (manual hold is auto-set when it detects the Rointe app changed a
-   heater during a booking).
+   heater during a booking — from the reported preset when the Rointe
+   integration publishes one, otherwise from the reported setpoint, since
+   each Rointe preset pins a known target temperature).
 2. **Door or window held open** past its delay → `ice` (the internal door only
    counts when an exterior opening is also open).
 3. **Boost active** → `comfort` (bypasses the seasonal lockout).
