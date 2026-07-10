@@ -145,6 +145,14 @@ MAX_REVERSE_ATTEMPTS = 3
 # settle produced phantom "manual control detected" holds.
 DRIFT_SETTLE_SECONDS = 180
 
+# The Rointe integration in the field accepts set_preset_mode but publishes
+# preset_mode as null, so drift falls back to the reported setpoint: Rointe
+# presets pin the target temperature, and anti-frost is fixed on the hardware.
+# The tolerance sits under the 0.5° UI step, so the smallest possible manual
+# adjustment is still detected while float noise is not.
+SETPOINT_TOLERANCE = 0.3  # °C
+ROINTE_ANTIFROST = 7.0  # °C
+
 _LOGGER = logging.getLogger(__name__)
 
 SIGNAL_UPDATE = f"{DOMAIN}_update"
@@ -1731,20 +1739,64 @@ class ScoutController:
             if state is None:
                 continue
             actual = (state.attributes.get("preset_mode") or "").lower()
-            if not actual:
+            if actual:
+                matches: bool | None = actual == expected
+                detail = f"heater is {actual}"
+            else:
+                # The Rointe integration in the field accepts set_preset_mode
+                # but reports preset_mode as null, so judge drift from the
+                # reported SETPOINT instead: each preset implies a known
+                # target temperature on a Rointe (anti-frost is fixed at 7).
+                matches = self._setpoint_matches(zone, state, expected)
+                detail = f"target is {state.attributes.get('temperature')}°C"
+            if matches is None:
                 continue
-            if actual != expected and not self.manual_hold[zone]:
+            if not matches and not self.manual_hold[zone]:
                 self.manual_hold[zone] = True
+                self.audit.record(
+                    "manual_hold", self._now(), zone=zone, expected=expected, seen=detail
+                )
                 persistent_notification.async_create(
                     self.hass,
-                    f"Heating was changed manually (expected {expected}, heater "
-                    f"is {actual}). Automation is paused until the booking ends.",
+                    f"Heating was changed manually (expected {expected}, "
+                    f"{detail}). Automation is paused until the booking ends.",
                     title=f"🏕 {zone.replace('_', ' ').title()} – Manual control detected",
                     notification_id=NOTIFY_ZONE_HOLD[zone],
                 )
-            elif actual == expected and self.manual_hold[zone]:
+            elif matches and self.manual_hold[zone]:
                 self.manual_hold[zone] = False
                 persistent_notification.async_dismiss(self.hass, NOTIFY_ZONE_HOLD[zone])
+
+    def _setpoint_matches(self, zone: str, state: Any, expected: str) -> bool | None:
+        """Does the heater's reported setpoint agree with the expected preset?
+
+        Returns None when it cannot be judged (no readable setpoint, or the
+        preset's implied temperature is unknown for this zone) — the caller
+        skips rather than guesses.
+        """
+        try:
+            setpoint = float(state.attributes.get("temperature"))
+        except (TypeError, ValueError):
+            return None
+        tol = SETPOINT_TOLERANCE
+        if expected == PRESET_ICE:
+            return abs(setpoint - ROINTE_ANTIFROST) <= tol
+        if expected == PRESET_COMFORT:
+            if zone == ZONE_A:
+                return abs(setpoint - self.number("hall_comfort_temp")) <= tol
+            cached = self._zone_comfort_target.get(zone)
+            return None if cached is None else abs(setpoint - cached) <= tol
+        if expected == PRESET_ECO:
+            if zone == ZONE_A:
+                # Either eco value we push is legitimate (eco-low for ECO
+                # keyword events, plain eco otherwise).
+                eco = self.number("hall_eco_temp")
+                eco_low = self.number("hall_eco_low_temp")
+                return min(abs(setpoint - eco), abs(setpoint - eco_low)) <= tol
+            # The office eco setpoint lives on the device and is never
+            # pushed by the integration, so it cannot be judged.
+            return None
+        return None
 
     # ------------------------------------------------------------------
     # Applying presets

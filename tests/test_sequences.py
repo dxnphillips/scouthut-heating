@@ -149,6 +149,70 @@ def test_app_change_flags_manual_hold_then_clears():
     assert ctrl.manual_hold[ZA] is False
 
 
+def test_setpoint_drift_flags_manual_hold_when_preset_is_unpublished():
+    # The live Rointe integration accepts set_preset_mode but reports
+    # preset_mode as null, so drift falls back to the reported setpoint.
+    ctrl, hass = make_controller()
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZA] == PRESET_COMFORT
+
+    # Heater agrees with the pushed comfort setpoint (22): no hold.
+    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 22.0})
+    advance(ctrl, 4)  # past the drift settle window
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZA] is False
+
+    # Someone drops it to eco in the app -> setpoint no longer matches.
+    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 18.0})
+    advance(ctrl, 4)
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZA] is True
+    assert any(e["event"] == "manual_hold" for e in ctrl.audit.to_list())
+
+    # They put it back -> hold releases.
+    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 22.0})
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZA] is False
+
+
+def test_setpoint_drift_detects_an_expected_ice_override():
+    # Expected ice = the fixed 7 °C anti-frost setpoint; a manual bump to any
+    # other target is drift. (Judged only during a booking window, like the
+    # preset-based path.)
+    ctrl, hass = make_controller()
+    booking(ctrl, ZA)
+    ctrl.seasonal_lockout = True  # ice outranks the booking
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZA] == PRESET_ICE
+
+    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 22.0})
+    advance(ctrl, 4)
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZA] is True
+
+
+def test_unjudgeable_setpoint_never_guesses_a_hold():
+    # Office eco has no known setpoint (it lives on the device), and a
+    # missing temperature attribute is unreadable: both must skip, not latch.
+    from scout_testkit import ZB
+
+    ctrl, hass = make_controller()
+    booking(ctrl, ZB, "sal-vation eco session")  # ECO-keyword booking
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZB] == PRESET_ECO
+
+    hass.states.set("climate.office", "heat", {"preset_mode": None, "temperature": 25.0})
+    advance(ctrl, 4)
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZB] is False  # cannot be judged: no hold
+
+    hass.states.set("climate.office", "heat", {"preset_mode": None})
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZB] is False
+
+
 def test_manual_hold_blocks_then_resumes():
     ctrl, _ = make_controller()
     ctrl.manual_hold[ZA] = True
