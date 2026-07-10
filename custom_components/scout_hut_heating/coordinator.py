@@ -907,6 +907,46 @@ class ScoutController:
         await self.async_hall_temps_changed()
         await self.async_reconcile()
 
+    async def async_create_dashboards(self) -> None:
+        """Create or refresh the sidebar dashboard (the Create dashboards button).
+
+        Generation itself is pure; only the Lovelace storage calls can fail on
+        a Home Assistant version that has reshaped its internals — in which
+        case the docs/ YAML files remain the manual fallback and the
+        notification says so.
+        """
+        from . import dashboards
+        from .const import NOTIFY_DASHBOARDS
+
+        try:
+            error = await dashboards.async_create_or_update(self.hass, self)
+        except Exception as err:  # noqa: BLE001 - semi-internal HA API
+            error = str(err)
+        if error:
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    f"Could not create the dashboard automatically ({error}). "
+                    "You can still paste docs/heating_dashboard.yaml and "
+                    "docs/fan_dashboard.yaml from the repository as manual "
+                    "dashboards."
+                ),
+                title="🏕 Scout Hut – Dashboard creation failed",
+                notification_id=NOTIFY_DASHBOARDS,
+            )
+        else:
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    "The 'Scout Hut' dashboard (Heating + Fans views) has been "
+                    "created in the sidebar with your real entity ids. Press "
+                    "the button again any time to regenerate it — e.g. after "
+                    "mapping new hardware."
+                ),
+                title="🏕 Scout Hut – Dashboard created",
+                notification_id=NOTIFY_DASHBOARDS,
+            )
+
     async def async_fan_rearm(self) -> None:
         """Clear an inferred fan fault. This is the deliberate HA-side re-arm.
 
@@ -1211,7 +1251,15 @@ class ScoutController:
         for zone in (ZONE_A, ZONE_B):
             if not self.switch_on(f"{zone}_automation_enabled", default=True):
                 continue
-            if not self._cal_active(zone) or self.boost_active(zone):
+            if not self._cal_active(zone):
+                # The hold is documented to last "until the booking ends" —
+                # release it once the booking is over, or an app change made
+                # mid-booking would freeze the zone's automation indefinitely.
+                if self.manual_hold[zone]:
+                    self.manual_hold[zone] = False
+                    persistent_notification.async_dismiss(self.hass, NOTIFY_ZONE_HOLD[zone])
+                continue
+            if self.boost_active(zone):
                 continue
             expected = self.expected_preset[zone]
             if expected is None:

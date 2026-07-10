@@ -206,3 +206,22 @@ def test_internal_door_through_path_then_internal_closes():
     run(ctrl.async_reconcile())
     assert ctrl.opening_ice[ZA] is False
     assert ctrl.applied[ZA] == PRESET_COMFORT
+
+
+def test_manual_hold_releases_when_booking_ends():
+    # The hold is documented to last "until the booking ends" — verify it
+    # actually does, instead of freezing the zone's automation indefinitely.
+    ctrl, hass = make_controller()
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    run(ctrl.async_reconcile())
+    set_preset_state(hass, "climate.hall_back", "eco")  # app override
+    advance(ctrl, 2)
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZA] is True
+
+    ctrl.cal_window[ZA] = False  # booking over (calendar already off)
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZA] is False
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZA] is not None  # automation resumed

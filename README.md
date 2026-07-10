@@ -53,10 +53,15 @@ You can re-map any of these later via the integration's **Configure** button.
 ### Tunable controls (created automatically)
 
 The integration creates its own helper entities — put them on a dashboard, no
-restart needed to change them. Ready-made Lovelace dashboards are in
-[`docs/heating_dashboard.yaml`](docs/heating_dashboard.yaml) (whole system)
-and [`docs/fan_dashboard.yaml`](docs/fan_dashboard.yaml) (ceiling fans in
-detail):
+restart needed to change them. The easiest way is the **Create dashboards**
+button (created with the boost buttons): one press builds a "Scout Hut"
+sidebar dashboard (Heating + Fans views) with your *real* entity ids —
+including the mapped Rointe and Shelly entities — and pressing it again
+regenerates it after new hardware is mapped. Ready-made YAML equivalents are
+in [`docs/heating_dashboard.yaml`](docs/heating_dashboard.yaml) and
+[`docs/fan_dashboard.yaml`](docs/fan_dashboard.yaml) as the manual fallback
+(dashboard auto-creation touches a semi-internal Home Assistant API; if a
+future HA release reshapes it the button fails soft with a notification):
 
 - **Numbers:** pre-heat lead time (the *maximum* — see optimum start below),
   hall/office learned warm-up rates, no-motion eco timeout, door/window ice
@@ -66,12 +71,12 @@ detail):
 - **Switches:** hall/office automation enabled, hall/office occupied override,
   water heater manual override.
 - **Text:** ECO keyword blocklist (comma-separated).
-- **Buttons:** boost hall, boost office, cancel-boost for each, and **Reset
-  tunables to defaults** (restores every number/switch/select/text above to its
-  built-in default; deliberately does not clear boosts, manual holds or a
-  latched fan fault). Restored number values are clamped into the current
-  slider bounds on startup, so an upgrade that tightens a range heals old
-  out-of-range values automatically.
+- **Buttons:** boost hall, boost office, cancel-boost for each, **Create
+  dashboards** (see above), and **Reset tunables to defaults** (restores every
+  number/switch/select/text above to its built-in default; deliberately does
+  not clear boosts, manual holds or a latched fan fault). Restored number
+  values are clamped into the current slider bounds on startup, so an upgrade
+  that tightens a range heals old out-of-range values automatically.
 - **Diagnostic sensors/binary sensors:** current & expected preset per zone,
   water state, seasonal lockout, opening-ice flags, manual-hold flags, boost
   flags, and the hall temperature spread (max − min across the hall heaters'
