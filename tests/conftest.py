@@ -132,10 +132,12 @@ def _install_stubs() -> None:
     erm = _mod("homeassistant.helpers.entity_registry")
 
     class _RegEntry:
-        def __init__(self, entity_id, device_id):
+        def __init__(self, entity_id, device_id, unique_id=None, config_entry_id=None):
             self.entity_id = entity_id
             self.device_id = device_id
             self.domain = entity_id.split(".")[0]
+            self.unique_id = unique_id
+            self.config_entry_id = config_entry_id
 
     class _Reg:
         def __init__(self):
@@ -151,6 +153,9 @@ def _install_stubs() -> None:
     erm.async_entries_for_device = (
         lambda reg, device_id, include_disabled_entities=False: reg.by_device.get(device_id, [])
     )
+    erm.async_entries_for_config_entry = lambda reg, entry_id: [
+        e for e in reg.by_id.values() if getattr(e, "config_entry_id", None) == entry_id
+    ]
 
     sel = _mod("homeassistant.helpers.selector")
     sel.EntitySelector = lambda cfg: ("sel", cfg)

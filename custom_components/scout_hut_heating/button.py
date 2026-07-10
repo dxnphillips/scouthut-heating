@@ -18,6 +18,7 @@ BUTTONS: dict[str, tuple[str, str, str, str]] = {
     "cancel_boost_zone_a": ("Cancel hall boost", "mdi:fire-off", "cancel", ZONE_A),
     "cancel_boost_zone_b": ("Cancel office boost", "mdi:fire-off", "cancel", ZONE_B),
     "reset_tunables": ("Reset tunables to defaults", "mdi:backup-restore", "reset", ""),
+    "create_dashboards": ("Create dashboards", "mdi:view-dashboard-outline", "dashboards", ""),
 }
 
 
@@ -43,5 +44,7 @@ class ScoutButton(ScoutEntity, ButtonEntity):
             await self._controller.async_boost(self._zone)
         elif self._action == "cancel":
             await self._controller.async_cancel_boost(self._zone)
-        else:
+        elif self._action == "reset":
             await self._controller.async_reset_tunables()
+        else:
+            await self._controller.async_create_dashboards()
