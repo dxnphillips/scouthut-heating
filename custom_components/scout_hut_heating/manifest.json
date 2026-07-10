@@ -5,9 +5,10 @@
   "config_flow": true,
   "documentation": "https://github.com/dxnphillips/scouthut-heating",
   "integration_type": "hub",
-  "iot_class": "local_polling",
+  "iot_class": "calculated",
   "issue_tracker": "https://github.com/dxnphillips/scouthut-heating/issues",
-  "after_dependencies": ["climate", "calendar", "weather", "persistent_notification"],
+  "dependencies": ["persistent_notification"],
+  "after_dependencies": ["climate", "calendar", "weather"],
   "requirements": [],
-  "version": "1.5.0"
+  "version": "1.6.0"
 }

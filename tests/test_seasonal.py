@@ -64,3 +64,10 @@ def test_empty_forecast_returns_none():
 def test_only_two_days_still_averaged():
     avg, warm, _ = D(_days(30, 16, n=2), 15, 20)
     assert avg == 23 and warm is True
+
+
+def test_cold_realfeel_blocks_engage_so_lockout_cannot_flap():
+    # A warm 3-day average with a cold-snap RealFeel used to satisfy engage
+    # and release simultaneously, toggling the lockout every hourly check.
+    _, warm, cold = D(_days(33, 15), 15, 10)
+    assert warm is False and cold is True

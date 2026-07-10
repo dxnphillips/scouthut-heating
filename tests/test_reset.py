@@ -62,3 +62,65 @@ def test_restored_number_in_range_is_kept(monkeypatch):
     monkeypatch.setattr(ent, "async_get_last_number_data", _last_data)
     run(ent.async_added_to_hass())
     assert ent._attr_native_value == 21.5
+
+
+def test_switch_restore_ignores_unavailable(monkeypatch):
+    # Restoring "unavailable" as off would silently disable default-on safety
+    # switches after an unclean restart.
+    from custom_components.scout_hut_heating.switch import ScoutSwitch
+
+    ctrl, _ = make_controller()
+    ent = ScoutSwitch(ctrl, "fans_enabled")
+
+    class _Last:
+        state = "unavailable"
+
+    async def _last():
+        return _Last()
+
+    monkeypatch.setattr(ent, "async_get_last_state", _last)
+    run(ent.async_added_to_hass())
+    assert ent._attr_is_on is True  # default kept
+
+
+def test_durable_state_survives_a_restart():
+    from datetime import timedelta
+
+    from scout_testkit import ZA, ZB
+
+    ctrl, _ = make_controller()
+    ctrl.fan_fault_latched = True
+    ctrl.manual_hold[ZA] = True
+    ctrl.water_last_hot = ctrl._now() - timedelta(days=2)
+    ctrl.boost_until[ZB] = ctrl._now() + timedelta(minutes=30)
+    snapshot = ctrl._state_snapshot()
+
+    ctrl2, _ = make_controller()
+
+    async def _load():
+        return snapshot
+
+    ctrl2._store.async_load = _load
+    run(ctrl2._async_restore_state())
+    assert ctrl2.fan_fault_latched is True
+    assert ctrl2.manual_hold[ZA] is True
+    assert ctrl2.boost_until[ZB] is not None
+    assert abs((ctrl2.water_last_hot - ctrl.water_last_hot).total_seconds()) < 1
+
+
+def test_expired_boost_is_not_restored():
+    from datetime import timedelta
+
+    from scout_testkit import ZA
+
+    ctrl, _ = make_controller()
+    ctrl.boost_until[ZA] = ctrl._now() - timedelta(minutes=5)  # already over
+    snapshot = ctrl._state_snapshot()
+    ctrl2, _ = make_controller()
+
+    async def _load():
+        return snapshot
+
+    ctrl2._store.async_load = _load
+    run(ctrl2._async_restore_state())
+    assert ctrl2.boost_until[ZA] is None

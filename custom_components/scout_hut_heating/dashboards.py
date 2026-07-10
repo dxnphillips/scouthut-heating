@@ -22,6 +22,11 @@ DASHBOARD_URL = "scout-hut"
 DASHBOARD_TITLE = "Scout Hut"
 DASHBOARD_ICON = "mdi:campfire"
 
+# Returned instead of an error when the dashboard was created/updated in
+# storage but the running Lovelace could not be told about it live (modern HA
+# keeps its dashboards collection private): a restart will surface it.
+RESTART_REQUIRED = "__restart_required__"
+
 # (helper key, display name) rows per card. A row is silently dropped when the
 # helper is missing from the registry, so the dashboard is always valid.
 _NOW = [
@@ -239,25 +244,45 @@ async def async_create_or_update(hass: HomeAssistant, controller: Any) -> str | 
     if dashboards is None:
         return "this Home Assistant version does not expose the dashboard store"
 
+    created_offline = False
+    item: dict[str, Any] | None = None
     if DASHBOARD_URL not in dashboards:
         collection = _get("dashboards_collection")
         if collection is None:
-            return (
-                "this Home Assistant version does not expose the dashboards "
-                "collection"
+            # Modern HA (2025.2+) keeps the running collection private. Load
+            # our own instance over the same storage: the item persists and
+            # the sidebar picks it up on the next restart.
+            from homeassistant.components.lovelace import dashboard as lovelace_dashboard
+
+            collection = lovelace_dashboard.DashboardsCollection(hass)
+            await collection.async_load()
+            created_offline = True
+        existing = [
+            entry
+            for entry in collection.async_items()
+            if entry.get("url_path") == DASHBOARD_URL
+        ]
+        if existing:
+            item = existing[0]
+        else:
+            item = await collection.async_create_item(
+                {
+                    "url_path": DASHBOARD_URL,
+                    "title": DASHBOARD_TITLE,
+                    "icon": DASHBOARD_ICON,
+                    "show_in_sidebar": True,
+                    "require_admin": False,
+                }
             )
-        await collection.async_create_item(
-            {
-                "url_path": DASHBOARD_URL,
-                "title": DASHBOARD_TITLE,
-                "icon": DASHBOARD_ICON,
-                "show_in_sidebar": True,
-                "require_admin": False,
-            }
-        )
 
     dashboard = dashboards.get(DASHBOARD_URL)
+    if dashboard is None and item is not None:
+        # Not registered with the running Lovelace: write the config straight
+        # to the dashboard's own store so it is ready when the panel appears.
+        from homeassistant.components.lovelace import dashboard as lovelace_dashboard
+
+        dashboard = lovelace_dashboard.LovelaceStorage(hass, item)
     if dashboard is None:
         return "the dashboard was created but did not register"
     await dashboard.async_save(config)
-    return None
+    return RESTART_REQUIRED if created_offline else None

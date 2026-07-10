@@ -23,7 +23,8 @@ def test_empty_reconcile_ices_all_and_off_water():
     assert preset_for(hass, "climate.office") == PRESET_ICE
     assert preset_for(hass, "climate.kitchen") == PRESET_ICE
     assert ctrl.water_on is False
-    assert service_calls(hass, "switch", "turn_off")
+    # The switch already reads off, so no redundant command is sent.
+    assert not service_calls(hass, "switch", "turn_off")
 
 
 def test_water_turns_on_with_kitchen_motion():

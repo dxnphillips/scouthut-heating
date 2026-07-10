@@ -31,6 +31,11 @@ ALPHA = 0.3
 # readings are coarse and cloud-lagged, so small rises are mostly noise.
 MIN_SAMPLE_RISE = 1.0
 
+# ...and with less duration than this (minutes): a cloud-lagged reading that
+# catches up in one jump would otherwise register an implausibly fast warm-up
+# and walk the learned rate to the clamp in a couple of incidents.
+MIN_SAMPLE_MINUTES = 10.0
+
 # Never start later than this many minutes before an event, however warm the
 # room already is — the calendar look-ahead needs some window to see events.
 MIN_LEAD = 15.0
@@ -87,10 +92,17 @@ def required_lead_minutes(
     if gap_hours is not None and gap_hours > 0 and cool_rate > 0 and lead < gap_hours * 60:
         # Idle until the pre-heat begins: deficit grows while the room cools.
         # lead = rate * (deficit + cool_rate * idle_hours), where
-        # idle_hours = gap_hours - lead/60 — solved for lead.
-        predicted = min(deficit + cool_rate * gap_hours, target - MIN_PREDICT_TEMP)
-        if predicted > deficit:
-            lead = rate * predicted / (1 + rate * cool_rate / 60)
+        # idle_hours = gap_hours - lead/60 — solved for lead. The divisor is
+        # only valid while the room is still cooling when the pre-heat starts;
+        # once the anti-frost floor binds, the room has bottomed out long
+        # before then and the deficit is simply fixed at (target - floor).
+        raw = deficit + cool_rate * gap_hours
+        floor_deficit = target - MIN_PREDICT_TEMP
+        if raw > deficit:
+            if raw <= floor_deficit:
+                lead = rate * raw / (1 + rate * cool_rate / 60)
+            elif floor_deficit > 0:
+                lead = rate * floor_deficit
     if lead <= 0:
         return min(MIN_LEAD, max_minutes)
     if outdoor is not None and outdoor < OUTDOOR_BASE:
@@ -106,7 +118,7 @@ def updated_rate(rate: float, minutes_elapsed: float, temp_rise: float) -> float
     clamped into the plausible band so a single pathological warm-up (opening
     held open, sensor frozen) cannot poison the estimate.
     """
-    if temp_rise < MIN_SAMPLE_RISE or minutes_elapsed <= 0:
+    if temp_rise < MIN_SAMPLE_RISE or minutes_elapsed < MIN_SAMPLE_MINUTES:
         return rate
     observed = minutes_elapsed / temp_rise
     observed = max(MIN_RATE, min(MAX_RATE, observed))

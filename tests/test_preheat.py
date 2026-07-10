@@ -237,3 +237,92 @@ def test_hall_temp_spread_needs_two_readings():
     ctrl, hass = make_controller()
     _hall_temp(hass, 20)  # only one heater reporting
     assert ctrl.hall_temp_spread is None
+
+
+# --- Audit-fix regressions -------------------------------------------------------
+
+def test_warmup_rate_ignores_implausibly_fast_samples():
+    # A cloud-lagged reading catching up in one jump is not a real warm-up.
+    assert updated_rate(20, 5, 4) == 20
+
+
+def test_clamped_cooling_prediction_uses_the_full_floor_deficit():
+    # Once the 7 °C floor binds, the room bottoms out long before the pre-heat
+    # begins: the lead is simply rate x (target - floor), not the closed form.
+    lead = required_lead_minutes(
+        rate=8, indoor=19, target=22, outdoor=15, max_minutes=600,
+        gap_hours=12, cool_rate=3.0,
+    )
+    assert lead == 8 * 15
+
+
+def test_fast_heat_loss_is_learnable():
+    from scout_testkit import PRESET_ICE
+
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_cooloff_rate", 2.0)
+    _hall_temp(hass, 20)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 20)
+    _hall_temp(hass, 19)  # 1 °C in 20 min: too short a sample to fold...
+    ctrl._update_cooloff_learning()
+    assert ctrl.number("zone_a_cooloff_rate") == 2.0
+    assert ctrl._cooloff_start[ZA][1] == 20  # ...and the anchor must NOT roll
+    advance(ctrl, 20)
+    _hall_temp(hass, 18)  # 2 °C over 40 min -> observed 3 °C/h, accepted
+    ctrl._update_cooloff_learning()
+    assert ctrl.number("zone_a_cooloff_rate") == pytest.approx(2.3, abs=0.01)
+
+
+def test_open_door_does_not_teach_heat_loss():
+    from scout_testkit import PRESET_ICE
+
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_cooloff_rate", 2.0)
+    _hall_temp(hass, 20)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()
+    ctrl.opening_ice[ZA] = True  # door propped open: ventilation, not fabric
+    advance(ctrl, 120)
+    _hall_temp(hass, 14)
+    ctrl._update_cooloff_learning()
+    assert ctrl._cooloff_start[ZA] is None  # sample discarded
+    assert ctrl.number("zone_a_cooloff_rate") == 2.0
+
+
+def test_prediction_falls_back_until_the_fans_rate_is_trained():
+    from custom_components.scout_hut_heating.const import CONF_FAN_MASTER
+
+    ctrl, hass = make_controller(config_overrides={CONF_FAN_MASTER: "switch.fan_master"})
+    _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "zone_a_cooloff_rate", 0)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 15})
+    _hall_temp(hass, 19)
+    # Fans-rate still at its fail-safe seed (60): predict with the base rate.
+    assert ctrl._zone_preheat_minutes(ZA) == 60
+    _set_rate(ctrl, "zone_a_warmup_rate_fans", 15)  # now trained
+    assert ctrl._zone_preheat_minutes(ZA) == 45
+
+
+def test_all_day_event_start_parses_to_an_aware_midnight():
+    from custom_components.scout_hut_heating.coordinator import ScoutController
+
+    parsed = ScoutController._parse_event_start("2026-07-11")
+    assert parsed is not None and parsed.tzinfo is not None
+
+
+def test_calendar_blip_keeps_the_previous_window(monkeypatch):
+    from scout_testkit import preheat_window
+
+    ctrl, _ = make_controller()
+    preheat_window(ctrl, ZA)
+
+    async def _err(cal, minutes):
+        return None  # calendar service unavailable
+
+    monkeypatch.setattr(ctrl, "_async_calendar_events", _err)
+    from scout_testkit import run
+
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True  # window survives the blip

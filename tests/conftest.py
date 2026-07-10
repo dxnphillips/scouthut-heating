@@ -186,7 +186,27 @@ def _install_stubs() -> None:
     from datetime import datetime, timezone
 
     dtm.utcnow = lambda: datetime.now(timezone.utc)
-    dtm.now = lambda: datetime.now()
+    # Aware, like real HA (naive would break event-start arithmetic).
+    dtm.now = lambda: datetime.now(timezone.utc)
+    dtm.DEFAULT_TIME_ZONE = timezone.utc
+
+    storage = _mod("homeassistant.helpers.storage")
+
+    class _Store:
+        def __init__(self, hass, version, key):
+            self.key = key
+            self.saved = None
+
+        async def async_load(self):
+            return None
+
+        async def async_save(self, data):
+            self.saved = data
+
+        def async_delay_save(self, data_func, delay=0):
+            self.saved = data_func()
+
+    storage.Store = _Store
 
     class _Ent:
         def async_write_ha_state(self):

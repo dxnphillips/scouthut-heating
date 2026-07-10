@@ -6,6 +6,7 @@ the state at every step.
 """
 
 from scout_testkit import (
+    end_booking,
     PRESET_COMFORT,
     PRESET_ECO,
     PRESET_ICE,
@@ -53,7 +54,7 @@ def test_booking_ends_reverts_then_cools_to_ice():
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_COMFORT
 
-    ctrl.cal_window[ZA] = False     # booking ends, people still around
+    end_booking(ctrl, ZA)           # booking ends, people still around
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_ECO
 
@@ -138,7 +139,7 @@ def test_app_change_flags_manual_hold_then_clears():
 
     # Someone overrides the heater in the Rointe app -> preset drifts.
     set_preset_state(hass, "climate.hall_back", "eco")
-    advance(ctrl, 2)                # past the 60s settle window
+    advance(ctrl, 4)                # past the drift settle window
     run(ctrl.async_reconcile())
     assert ctrl.manual_hold[ZA] is True
 
@@ -216,11 +217,11 @@ def test_manual_hold_releases_when_booking_ends():
     motion(ctrl, "hall")
     run(ctrl.async_reconcile())
     set_preset_state(hass, "climate.hall_back", "eco")  # app override
-    advance(ctrl, 2)
+    advance(ctrl, 4)
     run(ctrl.async_reconcile())
     assert ctrl.manual_hold[ZA] is True
 
-    ctrl.cal_window[ZA] = False  # booking over (calendar already off)
+    end_booking(ctrl, ZA)  # booking over
     run(ctrl.async_reconcile())
     assert ctrl.manual_hold[ZA] is False
     run(ctrl.async_reconcile())

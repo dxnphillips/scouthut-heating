@@ -91,3 +91,29 @@ def test_boost_beats_both_alarms():
     on(hass, E["alarm_office"])
     boost(ctrl, ZA)
     assert ctrl._desired_shared() == PRESET_COMFORT
+
+
+def test_shared_preset_resent_after_heaters_reconnect():
+    from scout_testkit import E, run, service_calls
+
+    ctrl, hass = make_controller()
+    run(ctrl.async_reconcile())  # heaters have no state yet: offline apply
+    assert ctrl._shared_offline_apply is True
+
+    def shared_sends():
+        count = 0
+        for c in service_calls(hass, "climate", "set_preset_mode"):
+            ids = c["data"].get("entity_id")
+            ids = ids if isinstance(ids, list) else [ids]
+            if E["shared"][0] in ids:
+                count += 1
+        return count
+
+    before = shared_sends()
+    for eid in E["shared"]:
+        hass.states.set(eid, "heat", {})  # all shared heaters back online
+    run(ctrl.async_reconcile())
+    assert shared_sends() == before + 1  # unchanged preset re-sent once
+    assert ctrl._shared_offline_apply is False
+    run(ctrl.async_reconcile())
+    assert shared_sends() == before + 1  # and only once

@@ -37,10 +37,18 @@ from homeassistant.helpers.event import (
     async_track_time_change,
     async_track_time_interval,
 )
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .fan_logic import fan_decision
-from .preheat import required_lead_minutes, updated_cooling_rate, updated_rate
+from .preheat import (
+    MAX_RATE,
+    MIN_COOL_SAMPLE_DROP,
+    MIN_COOL_SAMPLE_HOURS,
+    required_lead_minutes,
+    updated_cooling_rate,
+    updated_rate,
+)
 from .const import (
     CONF_ALARM_MAIN,
     CONF_ALARM_OFFICE,
@@ -118,6 +126,16 @@ SEASONAL_RELEASE_BAND = 0.5  # °C
 # Shelly script's MIN_RUN_W commissioning placeholder.
 FAN_RUNNING_MIN_WATTS = 20.0
 
+# Consecutive reverse-button presses that fail to change the direction relay
+# before the controller concludes the Shelly script is absent/broken and
+# latches a fault instead of pressing forever.
+MAX_REVERSE_ATTEMPTS = 3
+
+# Ignore preset drift within this window of our own change: the Rointe cloud
+# can take a couple of minutes to reflect a preset we just sent, and a shorter
+# settle produced phantom "manual control detected" holds.
+DRIFT_SETTLE_SECONDS = 180
+
 _LOGGER = logging.getLogger(__name__)
 
 SIGNAL_UPDATE = f"{DOMAIN}_update"
@@ -185,12 +203,14 @@ class ScoutController:
         self.fan_master_expected: bool | None = None  # what we last told O1 to be
         self.fan_master_off_since: datetime | None = None  # for dwell-safe infer
         self.fan_action_grace_until: datetime | None = None  # Shelly mid-sequence
+        self._reverse_attempts = 0  # consecutive reversals with no relay change
         self._fan_fault_notified: bool = False
         self._discovered_power: list[str] | None = None  # auto-found power sensors
         self._connected_map: dict[str, str] | None = None  # climate -> connected sensor
         # A zone whose last preset was sent while a heater was offline: re-send it
         # once every heater is back online.
         self._zone_offline_apply: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
+        self._shared_offline_apply = False
 
         # Cached calendar look-ahead (refreshed on a slower cadence).
         self.cal_window: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
@@ -212,6 +232,9 @@ class ScoutController:
             ZONE_B: None,
         }
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
+
+        # Durable state (safety latches and long clocks survive a restart).
+        self._store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}")
 
         self._unsubs: list = []
         self._started = False
@@ -284,6 +307,7 @@ class ScoutController:
             CONF_CALENDAR_OFFICE,
             CONF_ALARM_MAIN,
             CONF_ALARM_OFFICE,
+            CONF_WATER_SWITCH,
             CONF_CEILING_TEMP,
             CONF_FLOOR_TEMP,
             CONF_FAN_MASTER,
@@ -328,9 +352,13 @@ class ScoutController:
         )
 
         async def _first_run(_now: datetime) -> None:
-            self._started = True
+            await self._async_restore_state()
+            # Load the calendar and forecast BEFORE accepting reconciles, so a
+            # sensor event arriving mid-load cannot apply presets computed
+            # from empty calendar data (briefly icing a zone mid-booking).
             await self._async_refresh_calendars()
             await self._async_seasonal_check()
+            self._started = True
             await self.async_reconcile()
 
         self._unsubs.append(async_call_later(self.hass, STARTUP_DELAY, _first_run))
@@ -445,12 +473,19 @@ class ScoutController:
             # lead for the specific event found: its own target (an ECO event
             # pre-heats to the lower eco setpoint) and the idle gap until it
             # starts (during which the room keeps cooling).
-            title, start = await self._async_next_event(cal, cap)
-            if title is None:
+            events = await self._async_calendar_events(cal, cap)
+            if events is None:
+                # Calendar service blip: keep the previous window and title.
+                # Dropping to "no window" on a transient error would cancel an
+                # active pre-heat and release a manual hold mid-booking.
+                continue
+            if not events:
                 self.cal_window[zone] = False
                 self.cal_title[zone] = ""
                 continue
-            self.cal_title[zone] = title.lower()
+            first = events[0]
+            start = self._parse_event_start(first.get("start"))
+            self.cal_title[zone] = (first.get("summary", "") or "").lower()
             eco = any(kw in self.cal_title[zone] for kw in self.eco_keywords())
             gap_min: float | None = None
             if start is not None:
@@ -496,28 +531,23 @@ class ScoutController:
             return None
         return (response or {}).get(cal, {}).get("events", []) if response else []
 
-    async def _async_next_event(self, cal: str, minutes: int) -> tuple[str | None, datetime | None]:
-        """First event within `minutes`: (summary, parsed start) or (None, None).
-
-        A summary with a None start means an event exists but its start could
-        not be parsed — callers treat that conservatively (pre-heat now).
-        """
-        events = await self._async_calendar_events(cal, minutes)
-        if not events:
-            return None, None
-        first = events[0]
-        return first.get("summary", "") or "", self._parse_event_start(first.get("start"))
-
     @staticmethod
     def _parse_event_start(value: Any) -> datetime | None:
         if not value:
             return None
         if isinstance(value, datetime):
-            return value
-        try:
-            return datetime.fromisoformat(str(value))
-        except ValueError:
-            return None
+            parsed = value
+        else:
+            try:
+                parsed = datetime.fromisoformat(str(value))
+            except ValueError:
+                return None
+        if parsed.tzinfo is None:
+            # All-day events come back date-only -> naive midnight. Anchor to
+            # local time so the gap arithmetic works instead of raising and
+            # falling into the maximum-lead path.
+            parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        return parsed
 
     async def _async_calendar_window(self, cal: str, minutes: int) -> tuple[bool, str]:
         """Return (event within window?, first event summary)."""
@@ -618,7 +648,7 @@ class ScoutController:
         """
         target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
         minutes = required_lead_minutes(
-            rate=self.number(self._warmup_rate_key(zone)),
+            rate=self._prediction_rate(zone),
             # Size the pre-heat for the coldest reading, not the average: the
             # warm end's heater must not cut the lead short for the cold end.
             indoor=self._zone_room_temp(zone, coldest=True),
@@ -629,6 +659,21 @@ class ScoutController:
             cool_rate=self.number(f"{zone}_cooloff_rate"),
         )
         return int(round(minutes))
+
+    def _prediction_rate(self, zone: str) -> float:
+        """The learned rate to predict a warm-up with.
+
+        The fan-assisted hall rate is preferred when the fans are expected to
+        help, but only once it has actually been trained: at its untouched
+        fail-safe seed (MAX_RATE) it would pin every lead at the cap forever
+        while the observations were all landing in the base rate. Until then,
+        fall back to whichever knowledge exists.
+        """
+        key = self._warmup_rate_key(zone)
+        rate = self.number(key)
+        if key == "zone_a_warmup_rate_fans" and rate >= MAX_RATE:
+            rate = min(rate, self.number("zone_a_warmup_rate"))
+        return rate
 
     def _warmup_rate_key(self, zone: str, assisted: bool | None = None) -> str:
         """Which learned warm-up rate applies to a zone.
@@ -655,9 +700,12 @@ class ScoutController:
         master = self.config.get(CONF_FAN_MASTER)
         if not master or not self._is_on(master):
             return False
-        power = self._num_state(self.config.get(CONF_FAN_O1_POWER))
-        if power is not None:
-            return power > FAN_RUNNING_MIN_WATTS
+        o1 = self.config.get(CONF_FAN_O1_POWER)
+        if o1 and not self._stale(o1, self.number("fan_sensor_stale_minutes")):
+            power = self._num_state(o1)
+            if power is not None:
+                return power > FAN_RUNNING_MIN_WATTS
+        # No fresh power reading: trust the commanded master state.
         return True
 
     def _update_warmup_learning(self) -> None:
@@ -734,6 +782,13 @@ class ScoutController:
         """
         now = self._now()
         for zone in (ZONE_A, ZONE_B):
+            # A held-open door/window is ventilation loss, not fabric loss:
+            # discard any in-flight sample rather than learning it as
+            # insulation quality.
+            if self.opening_ice[zone]:
+                self._cooloff_start[zone] = None
+                continue
+
             cooling = self.applied[zone] == PRESET_ICE
             temp = self._zone_room_temp(zone)
             sample = self._cooloff_start[zone]
@@ -757,8 +812,13 @@ class ScoutController:
                 self._cooloff_start[zone] = (now, temp)  # gaining, not losing
                 continue
             drop = start_temp - temp
-            if drop >= 1.0:
-                hours = (now - started).total_seconds() / 3600
+            hours = (now - started).total_seconds() / 3600
+            # Roll the window ONLY when the sample is long enough to be
+            # accepted: re-anchoring on a rejected (too-short) sample would
+            # create a dead zone where fast heat loss (>2 °C/h reaches the
+            # drop trigger in under the minimum duration) could never be
+            # learned at all.
+            if drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS:
                 self._fold_cooloff(zone, hours, drop)
                 self._cooloff_start[zone] = (now, temp)  # rolling window
 
@@ -860,7 +920,11 @@ class ScoutController:
             return None, False, False
         avg = sum(means) / len(means)
         release = avg <= threshold - SEASONAL_RELEASE_BAND or realfeel < threshold
-        return avg, avg >= threshold, release
+        # Engage must exclude every release condition, or a warm 3-day average
+        # with a cold-snap RealFeel would satisfy both and flap the lockout
+        # (and its notification) on every hourly check.
+        engage = avg >= threshold and realfeel >= threshold
+        return avg, engage, release
 
     # ------------------------------------------------------------------
     # Boost API (called by the button platform)
@@ -887,6 +951,48 @@ class ScoutController:
         if self.applied[ZONE_A] in (PRESET_COMFORT, PRESET_ECO):
             await self._async_push_hall_temps(eco_low=self._eco_keyword_active(ZONE_A))
             await self._async_set_preset(ZONE_A, self.applied[ZONE_A], force=True)
+
+    def _state_snapshot(self) -> dict[str, Any]:
+        """Durable state: safety latches and clocks that must survive a restart.
+
+        Without this, a hut whose HA restarts weekly would never run the water
+        hygiene cycle, a latched fan fault would silently self-re-arm, and a
+        restart mid-booking would drop a leader's manual hold.
+        """
+        return {
+            "water_last_hot": self.water_last_hot.isoformat() if self.water_last_hot else None,
+            "fan_fault_latched": self.fan_fault_latched,
+            "boost_until": {
+                zone: until.isoformat() if until else None
+                for zone, until in self.boost_until.items()
+            },
+            "manual_hold": dict(self.manual_hold),
+        }
+
+    async def _async_restore_state(self) -> None:
+        try:
+            data = await self._store.async_load()
+        except Exception as err:  # noqa: BLE001 - corrupt store must not block startup
+            _LOGGER.warning("Could not restore saved state: %s", err)
+            return
+        if not data:
+            return
+
+        def _dt(value: Any) -> datetime | None:
+            try:
+                return datetime.fromisoformat(value) if value else None
+            except (TypeError, ValueError):
+                return None
+
+        if (ts := _dt(data.get("water_last_hot"))) is not None:
+            self.water_last_hot = ts
+        self.fan_fault_latched = bool(data.get("fan_fault_latched", False))
+        for zone in (ZONE_A, ZONE_B):
+            until = _dt((data.get("boost_until") or {}).get(zone))
+            if until is not None and until > self._now():
+                self.boost_until[zone] = until
+            if (data.get("manual_hold") or {}).get(zone):
+                self.manual_hold[zone] = True
 
     async def async_reset_tunables(self) -> None:
         """Restore every tunable helper to its built-in default.
@@ -922,7 +1028,19 @@ class ScoutController:
             error = await dashboards.async_create_or_update(self.hass, self)
         except Exception as err:  # noqa: BLE001 - semi-internal HA API
             error = str(err)
-        if error:
+        if error == dashboards.RESTART_REQUIRED:
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    "The 'Scout Hut' dashboard has been created and its views "
+                    "saved, but this Home Assistant version cannot add it to "
+                    "the sidebar live — restart Home Assistant and it will "
+                    "appear."
+                ),
+                title="🏕 Scout Hut – Dashboard created (restart to see it)",
+                notification_id=NOTIFY_DASHBOARDS,
+            )
+        elif error:
             persistent_notification.async_create(
                 self.hass,
                 (
@@ -957,6 +1075,7 @@ class ScoutController:
         """
         self.fan_fault_latched = False
         self.fan_master_off_since = None
+        self._reverse_attempts = 0
         self._fan_fault_notified = False
         persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_FAULT)
         await self.async_reconcile()
@@ -987,13 +1106,30 @@ class ScoutController:
         cal_on = self._cal_active(zone)
         alarm_on = self._is_on(self.config.get(ZONE_ALARM[zone]))
         if alarm_on and not cal_on:
+            # Arming the alarm with no booking also cancels a lingering
+            # occupied override (original A33/A34), or a switch left on weeks
+            # ago would silently resume heating the empty zone at disarm.
+            override = self._switches.get(f"{zone}_occupied_override")
+            force_off = getattr(override, "force_off", None)
+            if force_off is not None and override.is_on:
+                force_off()
             return PRESET_ICE
 
         timeout = self.number("motion_timeout_minutes")
         area = ZONE_MOTION_AREA[zone]
         if cal_on:
             base = PRESET_ECO if self._eco_keyword_active(zone) else PRESET_COMFORT
-            if base == PRESET_COMFORT and not self._motion_recent(area, timeout):
+            # Drop an unoccupied booking to eco only once the event has
+            # actually started. During the pre-heat window the room is empty
+            # by definition — demoting there would heat toward eco while the
+            # optimum-start lead was sized to reach comfort, so hirers would
+            # always arrive to a shortfall.
+            event_running = self._is_on(self.config.get(ZONE_CALENDAR[zone]))
+            if (
+                base == PRESET_COMFORT
+                and event_running
+                and not self._motion_recent(area, timeout)
+            ):
                 return PRESET_ECO
             return base
 
@@ -1047,11 +1183,29 @@ class ScoutController:
                 continue
         return min(vals) if vals else None
 
+    def _water_actual(self) -> bool | None:
+        """The real switch state, or None when unknown."""
+        st = self.hass.states.get(self.config.get(CONF_WATER_SWITCH))
+        if st is not None and st.state in ("on", "off"):
+            return st.state == "on"
+        return None
+
     def _desired_water(self) -> bool | None:
         switch = self.config.get(CONF_WATER_SWITCH)
         if not switch:
             return None
         now = self._now()
+
+        # Track the REAL powered stretch (the physical switch, not our last
+        # command): a manually flipped or failed switch must not count as
+        # heating the tank.
+        actual = self._water_actual()
+        powered = actual if actual is not None else bool(self.water_on)
+        if powered:
+            if self.water_on_since is None:
+                self.water_on_since = now
+        else:
+            self.water_on_since = None
 
         # The stored water only counts as genuinely hot after a continuous
         # powered stretch long enough for a full reheat. A brief dab of power
@@ -1082,9 +1236,15 @@ class ScoutController:
         # gone a week without a completed reheat, run it long enough for the
         # full 15 L to reach thermostat temperature, so stored water never sits
         # lukewarm indefinitely between lets.
-        if self.water_hygiene_until is not None and now < self.water_hygiene_until:
-            return True
-        self.water_hygiene_until = None
+        if self.water_hygiene_until is not None:
+            if now < self.water_hygiene_until:
+                return True
+            # Window over: if the switch really was on at the end, that is a
+            # completed reheat — credit it directly so the cycle cannot
+            # immediately re-trigger itself.
+            if powered:
+                self.water_last_hot = now
+            self.water_hygiene_until = None
         if self.water_last_hot is None:
             self.water_last_hot = now  # start the clock on first evaluation
         elif now - self.water_last_hot >= WATER_HYGIENE_INTERVAL:
@@ -1124,6 +1284,7 @@ class ScoutController:
             await self._reconcile_fans()
             self._detect_drift()
             self._expire_boosts()
+            self._store.async_delay_save(self._state_snapshot, 60)
             async_dispatcher_send(self.hass, SIGNAL_UPDATE)
         finally:
             self._reconciling = False
@@ -1211,32 +1372,50 @@ class ScoutController:
 
     async def _reconcile_shared(self) -> None:
         desired = self._desired_shared()
-        if desired is None or desired == self.applied["shared"]:
+        if desired is None:
             return
-        await self._async_apply_climate(self.config.get(CONF_SHARED_CLIMATES), desired)
+        climates = self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+        all_online = bool(climates) and all(self._climate_online(c) for c in climates)
+        # Mirror the zones' offline handling: a preset sent while a shared
+        # heater was unreachable is re-sent once every heater is back, so the
+        # kitchen/toilet radiators (the frost-critical room) cannot sit on a
+        # wrong preset indefinitely after a cloud blip. A *changed* desired is
+        # always sent immediately, exactly like the zones.
+        if desired == self.applied["shared"]:
+            if not (self._shared_offline_apply and all_online):
+                return  # nothing to do, or still waiting for reconnection
+        await self._async_apply_climate(climates, desired)
         self.applied["shared"] = desired
+        self._shared_offline_apply = not all_online
 
     async def _reconcile_water(self) -> None:
         desired = self._desired_water()
         if desired is None:
             return
-        # Track the continuous powered stretch; _desired_water marks the water
-        # as genuinely hot only once it exceeds a full reheat.
+        # Reconcile against the real switch state, not the last command, so an
+        # external flip (HA UI, a Shelly reboot losing relay state, a failed
+        # call) is re-asserted on the next tick — frost protection must not be
+        # defeatable by one manual toggle.
+        actual = self._water_actual()
+        current = actual if actual is not None else self.water_on
+        if desired == current:
+            self.water_on = desired
+            return
+        await self.hass.services.async_call(
+            "switch",
+            "turn_on" if desired else "turn_off",
+            {"entity_id": self.config.get(CONF_WATER_SWITCH)},
+            blocking=False,
+        )
+        self.water_on = desired
+        # Power starts/stops with the command we just sent; if it did not
+        # actually take, the next tick's actual-state check corrects this
+        # before any reheat credit (45 min) could accrue.
         if desired:
             if self.water_on_since is None:
                 self.water_on_since = self._now()
         else:
             self.water_on_since = None
-        if desired == self.water_on:
-            return
-        switch = self.config.get(CONF_WATER_SWITCH)
-        await self.hass.services.async_call(
-            "switch",
-            "turn_on" if desired else "turn_off",
-            {"entity_id": switch},
-            blocking=False,
-        )
-        self.water_on = desired
 
     def _expire_boosts(self) -> None:
         now = self._now()
@@ -1264,9 +1443,10 @@ class ScoutController:
             expected = self.expected_preset[zone]
             if expected is None:
                 continue
-            # Ignore drift within a minute of our own change (Rointe lag).
+            # Ignore drift within the settle window of our own change — the
+            # Rointe cloud can take a couple of minutes to reflect it.
             last = self._last_apply.get(zone)
-            if last is not None and (self._now() - last).total_seconds() < 60:
+            if last is not None and (self._now() - last).total_seconds() < DRIFT_SETTLE_SECONDS:
                 continue
             climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
             if not climates:
@@ -1436,6 +1616,11 @@ class ScoutController:
         """
         override = self.config.get(CONF_FLOOR_TEMP)
         if override:
+            # A frozen reading must not be trusted here either: a stale floor
+            # sensor otherwise keeps driving the summer warm/overheated
+            # decisions long after the ΔT logic has flagged it lost.
+            if stale_min is not None and self._stale(override, stale_min):
+                return None
             return self._num_state(override)
         vals: list[float] = []
         for climate in self._as_list(self.config.get(CONF_HALL_CLIMATES)):
@@ -1664,6 +1849,12 @@ class ScoutController:
             self.fan_overheated = False
             return False, None, "off"
         if self._fan_fault():
+            # Reset the condition flags like the disabled branch does, so
+            # stale pre-fault values cannot keep feeding fail_safe_off or the
+            # diagnostics while the latch holds.
+            self.fan_sensor_stale = False
+            self.fan_dt = None
+            self.fan_overheated = False
             return False, None, "off"
 
         stale_min = self.number("fan_sensor_stale_minutes")
@@ -1675,6 +1866,10 @@ class ScoutController:
         floor_bad = ft is None or (bool(floor_id) and self._stale(floor_id, stale_min))
         sensors_bad = ceiling_bad or floor_bad
         self.fan_sensor_stale = sensors_bad
+        if floor_bad:
+            # A lost floor reading must not feed warm/overheated/recirc below:
+            # fan_decision's contract is warm=None when the floor is unknown.
+            ft = None
 
         if sensors_bad:
             self.fan_dt = None
@@ -1715,37 +1910,29 @@ class ScoutController:
 
         now = self._now()
         # While the Shelly runs its own reversal sequence the master legitimately
-        # reads off. Do not touch the fans; just refresh diagnostics.
+        # reads off. Do not touch the fans; just refresh diagnostics — including
+        # the condition-edge notifications, or a sensor loss / overheat that
+        # begins during the grace window would never be announced.
         if self.fan_action_grace_until is not None and now < self.fan_action_grace_until:
+            prev_stale, prev_hot = self.fan_sensor_stale, self.fan_overheated
             self._fan_target()
+            self._notify_condition_edges(prev_stale, prev_hot)
             return
 
         prev_stale = self.fan_sensor_stale
         prev_hot = self.fan_overheated
         want_on, want_dir, mode = self._fan_target()
+        self._notify_condition_edges(prev_stale, prev_hot)
 
-        # Sensor-lost notification (fires even when the fans keep running).
-        if self.fan_sensor_stale and not prev_stale:
-            self._notify_sensor_lost()
-        elif prev_stale and not self.fan_sensor_stale:
-            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_SENSOR_LOST)
-
-        # Overheat notification: past the fan-cooling ceiling a breeze heats
-        # people instead of cooling them, so the summer fans are held off.
-        if self.fan_overheated and not prev_hot and self._summer_active():
-            persistent_notification.async_create(
-                self.hass,
-                (
-                    f"The hall is at or above {FAN_COOLING_MAX_TEMP:.0f}°C. Air "
-                    "this hot blows heat onto people rather than cooling them, "
-                    "so the ceiling fans are held off. Ventilate (open windows "
-                    "on the shaded side) and encourage drinking water instead."
-                ),
-                title="🏕 Scout Hut – Too hot for fan cooling",
-                notification_id=NOTIFY_FAN_TOO_HOT,
-            )
-        elif prev_hot and not self.fan_overheated:
-            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_TOO_HOT)
+        # The master reads off while we believe it should be on: do NOT
+        # re-command it. Closing O1 is the Shelly script's re-arm gesture, so
+        # re-sending every tick would defeat its own stall latch and keep
+        # re-energising a faulted motor — and it would also reset the
+        # inferred-fault timer forever, making the latch unreachable. Leave
+        # the relay alone until the master comes back or the fault latches.
+        master = self.config.get(CONF_FAN_MASTER)
+        if want_on and self.fan_master_expected and not self._is_on(master):
+            return
 
         # Fault notification.
         fault_now = self.fan_fault_effective
@@ -1858,8 +2045,17 @@ class ScoutController:
             if direction:
                 self.fan_direction = cur_dir
             self.fan_master_expected = True
+            self._reverse_attempts = 0
             persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_DIAL)
             return
+
+        # Repeated presses without the relay ever changing mean the Shelly
+        # script is absent or broken: latch a fault instead of pressing
+        # forever (~one full motor reversal attempt every 100 s otherwise).
+        if self._reverse_attempts >= MAX_REVERSE_ATTEMPTS:
+            self.fan_fault_latched = True
+            return
+        self._reverse_attempts += 1
 
         # Live direction change: must go through the reverse button. Remind first
         # to set the dial high (a low dial can stall on reversal); HA cannot check.
@@ -1877,6 +2073,30 @@ class ScoutController:
         self.fan_direction = want_direction
         if self.fan_last_on is None:
             self.fan_last_on = now
+
+    def _notify_condition_edges(self, prev_stale: bool, prev_hot: bool) -> None:
+        """Raise / dismiss the sensor-lost and overheat notifications on edges."""
+        if self.fan_sensor_stale and not prev_stale:
+            self._notify_sensor_lost()
+        elif prev_stale and not self.fan_sensor_stale:
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_SENSOR_LOST)
+
+        # Overheat: past the fan-cooling ceiling a breeze heats people instead
+        # of cooling them, so the summer fans are held off.
+        if self.fan_overheated and not prev_hot and self._summer_active():
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    f"The hall is at or above {FAN_COOLING_MAX_TEMP:.0f}°C. Air "
+                    "this hot blows heat onto people rather than cooling them, "
+                    "so the ceiling fans are held off. Ventilate (open windows "
+                    "on the shaded side) and encourage drinking water instead."
+                ),
+                title="🏕 Scout Hut – Too hot for fan cooling",
+                notification_id=NOTIFY_FAN_TOO_HOT,
+            )
+        elif prev_hot and not self.fan_overheated:
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_TOO_HOT)
 
     def _notify_dial_high(self) -> None:
         persistent_notification.async_create(
