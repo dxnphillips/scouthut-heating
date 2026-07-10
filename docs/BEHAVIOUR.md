@@ -57,6 +57,18 @@ signals and drive the Shelly.
 | Fault | `_fan_fault`: mapped boolean wins, else inferred from an unexpected master-off beyond `FAN_FAULT_GRACE`; refuses to run and notifies (`NOTIFY_FAN_FAULT`). Re-arm via `async_fan_rearm` (the *Ceiling fans enabled* switch off→on). |
 | Dial-high reminder | `_notify_dial_high` (`NOTIFY_FAN_DIAL`) before every reversal. |
 
+## Audit log & diagnostics (new)
+
+Every decision and learning sample is appended to a bounded audit log
+(`audit.py`, persisted with the state snapshot): warm-up and cool-off samples
+with their raw inputs and accept/reject outcome, pre-heat window openings with
+the full lead computation, the temperature-vs-target outcome at each booking
+start, preset changes, fan starts/stops/reversals/faults, seasonal lockout
+transitions and water frost/hygiene events. The whole log — plus tunables
+against defaults, learned rates and a live reading snapshot — is exported by
+the standard Home Assistant diagnostics download (`diagnostics.py`), so the
+tuning constants can be checked against the building's real behaviour.
+
 ## Rointe offline / stale handling
 
 The Rointe integration is cloud based, so a heater can go offline or stop

@@ -1,0 +1,276 @@
+"""The audit log and the diagnostics export.
+
+The learned-rate seeds and clamps were chosen from textbook figures, not from
+the building. These tests lock in the machinery that lets real behaviour be
+exported and analysed offline: every learning sample (accepted or rejected)
+is recorded with its inputs, every pre-heat decision carries the numbers it
+was computed from, and the booking-start outcome event captures the one
+number that judges the whole learning stack — was the room warm on arrival.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import timedelta
+
+import pytest
+
+from custom_components.scout_hut_heating.audit import AuditLog
+from custom_components.scout_hut_heating.const import CONF_FAN_MASTER, DOMAIN
+from scout_testkit import (
+    E,
+    PRESET_COMFORT,
+    PRESET_ECO,
+    PRESET_ICE,
+    ZA,
+    advance,
+    booking,
+    make_controller,
+    run,
+)
+
+
+def _hall_temp(hass, temp):
+    hass.states.set(E["hall"][0], "heat", {"current_temperature": temp})
+
+
+def _set_rate(ctrl, key, value):
+    ctrl._numbers[key].native_value = value
+
+
+def events(ctrl, kind):
+    return [e for e in ctrl.audit.to_list() if e["event"] == kind]
+
+
+# --- The log itself ---------------------------------------------------------------
+
+def test_audit_log_is_bounded_and_json_safe():
+    from homeassistant.util import dt as dt_util
+
+    log = AuditLog(maxlen=10)
+    for i in range(25):
+        log.record("tick", dt_util.utcnow(), n=i, ratio=1.23456, skipped=None)
+    items = log.to_list()
+    assert len(items) == 10
+    assert items[-1]["n"] == 24  # oldest dropped, newest kept
+    assert items[-1]["ratio"] == 1.23  # floats rounded
+    assert "skipped" not in items[-1]  # None values dropped
+    json.dumps(items)
+
+
+def test_audit_log_restore_tolerates_bad_data():
+    log = AuditLog()
+    log.load("not a list")
+    log.load([{"event": "ok"}, "junk", 42])
+    assert [e["event"] for e in log.to_list()] == ["ok"]
+
+
+# --- Learning samples -------------------------------------------------------------
+
+def test_accepted_warmup_sample_is_audited_with_its_inputs():
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _hall_temp(hass, 18)
+    ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._update_warmup_learning()
+    advance(ctrl, 120)
+    _hall_temp(hass, 22)  # target reached after 120 min / 4 °C
+    ctrl._update_warmup_learning()
+
+    (evt,) = events(ctrl, "warmup_sample")
+    assert evt["zone"] == ZA
+    assert evt["rate_key"] == "zone_a_warmup_rate"
+    assert evt["accepted"] is True
+    assert evt["reached_target"] is True
+    assert evt["minutes"] == pytest.approx(120, abs=0.1)
+    assert evt["rise"] == pytest.approx(4.0)
+    assert evt["old_rate"] == 20.0
+    assert evt["new_rate"] == pytest.approx(23.0, abs=0.01)
+
+
+def test_rejected_warmup_sample_is_audited_as_rejected():
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _hall_temp(hass, 18)
+    ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._update_warmup_learning()
+    advance(ctrl, 20)
+    _hall_temp(hass, 18.4)  # too small a rise to teach anything
+    ctrl.applied[ZA] = PRESET_ECO  # warm-up ended early
+    ctrl._update_warmup_learning()
+
+    (evt,) = events(ctrl, "warmup_sample")
+    assert evt["accepted"] is False
+    assert evt["reached_target"] is False
+    assert evt["new_rate"] == evt["old_rate"] == 20.0
+
+
+def test_cooloff_sample_is_audited():
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_cooloff_rate", 2.0)
+    _hall_temp(hass, 20)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 240)
+    _hall_temp(hass, 16)  # 4 °C over 4 h -> observed 1 °C/h
+    ctrl._update_cooloff_learning()
+
+    (evt,) = events(ctrl, "cooloff_sample")
+    assert evt["zone"] == ZA
+    assert evt["accepted"] is True
+    assert evt["hours"] == pytest.approx(4.0, abs=0.01)
+    assert evt["drop"] == pytest.approx(4.0)
+    assert evt["old_rate"] == 2.0
+    assert evt["new_rate"] == pytest.approx(1.7, abs=0.01)
+
+
+def test_cooloff_sample_discarded_by_an_opening_is_audited():
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 20)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()  # sample anchors
+    assert ctrl._cooloff_start[ZA] is not None
+    ctrl.opening_ice[ZA] = True
+    ctrl._update_cooloff_learning()  # ventilation loss: discard
+
+    (evt,) = events(ctrl, "cooloff_discarded")
+    assert evt["zone"] == ZA and evt["reason"] == "opening"
+    # The discard is recorded once, not on every subsequent tick.
+    ctrl._update_cooloff_learning()
+    assert len(events(ctrl, "cooloff_discarded")) == 1
+
+
+# --- Pre-heat decisions and booking outcomes ---------------------------------------
+
+def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
+    from homeassistant.util import dt as dt_util
+
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "zone_a_cooloff_rate", 0)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 15})
+    _hall_temp(hass, 19)  # 3 °C deficit x 20 min/°C -> 60 min lead
+    start = dt_util.now() + timedelta(minutes=30)
+
+    async def _events(cal, minutes):
+        if cal == E["cal_hall"]:
+            return [{"start": start.isoformat(), "summary": "Beavers"}]
+        return []
+
+    monkeypatch.setattr(ctrl, "_async_calendar_events", _events)
+    run(ctrl._async_refresh_calendars())
+
+    assert ctrl.cal_window[ZA] is True  # 30 min gap <= 60 min lead
+    (evt,) = events(ctrl, "preheat_start")
+    assert evt["zone"] == ZA
+    assert evt["lead_min"] == 60
+    assert evt["gap_min"] == pytest.approx(30, abs=0.1)
+    assert evt["rate"] == 20.0
+    assert evt["indoor_coldest"] == 19.0
+    assert evt["target"] == 22.0
+    assert evt["outdoor"] == 15.0
+
+    # Staying inside the window on the next refresh records nothing new.
+    run(ctrl._async_refresh_calendars())
+    assert len(events(ctrl, "preheat_start")) == 1
+
+
+def test_booking_start_outcome_records_the_arrival_shortfall():
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 20)
+    ctrl._record_booking_starts()  # baseline observed: calendar off
+    booking(ctrl, ZA, "Beavers")
+    ctrl._record_booking_starts()
+
+    (evt,) = events(ctrl, "booking_start")
+    assert evt["zone"] == ZA
+    assert evt["title"] == "beavers"
+    assert evt["target"] == 22.0
+    assert evt["coldest"] == 20.0
+    assert evt["shortfall"] == pytest.approx(2.0)  # arrived 2 °C under target
+
+    # No repeat while the same booking keeps running.
+    ctrl._record_booking_starts()
+    assert len(events(ctrl, "booking_start")) == 1
+
+
+def test_restart_mid_booking_records_no_phantom_start():
+    ctrl, hass = make_controller()
+    booking(ctrl, ZA)
+    ctrl._record_booking_starts()  # first observation IS the baseline
+    assert not events(ctrl, "booking_start")
+
+
+# --- Actuation events ---------------------------------------------------------------
+
+def test_fan_state_changes_are_audited():
+    ctrl, hass = make_controller(config_overrides={CONF_FAN_MASTER: "switch.fan_master"})
+    hass.states.set("switch.fan_master", "off")
+    ctrl.applied[ZA] = PRESET_COMFORT  # heat demand via the preset fallback
+    run(ctrl._reconcile_fans())  # winter run-on-loss: fans commanded on
+
+    (evt,) = events(ctrl, "fan_change")
+    assert evt["on"] is True
+    assert evt["mode"] == "winter"
+    assert evt["demand"] is True
+
+    run(ctrl._reconcile_fans())  # steady state: no new event
+    assert len(events(ctrl, "fan_change")) == 1
+
+
+def test_zone_preset_changes_are_audited():
+    ctrl, hass = make_controller()
+    run(ctrl._async_set_preset(ZA, PRESET_COMFORT))
+    run(ctrl._async_set_preset(ZA, PRESET_COMFORT))  # unchanged: not re-recorded
+    run(ctrl._async_set_preset(ZA, PRESET_ICE))
+    changes = events(ctrl, "preset")
+    assert [(e["zone"], e["to"]) for e in changes] == [
+        (ZA, PRESET_COMFORT),
+        (ZA, PRESET_ICE),
+    ]
+    assert changes[1]["previous"] == PRESET_COMFORT
+
+
+# --- Persistence and export ---------------------------------------------------------
+
+def test_audit_events_survive_a_restart():
+    ctrl, _ = make_controller()
+    ctrl.audit.record("marker", ctrl._now(), n=1)
+    snap = ctrl._state_snapshot()
+    assert snap["audit"][-1]["event"] == "marker"
+
+    ctrl2, _ = make_controller()
+
+    class _Store:
+        async def async_load(self):
+            return snap
+
+    ctrl2._store = _Store()
+    run(ctrl2._async_restore_state())
+    assert ctrl2.audit.to_list()[-1]["event"] == "marker"
+
+
+def test_diagnostics_data_is_json_serialisable_and_complete():
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 20)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 15})
+    ctrl.audit.record("marker", ctrl._now())
+
+    data = ctrl.diagnostics_data()
+    json.dumps(data)  # the diagnostics download must serialise cleanly
+
+    assert data["tunables"]["numbers"]["preheat_minutes"]["default"] == 120.0
+    assert data["tunables"]["switches"]["summer_mode"]["default"] is False
+    assert data["readings"]["zones"][ZA]["coldest"] == 20.0
+    assert data["readings"]["outdoor"] == 15.0
+    assert data["events"][-1]["event"] == "marker"
+
+
+def test_diagnostics_platform_returns_the_controller_export():
+    from custom_components.scout_hut_heating import diagnostics
+
+    ctrl, hass = make_controller()
+    hass.data = {DOMAIN: {ctrl.entry.entry_id: ctrl}}
+    data = run(diagnostics.async_get_config_entry_diagnostics(hass, ctrl.entry))
+    assert data["events"] == []
+    assert "tunables" in data and "readings" in data

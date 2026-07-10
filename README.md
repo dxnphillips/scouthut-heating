@@ -254,6 +254,32 @@ entities before a preset is applied, so slider changes take effect immediately.
 A mapping from each original automation (A1–A35, W1–W9) to the reconciler is in
 [`docs/BEHAVIOUR.md`](docs/BEHAVIOUR.md).
 
+## Auditing the controller (diagnostics export)
+
+The tuning constants (learned-rate seeds, clamps, thresholds) started as
+textbook figures, not measurements of this building. To check them against
+reality, the controller keeps a rolling audit log (bounded, persisted across
+restarts) of everything it decides and learns:
+
+- **`warmup_sample` / `cooloff_sample`** — every learning observation, accepted
+  or rejected, with the raw inputs (duration, temperature change, fan
+  assistance, old and new rate), so the EWMA behaviour can be re-derived.
+- **`preheat_start`** — each time a pre-heat window opens: the lead chosen and
+  every input it was computed from (rate, coldest reading, target, outdoor,
+  heat-loss rate, gap to the event).
+- **`booking_start`** — the ground truth: the coldest reading against the
+  target at the moment each booking begins. A positive `shortfall` means the
+  room arrived under target (lead too short); a consistently negative one
+  means heating started earlier than needed.
+- **`preset` / `fan_change` / `seasonal` / `water_hygiene` / `water_frost` /
+  `fan_fault` / `overheat_holdoff` / `fan_sensor_lost`** — the actuation and
+  safety record around those samples.
+
+Download it from **Settings → Devices & Services → Scout Hut Heating → ⋮ →
+Download diagnostics**. The JSON also contains every tunable's current value
+against its default, the learned rates, and a live snapshot of all readings —
+no credentials or tokens, so it is safe to share for analysis.
+
 ---
 
 ## Please test before relying on it
