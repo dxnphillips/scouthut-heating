@@ -53,7 +53,10 @@ You can re-map any of these later via the integration's **Configure** button.
 ### Tunable controls (created automatically)
 
 The integration creates its own helper entities — put them on a dashboard, no
-restart needed to change them:
+restart needed to change them. Ready-made Lovelace dashboards are in
+[`docs/heating_dashboard.yaml`](docs/heating_dashboard.yaml) (whole system)
+and [`docs/fan_dashboard.yaml`](docs/fan_dashboard.yaml) (ceiling fans in
+detail):
 
 - **Numbers:** pre-heat lead time (the *maximum* — see optimum start below),
   hall/office learned warm-up rates, no-motion eco timeout, door/window ice
