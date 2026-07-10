@@ -1,0 +1,152 @@
+# Optional Lovelace dashboard for the whole heating system (companion to
+# fan_dashboard.yaml, which covers the ceiling fans in detail).
+#
+# Paste as a new manual dashboard (Settings -> Dashboards -> Add -> "Edit in
+# YAML"), or drop the cards into an existing view. Entity ids are the ones the
+# integration creates from the "Scout Hut Heating" device; the slugs below are
+# the expected ones — if yours differ (HA de-duplicates names), pick them from
+# the entity list and adjust. Your Rointe climate entities are your own ids —
+# replace the climate.* placeholders.
+
+title: Scout Hut heating
+views:
+  - title: Heating
+    path: heating
+    cards:
+      - type: entities
+        title: Now
+        entities:
+          - entity: sensor.scout_hut_heating_hall_preset
+            name: Hall preset
+          - entity: sensor.scout_hut_heating_office_preset
+            name: Office preset
+          - entity: sensor.scout_hut_heating_shared_zone_preset
+            name: Shared zone preset
+          - entity: sensor.scout_hut_heating_water_heater
+            name: Water heater
+          - entity: binary_sensor.scout_hut_heating_seasonal_lockout_active
+            name: Seasonal lockout
+          - entity: sensor.scout_hut_heating_hall_temperature_spread
+            name: Hall temperature spread
+          - entity: sensor.scout_hut_heating_ceiling_floor_t
+            name: Ceiling-floor ΔT
+
+      - type: entities
+        title: Boost
+        entities:
+          - entity: button.scout_hut_heating_boost_hall
+            name: Boost hall
+          - entity: button.scout_hut_heating_boost_office
+            name: Boost office
+          - entity: button.scout_hut_heating_cancel_hall_boost
+            name: Cancel hall boost
+          - entity: button.scout_hut_heating_cancel_office_boost
+            name: Cancel office boost
+          - entity: select.scout_hut_heating_boost_duration
+            name: Boost duration
+          - entity: binary_sensor.scout_hut_heating_hall_boost_active
+            name: Hall boost active
+          - entity: binary_sensor.scout_hut_heating_office_boost_active
+            name: Office boost active
+
+      - type: entities
+        title: Temperatures
+        entities:
+          - entity: number.scout_hut_heating_hall_comfort_temperature
+            name: Hall comfort
+          - entity: number.scout_hut_heating_hall_eco_temperature
+            name: Hall eco
+          - entity: number.scout_hut_heating_hall_eco_low_temperature
+            name: Hall eco-low (ECO bookings)
+          - entity: number.scout_hut_heating_seasonal_lockout_3_day_average_threshold
+            name: Seasonal lockout threshold
+
+      - type: entities
+        title: Occupancy & overrides
+        entities:
+          - entity: switch.scout_hut_heating_hall_automation_enabled
+            name: Hall automation
+          - entity: switch.scout_hut_heating_office_automation_enabled
+            name: Office automation
+          - entity: switch.scout_hut_heating_hall_occupied_override
+            name: Hall occupied override
+          - entity: switch.scout_hut_heating_office_occupied_override
+            name: Office occupied override
+          - entity: number.scout_hut_heating_no_motion_eco_timeout
+            name: No-motion eco timeout
+          - entity: binary_sensor.scout_hut_heating_hall_manual_hold
+            name: Hall manual hold (app change)
+          - entity: binary_sensor.scout_hut_heating_office_manual_hold
+            name: Office manual hold (app change)
+
+      - type: entities
+        title: Optimum start (learned)
+        entities:
+          - entity: number.scout_hut_heating_pre_heat_lead_time_max
+            name: Pre-heat lead time (max / cap)
+          - entity: number.scout_hut_heating_hall_learned_warm_up_rate
+            name: Hall warm-up rate
+          - entity: number.scout_hut_heating_hall_learned_warm_up_rate_fans_running
+            name: Hall warm-up rate (fans running)
+          - entity: number.scout_hut_heating_office_learned_warm_up_rate
+            name: Office warm-up rate
+          - entity: number.scout_hut_heating_hall_learned_heat_loss_rate
+            name: Hall heat-loss rate
+          - entity: number.scout_hut_heating_office_learned_heat_loss_rate
+            name: Office heat-loss rate
+
+      - type: entities
+        title: Water heater
+        entities:
+          - entity: switch.scout_hut_heating_water_heater_manual_override
+            name: Manual override
+          - entity: number.scout_hut_heating_water_heater_pre_heat_lead_time
+            name: Pre-heat lead time
+          - entity: number.scout_hut_heating_water_heater_keep_on_after_motion
+            name: Keep on after motion
+
+      - type: entities
+        title: Bookings
+        entities:
+          - entity: sensor.scout_hut_heating_hall_expected_preset
+            name: Hall expected preset
+          - entity: sensor.scout_hut_heating_office_expected_preset
+            name: Office expected preset
+          - entity: text.scout_hut_heating_eco_keyword_blocklist
+            name: ECO keyword blocklist
+
+      - type: entities
+        title: Openings & housekeeping
+        entities:
+          - entity: binary_sensor.scout_hut_heating_hall_opening_ice_active
+            name: Hall opening ice
+          - entity: binary_sensor.scout_hut_heating_office_opening_ice_active
+            name: Office opening ice
+          - entity: binary_sensor.scout_hut_heating_shared_opening_ice_active
+            name: Shared opening ice
+          - entity: number.scout_hut_heating_door_drop_to_ice_after
+            name: Door ice delay
+          - entity: number.scout_hut_heating_window_drop_to_ice_after
+            name: Window ice delay
+          - entity: button.scout_hut_heating_reset_tunables_to_defaults
+            name: Reset tunables to defaults
+
+      # Replace with your own Rointe climate entity ids to control the
+      # heaters directly from the same view.
+      - type: entities
+        title: Radiators (Rointe)
+        entities:
+          - climate.hall_back
+          - climate.hall_front
+          - climate.office
+
+      # Long-term instruments: watch the hall spread and ceiling-floor ΔT
+      # collapse once the destratification fans are commissioned.
+      - type: history-graph
+        title: Mixing instruments (24 h)
+        hours_to_show: 24
+        entities:
+          - entity: sensor.scout_hut_heating_hall_temperature_spread
+            name: Hall spread
+          - entity: sensor.scout_hut_heating_ceiling_floor_t
+            name: Ceiling-floor ΔT
