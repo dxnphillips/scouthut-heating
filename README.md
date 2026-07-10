@@ -157,10 +157,15 @@ and raises a *sensor lost* notification. Turn that switch off to fail-safe to
 fans-off instead. Either way the Shelly still owns motor safety, and a genuine
 Shelly fault still forces the fans off.
 
-**Fault handling.** If the Shelly publishes its fault as a boolean, map it and
-the integration reads it directly. Until then it **infers** a fault from an
-unexpected master-off (surviving the legitimate reversal dwell), refuses to
-command the fans on, and notifies. Crucially, while the master reads
+**Fault handling.** If the Shelly publishes its fault as a boolean, map it —
+it is combined (OR) with the integration's own inference, since the script
+cannot see every failure mode. Independently, the integration **infers** a
+fault from an unexpected master-off (surviving the legitimate reversal dwell),
+refuses to command the fans on, and notifies. A *power cut or wall-switch
+cycle* is recognised and handled differently: the Shelly's entities go
+unavailable, and when the device reboots with its outputs defaulting off the
+controller simply re-establishes the wanted state on the next tick — fans
+back within ~30–60 seconds, no latch, no re-arm. Crucially, while the master reads
 unexpectedly off the integration **never re-commands it**: turning O1 on is
 the Shelly script's re-arm gesture, so re-sending would defeat its own stall
 latch and keep re-energising a faulted motor. Repeated reverse-button presses

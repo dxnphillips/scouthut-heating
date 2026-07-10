@@ -203,6 +203,7 @@ class ScoutController:
         self.fan_master_expected: bool | None = None  # what we last told O1 to be
         self.fan_master_off_since: datetime | None = None  # for dwell-safe infer
         self.fan_action_grace_until: datetime | None = None  # Shelly mid-sequence
+        self._fan_master_seen_unavailable = False  # device rebooted, not manual off
         self._reverse_attempts = 0  # consecutive reversals with no relay change
         self._fan_fault_notified: bool = False
         self._discovered_power: list[str] | None = None  # auto-found power sensors
@@ -1075,6 +1076,7 @@ class ScoutController:
         """
         self.fan_fault_latched = False
         self.fan_master_off_since = None
+        self._fan_master_seen_unavailable = False
         self._reverse_attempts = 0
         self._fan_fault_notified = False
         persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_FAULT)
@@ -1767,52 +1769,75 @@ class ScoutController:
         climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
         return bool(climates) and all(self._climate_online(c) for c in climates)
 
+    def _mapped_fault(self) -> bool:
+        """The Shelly-published fault boolean, when mapped and readable."""
+        mapped = self.config.get(CONF_FAN_FAULT)
+        if mapped:
+            st = self.hass.states.get(mapped)
+            if st is not None and st.state not in ("unknown", "unavailable"):
+                return st.state == "on"
+        return False
+
     @property
     def fan_fault_effective(self) -> bool:
         """Read-only fault state for diagnostics (never mutates the latch).
 
-        A mapped fault boolean is authoritative both ways: when the Shelly clears
-        it (re-armed at the device) the fault clears here too. Only when no
-        readable boolean is mapped do we fall back to the inferred latch.
+        The Shelly-published boolean (script-detected faults) and the HA-side
+        inferred latch (an unexpected master-off) are independent fault
+        sources, so either one holds the fault: the Shelly clearing its own
+        boolean must not silently discard an inferred latch, which only the
+        deliberate re-arm clears.
         """
-        mapped = self.config.get(CONF_FAN_FAULT)
-        if mapped:
-            st = self.hass.states.get(mapped)
-            if st is not None and st.state not in ("unknown", "unavailable"):
-                return st.state == "on"
-        return self.fan_fault_latched
+        return self._mapped_fault() or self.fan_fault_latched
 
     def _fan_fault(self) -> bool:
         """Evaluate (and, for the inferred case, latch) the fan fault.
 
-        A mapped fault boolean wins and is authoritative both ways. Otherwise we
-        infer a fault when the master reads off while we expected it on for longer
-        than the reverse dwell — but never during the Shelly's own reversal grace.
-        The inferred latch never auto-rearms; it clears only via async_fan_rearm.
+        The inferred fault fires when the master reads off while we expected it
+        on for longer than the reverse dwell — but never during the Shelly's
+        own reversal grace, and never while the master entity is unavailable
+        (an unpowered/rebooting Shelly is not a manual kill). A master that
+        comes back READABLE-OFF after having been unavailable is a device
+        reboot (wall switch, power cut) with outputs defaulting off: the
+        expectation is reset so the reconciler simply re-establishes the wanted
+        state on this same tick, instead of latching or deadlocking. The
+        inferred latch never auto-rearms; it clears only via async_fan_rearm.
         """
-        mapped = self.config.get(CONF_FAN_FAULT)
-        if mapped:
-            st = self.hass.states.get(mapped)
-            if st is not None and st.state not in ("unknown", "unavailable"):
-                return st.state == "on"
-
         now = self._now()
         in_grace = (
             self.fan_action_grace_until is not None
             and now < self.fan_action_grace_until
         )
         master = self.config.get(CONF_FAN_MASTER)
-        if in_grace or not self.fan_master_expected or not master:
+        master_st = self.hass.states.get(master) if master else None
+        master_known = master_st is not None and master_st.state not in (
+            "unknown",
+            "unavailable",
+        )
+        if not master_known:
+            if master:
+                self._fan_master_seen_unavailable = True
             self.fan_master_off_since = None
-            return self.fan_fault_latched
-        if self._is_on(master):
+            return self._mapped_fault() or self.fan_fault_latched
+        if in_grace or not self.fan_master_expected:
+            self.fan_master_off_since = None
+            return self._mapped_fault() or self.fan_fault_latched
+        if master_st.state == "on":
+            self.fan_master_off_since = None
+            self._fan_master_seen_unavailable = False
+        elif self._fan_master_seen_unavailable:
+            # Clean reboot recovery: forget the stale expectation so the
+            # actuator re-commands from scratch (direction preset while off,
+            # then master on) within this reconcile.
+            self._fan_master_seen_unavailable = False
+            self.fan_master_expected = False
             self.fan_master_off_since = None
         else:
             if self.fan_master_off_since is None:
                 self.fan_master_off_since = now
             elif (now - self.fan_master_off_since).total_seconds() >= FAN_FAULT_GRACE:
                 self.fan_fault_latched = True
-        return self.fan_fault_latched
+        return self._mapped_fault() or self.fan_fault_latched
 
     def _cooling_occupied(self) -> bool:
         """Whether anyone is there for the summer breeze to cool.
