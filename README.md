@@ -71,7 +71,9 @@ restart needed to change them:
   out-of-range values automatically.
 - **Diagnostic sensors/binary sensors:** current & expected preset per zone,
   water state, seasonal lockout, opening-ice flags, manual-hold flags, boost
-  flags.
+  flags, and the hall temperature spread (max − min across the hall heaters'
+  readings — shows how patchy the room is side-to-side; expect it to collapse
+  once the destratification fans mix the room).
 - **Fan numbers:** ceiling-floor ΔT to start / stop, minimum run / off times,
   sensor-stale timeout, the summer warm-enough temperature, the heat-demand
   power threshold, and the winter recirculation floor cap.
@@ -177,7 +179,9 @@ this priority (highest wins):
 **Optimum start.** The pre-heat lead is not a fixed number: each zone computes
 it as *learned warm-up rate × how far the room is below **that booking's**
 target* — a booking matching an ECO keyword pre-heats only to the eco-low
-setpoint, not comfort — with a small extra margin when it is cold outside,
+setpoint, not comfort. The deficit is measured from the **coldest** of the
+zone's heater readings, not the average, so the warm end of a patchy room
+cannot cut the lead short for the cold end — with a small extra margin when it is cold outside,
 clamped between 15 minutes and the **Pre-heat lead time (max)** slider (the
 safety cap — a room with no readable temperature also falls back to the cap,
 so a cold start is never missed). When the event's start time is known, the

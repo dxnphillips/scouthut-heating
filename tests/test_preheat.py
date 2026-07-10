@@ -208,3 +208,32 @@ def test_cooling_prediction_never_goes_below_the_frost_floor():
         gap_hours=240, cool_rate=2.0,
     )
     assert a == b  # both clamped at the (target - 7 °C) deficit
+
+
+# --- Lateral spread: coldest-reading pre-heat + the spread diagnostic -----------
+
+def _both_hall_temps(hass, a, b):
+    hass.states.set(E["hall"][0], "heat", {"current_temperature": a})
+    hass.states.set(E["hall"][1], "heat", {"current_temperature": b})
+
+
+def test_preheat_sizes_for_the_coldest_end_of_the_hall():
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "zone_a_cooloff_rate", 0)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 15})
+    _both_hall_temps(hass, 21, 18)  # warm end must not cut the lead short
+    # Coldest reading 18 -> 4 °C deficit -> 80 min (average would give 50).
+    assert ctrl._zone_preheat_minutes(ZA) == 80
+
+
+def test_hall_temp_spread_diagnostic():
+    ctrl, hass = make_controller()
+    _both_hall_temps(hass, 21, 18)
+    assert ctrl.hall_temp_spread == 3.0
+
+
+def test_hall_temp_spread_needs_two_readings():
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 20)  # only one heater reporting
+    assert ctrl.hall_temp_spread is None

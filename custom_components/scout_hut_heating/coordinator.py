@@ -531,12 +531,8 @@ class ScoutController:
     # ------------------------------------------------------------------
     # Adaptive pre-heat (optimum start)
     # ------------------------------------------------------------------
-    def _zone_room_temp(self, zone: str) -> float | None:
-        """Average room temperature reported by a zone's own heaters."""
-        if zone == ZONE_A:
-            # The hall shares the fan logic's floor reading (explicit floor
-            # sensor if mapped, else the hall Rointes' average).
-            return self._floor_temp()
+    def _zone_climate_temps(self, zone: str) -> list[float]:
+        """All readable room temperatures from a zone's own heaters."""
         vals: list[float] = []
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
             st = self.hass.states.get(climate)
@@ -548,7 +544,39 @@ class ScoutController:
                     vals.append(float(temp))
             except (TypeError, ValueError):
                 continue
+        return vals
+
+    def _zone_room_temp(self, zone: str, coldest: bool = False) -> float | None:
+        """Room temperature reported by a zone's own heaters.
+
+        ``coldest=True`` returns the lowest reading instead of the average:
+        the hall units disagree by several degrees along the 20 m room, and
+        for "will the room be warm enough?" questions (pre-heat sizing) the
+        coldest reading is the truer measure of the far end. The average
+        stays right for the fan ΔT reference and the learning, where
+        stability against a single odd sensor matters more.
+        """
+        vals = self._zone_climate_temps(zone)
+        if coldest and vals:
+            return min(vals)
+        if zone == ZONE_A:
+            # The hall average shares the fan logic's floor reading (explicit
+            # floor sensor if mapped, else the hall Rointes' average).
+            return self._floor_temp()
         return sum(vals) / len(vals) if vals else None
+
+    @property
+    def hall_temp_spread(self) -> float | None:
+        """Max-minus-min across the hall heaters' readings (diagnostic).
+
+        Shows how patchy the hall is side-to-side; expected to collapse to
+        under ~1 °C once the destratification fans mix the room. None with
+        fewer than two readable heaters.
+        """
+        vals = self._zone_climate_temps(ZONE_A)
+        if len(vals) < 2:
+            return None
+        return max(vals) - min(vals)
 
     def _outdoor_temp(self) -> float | None:
         weather = self.config.get(CONF_WEATHER)
@@ -591,7 +619,9 @@ class ScoutController:
         target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
         minutes = required_lead_minutes(
             rate=self.number(self._warmup_rate_key(zone)),
-            indoor=self._zone_room_temp(zone),
+            # Size the pre-heat for the coldest reading, not the average: the
+            # warm end's heater must not cut the lead short for the cold end.
+            indoor=self._zone_room_temp(zone, coldest=True),
             target=target,
             outdoor=self._outdoor_temp(),
             max_minutes=self.number("preheat_minutes"),
