@@ -251,3 +251,53 @@ def test_reverse_press_gives_up_and_latches_after_repeated_failures():
     run(ctrl._async_ensure_fans(True, "reverse"))
     assert len(button_presses(hass)) == 3  # no fourth press
     assert ctrl.fan_fault_latched is True
+
+
+def test_wall_switch_power_cycle_recovers_automatically():
+    # Wall switch kills the Shelly (entities unavailable), power returns with
+    # outputs defaulting OFF: the controller must re-establish the wanted
+    # state on the next tick — no fault latch, no deadlock, no re-arm needed.
+    from scout_testkit import PRESET_COMFORT, ZA
+
+    ctrl, hass = fan_controller()
+    ctrl.applied[ZA] = PRESET_COMFORT  # heat demand via the fallback path
+    run(ctrl._reconcile_fans())  # fans commanded on
+    assert ctrl.fan_master_expected is True
+
+    hass.states.set(MASTER, "unavailable")  # wall switch off: Shelly dead
+    hass.states.set(DIRECTION, "unavailable")
+    run(ctrl._reconcile_fans())  # must wait quietly, not latch or command
+    assert ctrl.fan_fault_latched is False
+
+    off(hass, MASTER)  # power back: Shelly boots with outputs OFF
+    off(hass, DIRECTION)
+    run(ctrl._reconcile_fans())  # same-tick recovery
+    assert ctrl.fan_fault_latched is False
+    assert hass.states.get(MASTER).state == "on"  # re-commanded
+
+
+def test_manual_master_kill_still_latches_with_fault_boolean_mapped():
+    # A mapped-but-clear fault boolean must not disable the unexpected-off
+    # inference: the Shelly's script cannot see a manual master kill.
+    from custom_components.scout_hut_heating.const import CONF_FAN_FAULT
+    from scout_testkit import PRESET_COMFORT, ZA, advance
+
+    ctrl, hass = make_controller(
+        config_overrides={
+            CONF_FAN_MASTER: MASTER,
+            CONF_FAN_DIRECTION: DIRECTION,
+            CONF_FAN_REVERSE: REVERSE,
+            CONF_FAN_FAULT: "binary_sensor.fan_fault",
+        }
+    )
+    off(hass, MASTER)
+    off(hass, DIRECTION)
+    off(hass, "binary_sensor.fan_fault")  # script healthy, no fault published
+    ctrl.applied[ZA] = PRESET_COMFORT
+    run(ctrl._reconcile_fans())  # fans on
+    off(hass, MASTER)  # killed in the app — entities stayed available
+    run(ctrl._reconcile_fans())
+    advance(ctrl, 2)
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_fault_latched is True  # inferred latch fired
+    assert ctrl.fan_fault_effective is True  # OR'd into the effective fault
