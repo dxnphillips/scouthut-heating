@@ -40,11 +40,14 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .audit import AuditLog
 from .fan_logic import fan_decision
 from .preheat import (
     MAX_RATE,
     MIN_COOL_SAMPLE_DROP,
     MIN_COOL_SAMPLE_HOURS,
+    MIN_SAMPLE_MINUTES,
+    MIN_SAMPLE_RISE,
     required_lead_minutes,
     updated_cooling_rate,
     updated_rate,
@@ -98,6 +101,7 @@ from .const import (
     PRESET_ICE,
     RECONCILE_INTERVAL,
     STARTUP_DELAY,
+    SWITCH_DEFS,
     WATER_FROST_OFF_TEMP,
     WATER_FROST_ON_TEMP,
     WATER_HYGIENE_INTERVAL,
@@ -238,6 +242,18 @@ class ScoutController:
             ZONE_B: None,
         }
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
+
+        # Rolling audit trail of decisions, learning samples and outcomes,
+        # persisted with the snapshot and exported via the diagnostics
+        # download so the tuning constants can be checked against the hut's
+        # real behaviour.
+        self.audit = AuditLog()
+        # The inputs behind the most recent lead computation per zone, stashed
+        # so the pre-heat-start audit event can carry them.
+        self._last_lead_calc: dict[str, dict[str, Any]] = {}
+        # Previous running state per calendar; None = not yet observed, so a
+        # restart mid-booking does not audit a phantom booking start.
+        self._cal_running_prev: dict[str, bool | None] = {ZONE_A: None, ZONE_B: None}
 
         # Durable state (safety latches and long clocks survive a restart).
         self._store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}")
@@ -502,10 +518,22 @@ class ScoutController:
             if gap_min is None:
                 # The event is inside the cap window but its start could not
                 # be read: err on the warm side and pre-heat now.
+                if not self.cal_window[zone]:
+                    self.audit.record(
+                        "preheat_start", self._now(), zone=zone, reason="unreadable_start"
+                    )
                 self.cal_window[zone] = True
                 continue
             lead = self._zone_preheat_minutes(zone, eco=eco, gap_hours=gap_min / 60)
-            self.cal_window[zone] = gap_min <= lead
+            window = gap_min <= lead
+            if window and not self.cal_window[zone]:
+                self.audit.record(
+                    "preheat_start",
+                    self._now(),
+                    zone=zone,
+                    **(self._last_lead_calc.get(zone) or {}),
+                )
+            self.cal_window[zone] = window
 
         water = False
         for zone in (ZONE_A, ZONE_B):
@@ -653,18 +681,36 @@ class ScoutController:
         how much further the room will cool before the pre-heat begins.
         """
         target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
+        rate = self._prediction_rate(zone)
+        # Size the pre-heat for the coldest reading, not the average: the
+        # warm end's heater must not cut the lead short for the cold end.
+        indoor = self._zone_room_temp(zone, coldest=True)
+        outdoor = self._outdoor_temp()
+        cool_rate = self.number(f"{zone}_cooloff_rate")
         minutes = required_lead_minutes(
-            rate=self._prediction_rate(zone),
-            # Size the pre-heat for the coldest reading, not the average: the
-            # warm end's heater must not cut the lead short for the cold end.
-            indoor=self._zone_room_temp(zone, coldest=True),
+            rate=rate,
+            indoor=indoor,
             target=target,
-            outdoor=self._outdoor_temp(),
+            outdoor=outdoor,
             max_minutes=self.number("preheat_minutes"),
             gap_hours=gap_hours,
-            cool_rate=self.number(f"{zone}_cooloff_rate"),
+            cool_rate=cool_rate,
         )
-        return int(round(minutes))
+        lead = int(round(minutes))
+        # Stash the inputs so the caller can audit the computation that
+        # actually opens a pre-heat window (recording every 5-minute
+        # recalculation would drown the log).
+        self._last_lead_calc[zone] = {
+            "eco": eco,
+            "gap_min": None if gap_hours is None else gap_hours * 60,
+            "lead_min": lead,
+            "rate": rate,
+            "indoor_coldest": indoor,
+            "target": target,
+            "outdoor": outdoor,
+            "cool_rate": cool_rate,
+        }
+        return lead
 
     def _prediction_rate(self, zone: str) -> float:
         """The learned rate to predict a warm-up with.
@@ -767,14 +813,39 @@ class ScoutController:
             # fan-assisted one when the fans ran for most of the warm-up.
             self._warmup_start[zone] = None
             if temp is None:
+                self.audit.record(
+                    "warmup_discarded",
+                    now,
+                    zone=zone,
+                    reason="reading_lost",
+                    minutes=(now - started).total_seconds() / 60,
+                )
                 continue
             minutes = (now - started).total_seconds() / 60
+            rise = temp - start_temp
             assisted = fan_ticks * 2 >= ticks
             rate_key = self._warmup_rate_key(zone, assisted=assisted)
-            new_rate = updated_rate(self.number(rate_key), minutes, temp - start_temp)
+            old_rate = self.number(rate_key)
+            new_rate = updated_rate(old_rate, minutes, rise)
+            self.audit.record(
+                "warmup_sample",
+                now,
+                zone=zone,
+                rate_key=rate_key,
+                minutes=minutes,
+                rise=rise,
+                start_temp=start_temp,
+                end_temp=temp,
+                fan_ticks=fan_ticks,
+                ticks=ticks,
+                reached_target=done,
+                accepted=rise >= MIN_SAMPLE_RISE and minutes >= MIN_SAMPLE_MINUTES,
+                old_rate=old_rate,
+                new_rate=new_rate,
+            )
             entity = self._numbers.get(rate_key)
             write = getattr(entity, "write_value", None)
-            if write is not None and new_rate != self.number(rate_key):
+            if write is not None and new_rate != old_rate:
                 write(new_rate)
 
     def _update_cooloff_learning(self) -> None:
@@ -792,6 +863,8 @@ class ScoutController:
             # discard any in-flight sample rather than learning it as
             # insulation quality.
             if self.opening_ice[zone]:
+                if self._cooloff_start[zone] is not None:
+                    self.audit.record("cooloff_discarded", now, zone=zone, reason="opening")
                 self._cooloff_start[zone] = None
                 continue
 
@@ -834,6 +907,16 @@ class ScoutController:
         if current <= 0:
             return  # prediction disabled by the user; leave it that way
         new = updated_cooling_rate(current, hours, drop)
+        self.audit.record(
+            "cooloff_sample",
+            self._now(),
+            zone=zone,
+            hours=hours,
+            drop=drop,
+            accepted=drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS,
+            old_rate=current,
+            new_rate=new,
+        )
         entity = self._numbers.get(key)
         write = getattr(entity, "write_value", None)
         if write is not None and new != current:
@@ -874,6 +957,14 @@ class ScoutController:
 
         if warm and not self.seasonal_lockout:
             self.seasonal_lockout = True
+            self.audit.record(
+                "seasonal",
+                self._now(),
+                engaged=True,
+                avg=avg,
+                threshold=threshold,
+                realfeel=realfeel if realfeel != 99.0 else None,
+            )
             persistent_notification.async_create(
                 self.hass,
                 (
@@ -886,6 +977,14 @@ class ScoutController:
             )
         elif cold and self.seasonal_lockout:
             self.seasonal_lockout = False
+            self.audit.record(
+                "seasonal",
+                self._now(),
+                engaged=False,
+                avg=avg,
+                threshold=threshold,
+                realfeel=realfeel if realfeel != 99.0 else None,
+            )
             persistent_notification.async_dismiss(self.hass, NOTIFY_SEASONAL)
 
     @staticmethod
@@ -977,6 +1076,7 @@ class ScoutController:
                 for zone, until in self.boost_until.items()
             },
             "manual_hold": dict(self.manual_hold),
+            "audit": self.audit.to_list(),
         }
 
     async def _async_restore_state(self) -> None:
@@ -1003,6 +1103,119 @@ class ScoutController:
                 self.boost_until[zone] = until
             if (data.get("manual_hold") or {}).get(zone):
                 self.manual_hold[zone] = True
+        self.audit.load(data.get("audit"))
+
+    def diagnostics_data(self) -> dict[str, Any]:
+        """Everything needed to audit the controller offline.
+
+        Served by the integration's diagnostics download (integration page →
+        ⋮ → Download diagnostics). Contains no credentials — entity ids,
+        tunable values against their defaults, learned rates, a live reading
+        snapshot and the rolling audit-event log — so the tuning constants
+        can be re-derived from the hut's real behaviour.
+        """
+
+        def _iso(ts: datetime | None) -> str | None:
+            return ts.isoformat(timespec="seconds") if ts else None
+
+        numbers = {
+            key: {"value": self.number(key), "default": float(defn[3])}
+            for key, defn in NUMBER_DEFS.items()
+        }
+        switches = {
+            key: {"value": self.switch_on(key, default=default), "default": default}
+            for key, default in SWITCH_DEFS.items()
+        }
+
+        zones: dict[str, Any] = {}
+        for zone in (ZONE_A, ZONE_B):
+            heaters: dict[str, Any] = {}
+            for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+                st = self.hass.states.get(climate)
+                heaters[climate] = {
+                    "state": st.state if st else None,
+                    "temp": (st.attributes.get("current_temperature") if st else None),
+                    "preset": (st.attributes.get("preset_mode") if st else None),
+                    "online": self._climate_online(climate),
+                }
+            zones[zone] = {
+                "heaters": heaters,
+                "average": self._zone_room_temp(zone),
+                "coldest": self._zone_room_temp(zone, coldest=True),
+            }
+
+        stale_min = self.number("fan_sensor_stale_minutes")
+        power = {
+            sensor: {
+                "value": self._num_state(sensor),
+                "stale": self._stale(sensor, stale_min),
+            }
+            for sensor in self._power_sensors()
+        }
+
+        return {
+            "generated": _iso(self._now()),
+            "config": dict(self.config),
+            "tunables": {
+                "numbers": numbers,
+                "switches": switches,
+                "boost_minutes": self.boost_minutes(),
+                "eco_keywords": self.eco_keywords(),
+            },
+            "learned": {
+                "office_comfort_target": self._zone_comfort_target.get(ZONE_B),
+                "warmup_in_flight": {
+                    zone: _iso(sample[0]) if sample else None
+                    for zone, sample in self._warmup_start.items()
+                },
+                "cooloff_in_flight": {
+                    zone: _iso(sample[0]) if sample else None
+                    for zone, sample in self._cooloff_start.items()
+                },
+                "last_lead_calc": self._last_lead_calc,
+            },
+            "state": {
+                "applied": dict(self.applied),
+                "expected": dict(self.expected_preset),
+                "manual_hold": dict(self.manual_hold),
+                "opening_ice": dict(self.opening_ice),
+                "boost_until": {z: _iso(t) for z, t in self.boost_until.items()},
+                "seasonal_lockout": self.seasonal_lockout,
+                "summer_active": self._summer_active(),
+                "cal_window": dict(self.cal_window),
+                "cal_title": dict(self.cal_title),
+                "fan": {
+                    "on": self.fan_on,
+                    "mode": self.fan_mode,
+                    "direction": self.fan_direction,
+                    "fault": self.fan_fault_effective,
+                    "sensor_stale": self.fan_sensor_stale,
+                    "overheated": self.fan_overheated,
+                    "last_on": _iso(self.fan_last_on),
+                    "last_off": _iso(self.fan_last_off),
+                },
+                "water": {
+                    "on": self.water_on,
+                    "on_since": _iso(self.water_on_since),
+                    "last_hot": _iso(self.water_last_hot),
+                    "hygiene_until": _iso(self.water_hygiene_until),
+                    "frost_active": self.water_frost_active,
+                    "window": self.water_window,
+                },
+            },
+            "readings": {
+                "zones": zones,
+                "hall_spread": self.hall_temp_spread,
+                "ceiling": self._ceiling_temp(),
+                "floor": self._floor_temp(stale_min),
+                "fan_dt": self.fan_dt,
+                "outdoor": self._outdoor_temp(),
+                "shared_coldest": self._shared_room_temp(),
+                "power": power,
+                "heat_demand": self.heat_demand,
+            },
+            "events": self.audit.to_list(),
+        }
 
     async def async_reset_tunables(self) -> None:
         """Restore every tunable helper to its built-in default.
@@ -1237,8 +1450,12 @@ class ScoutController:
         room = self._shared_room_temp()
         if room is not None:
             if room <= WATER_FROST_ON_TEMP:
+                if not self.water_frost_active:
+                    self.audit.record("water_frost", now, active=True, room=room)
                 self.water_frost_active = True
             elif room >= WATER_FROST_OFF_TEMP:
+                if self.water_frost_active:
+                    self.audit.record("water_frost", now, active=False, room=room)
                 self.water_frost_active = False
         if self.water_frost_active:
             return True
@@ -1253,6 +1470,9 @@ class ScoutController:
             # Window over: if the switch really was on at the end, that is a
             # completed reheat — credit it directly so the cycle cannot
             # immediately re-trigger itself.
+            self.audit.record(
+                "water_hygiene", now, phase="complete" if powered else "interrupted"
+            )
             if powered:
                 self.water_last_hot = now
             self.water_hygiene_until = None
@@ -1260,6 +1480,7 @@ class ScoutController:
             self.water_last_hot = now  # start the clock on first evaluation
         elif now - self.water_last_hot >= WATER_HYGIENE_INTERVAL:
             self.water_hygiene_until = now + timedelta(minutes=WATER_HYGIENE_MINUTES)
+            self.audit.record("water_hygiene", now, phase="start")
             return True
 
         override = self.switch_on("water_manual_override")
@@ -1287,6 +1508,7 @@ class ScoutController:
         try:
             self._refresh_motion_from_states()
             await self._evaluate_openings()
+            self._record_booking_starts()
             await self._reconcile_zones()
             self._update_warmup_learning()
             self._update_cooloff_learning()
@@ -1302,6 +1524,41 @@ class ScoutController:
         if self._reconcile_pending:
             self._reconcile_pending = False
             await self.async_reconcile()
+
+    def _record_booking_starts(self) -> None:
+        """Audit the moment each booking actually begins.
+
+        The temperature at that instant against the target is the ground
+        truth for whether the optimum-start lead was sized right — the one
+        number that judges the whole learning stack. A positive shortfall
+        means the coldest end arrived under target; negative means it was
+        already warmer (the lead, or the seed, is oversized).
+        """
+        for zone in (ZONE_A, ZONE_B):
+            cal = self.config.get(ZONE_CALENDAR[zone])
+            if not cal:
+                continue
+            running = self._is_on(cal)
+            was = self._cal_running_prev[zone]
+            self._cal_running_prev[zone] = running
+            if was is None or not running or was:
+                continue
+            eco = self._eco_keyword_active(zone)
+            target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
+            coldest = self._zone_room_temp(zone, coldest=True)
+            self.audit.record(
+                "booking_start",
+                self._now(),
+                zone=zone,
+                title=self.cal_title.get(zone) or None,
+                eco=eco,
+                target=target,
+                coldest=coldest,
+                average=self._zone_room_temp(zone),
+                shortfall=None if coldest is None else target - coldest,
+                outdoor=self._outdoor_temp(),
+                preset=self.applied[zone],
+            )
 
     def _refresh_motion_from_states(self) -> None:
         """Refresh timestamps for any motion sensor currently reading 'on'."""
@@ -1395,6 +1652,10 @@ class ScoutController:
         if desired == self.applied["shared"]:
             if not (self._shared_offline_apply and all_online):
                 return  # nothing to do, or still waiting for reconnection
+        else:
+            self.audit.record(
+                "preset", self._now(), zone="shared", previous=self.applied["shared"], to=desired
+            )
         await self._async_apply_climate(climates, desired)
         self.applied["shared"] = desired
         self._shared_offline_apply = not all_online
@@ -1492,6 +1753,10 @@ class ScoutController:
         climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
         if not climates:
             return
+        if preset != self.applied[zone]:
+            self.audit.record(
+                "preset", self._now(), zone=zone, previous=self.applied[zone], to=preset
+            )
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
             await self._async_push_hall_temps(eco_low=self._eco_keyword_active(zone))
         await self._async_apply_climate(climates, preset)
@@ -1856,6 +2121,8 @@ class ScoutController:
             if self.fan_master_off_since is None:
                 self.fan_master_off_since = now
             elif (now - self.fan_master_off_since).total_seconds() >= FAN_FAULT_GRACE:
+                if not self.fan_fault_latched:
+                    self.audit.record("fan_fault", now, reason="master_off")
                 self.fan_fault_latched = True
         return self._mapped_fault() or self.fan_fault_latched
 
@@ -2015,8 +2282,19 @@ class ScoutController:
             ).total_seconds() < self.number("fan_min_run_minutes") * 60:
                 return  # honour minimum run time before an ordinary stop
 
+        prev_on, prev_dir = bool(self.fan_on), self.fan_direction
         await self._async_ensure_fans(want_on, want_dir)
         self.fan_mode = mode
+        if bool(self.fan_on) != prev_on or (self.fan_on and self.fan_direction != prev_dir):
+            self.audit.record(
+                "fan_change",
+                now,
+                on=bool(self.fan_on),
+                direction=self.fan_direction,
+                mode=mode,
+                dt=self.fan_dt,
+                demand=self.heat_demand,
+            )
 
     async def _async_ensure_fans(self, want_on: bool, want_direction: str | None) -> None:
         """Reusable actuator that encodes the hard Shelly rules.
@@ -2098,6 +2376,8 @@ class ScoutController:
         # script is absent or broken: latch a fault instead of pressing
         # forever (~one full motor reversal attempt every 100 s otherwise).
         if self._reverse_attempts >= MAX_REVERSE_ATTEMPTS:
+            if not self.fan_fault_latched:
+                self.audit.record("fan_fault", now, reason="reverse_failed")
             self.fan_fault_latched = True
             return
         self._reverse_attempts += 1
@@ -2122,6 +2402,7 @@ class ScoutController:
     def _notify_condition_edges(self, prev_stale: bool, prev_hot: bool) -> None:
         """Raise / dismiss the sensor-lost and overheat notifications on edges."""
         if self.fan_sensor_stale and not prev_stale:
+            self.audit.record("fan_sensor_lost", self._now())
             self._notify_sensor_lost()
         elif prev_stale and not self.fan_sensor_stale:
             persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_SENSOR_LOST)
@@ -2129,6 +2410,7 @@ class ScoutController:
         # Overheat: past the fan-cooling ceiling a breeze heats people instead
         # of cooling them, so the summer fans are held off.
         if self.fan_overheated and not prev_hot and self._summer_active():
+            self.audit.record("overheat_holdoff", self._now(), dt=self.fan_dt)
             persistent_notification.async_create(
                 self.hass,
                 (

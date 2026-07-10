@@ -5,7 +5,9 @@ import importlib
 MODULES = [
     "const",
     "entity",
+    "audit",
     "coordinator",
+    "diagnostics",
     "number",
     "select",
     "switch",
