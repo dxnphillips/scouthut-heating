@@ -138,6 +138,7 @@ def _install_stubs() -> None:
             self.domain = entity_id.split(".")[0]
             self.unique_id = unique_id
             self.config_entry_id = config_entry_id
+            self.original_device_class = None
 
     class _Reg:
         def __init__(self):

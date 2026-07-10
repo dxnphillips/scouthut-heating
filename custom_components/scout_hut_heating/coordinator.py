@@ -1717,17 +1717,24 @@ class ScoutController:
             entry = registry.async_get(climate)
             if entry is None or entry.device_id is None:
                 continue
+            device_matches: list[str] = []
             for member in er.async_entries_for_device(
                 registry, entry.device_id, include_disabled_entities=False
             ):
                 if member.domain != "sensor":
                     continue
                 eid = member.entity_id.lower()
-                is_power = (member.original_device_class or "") == "power" or (
+                is_power = (getattr(member, "original_device_class", None) or "") == "power" or (
                     "power" in eid and "energy" not in eid
                 )
                 if is_power:
-                    found.append(member.entity_id)
+                    device_matches.append(member.entity_id)
+            # Rointe devices expose both a constant NOMINAL "power" (the
+            # radiator's rating, always fresh, always above the demand
+            # threshold) and the live "effective power". Only the latter says
+            # anything about demand — prefer it whenever it exists.
+            effective = [e for e in device_matches if "effective" in e.lower()]
+            found.extend(effective or device_matches)
         return found
 
     def _connected_for(self, climate: str) -> str | None:
