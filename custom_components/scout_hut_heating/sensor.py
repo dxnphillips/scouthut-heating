@@ -42,6 +42,11 @@ SENSORS: dict[str, tuple[str, str, Callable[[ScoutController], str | None]]] = {
         "mdi:thermometer-lines",
         lambda c: None if c.fan_dt is None else str(round(c.fan_dt, 1)),
     ),
+    "hall_temp_spread": (
+        "Hall temperature spread",
+        "mdi:arrow-expand-horizontal",
+        lambda c: None if c.hall_temp_spread is None else str(round(c.hall_temp_spread, 1)),
+    ),
 }
 
 
