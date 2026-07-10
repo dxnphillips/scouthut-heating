@@ -207,9 +207,13 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     "water_motion_keepalive_minutes": (15, 120, 15, 60, "min"),
     # --- Destratification / cooling fan tunables ---
     # Ceiling-minus-floor difference to start (dt_on) and stop (dt_off) the
-    # winter fans. The gap between them is the hysteresis band.
-    "fan_dt_on": (0.5, 10, 0.5, 3, "°C"),
-    "fan_dt_off": (0, 5, 0.5, 1, "°C"),
+    # winter fans. The gap between them is the hysteresis band. Defaults are
+    # tuned for THIS hall (under-radiatored, every recovered degree matters):
+    # start earlier and run closer to fully mixed than the generic 3/1
+    # practice, still within the documented band (Reznor 2-3 °C rule,
+    # CaptiveAire 0.5-1 °C hysteresis).
+    "fan_dt_on": (0.5, 10, 0.5, 2, "°C"),
+    "fan_dt_off": (0, 5, 0.5, 0.5, "°C"),
     # Anti-short-cycle timers.
     "fan_min_run_minutes": (0, 60, 1, 10, "min"),
     "fan_min_off_minutes": (0, 60, 1, 10, "min"),

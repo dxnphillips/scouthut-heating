@@ -121,7 +121,8 @@ stay seasonal-rare (best practice for these motors). The **Summer cooling
 mode** switch remains as a manual force-on for out-of-season heatwaves:
 
 - **Winter destratification** (default) → fans **reverse (up air)** when the
-  ceiling-minus-floor ΔT is above the start threshold (default 3 °C) **and** the
+  ceiling-minus-floor ΔT is above the start threshold (default 2 °C, tuned
+  for this under-radiatored hall; generic practice is ~3 °C) **and** the
   heat is worth moving — meaning either a radiator in *any* zone is drawing power
   (so office or shared heat leaking into the hall counts too), **or** the floor is
   still below the recirculation cap (default 24 °C). That second condition is the
@@ -131,7 +132,7 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
   already-paid-for warmth back down instead of letting it escape through the
   poorly-insulated roof. It runs for **loss reduction as well as comfort**, so it
   does **not** require the hall to be occupied. It stops when the ΔT falls to the
-  stop threshold (default 1 °C), or once the heat is no longer worth moving (heater
+  stop threshold (default 0.5 °C), or once the heat is no longer worth moving (heater
   off *and* the floor has reached the cap). The two ΔT thresholds plus minimum
   run/off times (default 10 min each) prevent short-cycling. Defaults follow the
   documented practice for destrat fans (a few-degree ΔT band; a ~24 °C / 75 °F
