@@ -71,6 +71,7 @@ def _set_rate(ctrl, key, value):
 
 def test_zone_lead_uses_room_and_weather():
     ctrl, hass = make_controller()
+    _set_rate(ctrl, "hall_comfort_temp", 22)  # pin: tests the maths, not the default
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "zone_a_cooloff_rate", 0)  # isolate the deficit term
     _hall_temp(hass, 19)
@@ -83,7 +84,7 @@ def test_unlearned_zone_uses_the_full_cap():
     # learning a normal cold start computes past the cap and clamps to it —
     # fail-safe warm, exactly the old fixed behaviour.
     ctrl, hass = make_controller()
-    _hall_temp(hass, 18)  # 4 °C deficit x 60 min/°C = 240 -> cap
+    _hall_temp(hass, 17)  # 2.5 °C deficit x 60 min/°C = 150 -> cap
     assert ctrl._zone_preheat_minutes(ZA) == 120
 
 
@@ -98,14 +99,15 @@ def test_eco_booking_aims_at_the_eco_low_target():
     _set_rate(ctrl, "zone_a_cooloff_rate", 0)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
     _hall_temp(hass, 12)
-    # Comfort target 22 -> 10 °C deficit -> capped at 120. ECO target is the
-    # eco-low slider (14) -> 2 °C deficit -> 40 minutes.
+    # Comfort target (19.5) -> 7.5 °C deficit -> capped at 120. ECO target is
+    # the eco-low slider (14) -> 2 °C deficit -> 40 minutes.
     assert ctrl._zone_preheat_minutes(ZA) == 120
     assert ctrl._zone_preheat_minutes(ZA, eco=True) == 40
 
 
 def test_far_off_booking_adds_predicted_cooling():
     ctrl, hass = make_controller()
+    _set_rate(ctrl, "hall_comfort_temp", 22)
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "zone_a_cooloff_rate", 1.0)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
@@ -219,6 +221,7 @@ def _both_hall_temps(hass, a, b):
 
 def test_preheat_sizes_for_the_coldest_end_of_the_hall():
     ctrl, hass = make_controller()
+    _set_rate(ctrl, "hall_comfort_temp", 22)  # pin: tests the maths, not the default
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "zone_a_cooloff_rate", 0)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
@@ -295,6 +298,7 @@ def test_prediction_falls_back_until_the_fans_rate_is_trained():
     from custom_components.scout_hut_heating.const import CONF_FAN_MASTER
 
     ctrl, hass = make_controller(config_overrides={CONF_FAN_MASTER: "switch.fan_master"})
+    _set_rate(ctrl, "hall_comfort_temp", 22)
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "zone_a_cooloff_rate", 0)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})

@@ -198,8 +198,17 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # Hall setpoint sliders are bounded to what the Rointe number entities
     # accept (comfort 19-30 °C, eco 7.5-18.5 °C per the official manuals), so a
     # slider value can never be silently rejected by the heater.
-    "hall_comfort_temp": (19, 24, 0.5, 22, "°C"),
-    "hall_eco_temp": (10, 18.5, 0.5, 18, "°C"),
+    #
+    # Defaults are sized for ACTIVE hall use, not classroom sitting: CIBSE
+    # Guide A holds higher-activity spaces at ~17 °C, sports-hall practice is
+    # 12-16 °C, and the 18 °C classroom floor applies to the most sedentary
+    # regulars (crafts, closing circle, parents at the edge). Comfort 19.5
+    # serves those; games sessions self-heat well past comfort at that level,
+    # and pure-activity lettings use the eco-low keyword tier (14 °C, inside
+    # the active-sports band). Eco 16 is the occupied-adjacent resting point
+    # (circulation-space territory, an easy recovery to comfort).
+    "hall_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
+    "hall_eco_temp": (10, 18.5, 0.5, 16, "°C"),
     "hall_eco_low_temp": (8, 18, 0.5, 14, "°C"),
     # The 15 L / 2 kW Speedflow needs ~30 min from cold to reach temperature,
     # so the default matches a full reheat and the range leaves headroom.
@@ -222,7 +231,9 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # well over an hour between reports when the temperature is steady.
     "fan_sensor_stale_minutes": (5, 240, 5, 120, "min"),
     # Summer: floor temperature above this is "warm enough" to want a breeze.
-    "cooling_temp_high": (18, 30, 0.5, 24, "°C"),
+    # A degree under the sedentary norm because hall users are active — moving
+    # bodies want the airflow earlier than seated ones.
+    "cooling_temp_high": (18, 30, 0.5, 23, "°C"),
     # A Rointe Effective Power reading above this means that heater is calling.
     "heat_demand_watts": (0, 200, 5, 20, "W"),
     # Winter fans recirculate ceiling heat while the floor is below this cap, even
