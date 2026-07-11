@@ -64,10 +64,15 @@ Every decision and learning sample is appended to a bounded audit log
 with their raw inputs and accept/reject outcome, pre-heat window openings with
 the full lead computation, the temperature-vs-target outcome at each booking
 start, preset changes, fan starts/stops/reversals/faults, seasonal lockout
-transitions and water frost/hygiene events. The whole log — plus tunables
-against defaults, learned rates and a live reading snapshot — is exported by
-the standard Home Assistant diagnostics download (`diagnostics.py`), so the
-tuning constants can be checked against the building's real behaviour.
+transitions and water frost/hygiene events. A rolling readings trace (a week
+of 15-minute points) records the exact computed values the decisions used —
+ceiling, the hall floor average and coldest reading, office, shared, outdoor,
+fan state, heat demand and the O1 wattage (which encodes the manual
+transformer dial tap; warm-up samples also carry their average O1 watts). The
+whole log — plus tunables against defaults, learned rates and a live reading
+snapshot — is exported by the standard Home Assistant diagnostics download
+(`diagnostics.py`), so the tuning constants can be checked against the
+building's real behaviour.
 
 ## Rointe offline / stale handling
 

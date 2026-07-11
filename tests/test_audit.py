@@ -15,8 +15,12 @@ from datetime import timedelta
 
 import pytest
 
-from custom_components.scout_hut_heating.audit import AuditLog
-from custom_components.scout_hut_heating.const import CONF_FAN_MASTER, DOMAIN
+from custom_components.scout_hut_heating.audit import AuditLog, Trace
+from custom_components.scout_hut_heating.const import (
+    CONF_FAN_MASTER,
+    CONF_FAN_O1_POWER,
+    DOMAIN,
+)
 from scout_testkit import (
     E,
     PRESET_COMFORT,
@@ -65,6 +69,66 @@ def test_audit_log_restore_tolerates_bad_data():
     assert [e["event"] for e in log.to_list()] == ["ok"]
 
 
+# --- The readings trace -----------------------------------------------------------
+
+def test_trace_throttles_to_the_sampling_interval():
+    from datetime import datetime, timezone
+
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    trace = Trace()
+    assert trace.maybe_sample(t0, floor=18.34567, missing=None) is True
+    assert trace.maybe_sample(t0 + timedelta(minutes=5), floor=19) is False
+    assert trace.maybe_sample(t0 + timedelta(minutes=15), floor=19) is True
+
+    points = trace.to_list()
+    assert len(points) == 2
+    assert points[0]["floor"] == 18.35  # rounded
+    assert "missing" not in points[0]  # None dropped
+    json.dumps(points)
+
+
+def test_trace_is_bounded():
+    from datetime import datetime, timezone
+
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    trace = Trace(maxlen=4)
+    for i in range(10):
+        trace.maybe_sample(t0 + timedelta(minutes=15 * i), n=i)
+    points = trace.to_list()
+    assert len(points) == 4 and points[-1]["n"] == 9
+
+
+def test_trace_keeps_its_cadence_across_a_restart():
+    from datetime import datetime, timezone
+
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    trace = Trace()
+    trace.maybe_sample(t0, floor=18)
+
+    restored = Trace()
+    restored.load(trace.to_list())
+    # One minute after the persisted point: still inside the interval.
+    assert restored.maybe_sample(t0 + timedelta(minutes=1), floor=18) is False
+    assert restored.maybe_sample(t0 + timedelta(minutes=16), floor=18) is True
+
+
+def test_controller_trace_records_the_computed_readings():
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 20)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 15})
+    ctrl._sample_trace()
+    ctrl._sample_trace()  # throttled: still one point
+
+    (point,) = ctrl.trace.to_list()
+    assert point["floor"] == 20.0
+    assert point["hall_coldest"] == 20.0
+    assert point["outdoor"] == 15.0
+    assert point["fans"] is False
+
+    snap = ctrl._state_snapshot()
+    assert snap["trace"] == ctrl.trace.to_list()
+
+
 # --- Learning samples -------------------------------------------------------------
 
 def test_accepted_warmup_sample_is_audited_with_its_inputs():
@@ -103,6 +167,31 @@ def test_rejected_warmup_sample_is_audited_as_rejected():
     assert evt["accepted"] is False
     assert evt["reached_target"] is False
     assert evt["new_rate"] == evt["old_rate"] == 20.0
+
+
+def test_warmup_sample_records_the_average_fan_wattage():
+    # The O1 wattage encodes the manual transformer dial tap; recording it
+    # with each sample shows whether dial changes are perturbing the rates.
+    ctrl, hass = make_controller(
+        config_overrides={
+            CONF_FAN_MASTER: "switch.fan_master",
+            CONF_FAN_O1_POWER: "sensor.fan_power",
+        }
+    )
+    hass.states.set("switch.fan_master", "on")
+    hass.states.set("sensor.fan_power", "120.0")
+    _set_rate(ctrl, "zone_a_warmup_rate_fans", 20)
+    _hall_temp(hass, 18)
+    ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._update_warmup_learning()  # sample starts
+    ctrl._update_warmup_learning()  # one mid-warm-up tick
+    advance(ctrl, 120)
+    _hall_temp(hass, 22)
+    ctrl._update_warmup_learning()  # target reached
+
+    (evt,) = events(ctrl, "warmup_sample")
+    assert evt["rate_key"] == "zone_a_warmup_rate_fans"
+    assert evt["o1_avg_w"] == pytest.approx(120.0)
 
 
 def test_cooloff_sample_is_audited():
@@ -204,8 +293,14 @@ def test_restart_mid_booking_records_no_phantom_start():
 # --- Actuation events ---------------------------------------------------------------
 
 def test_fan_state_changes_are_audited():
-    ctrl, hass = make_controller(config_overrides={CONF_FAN_MASTER: "switch.fan_master"})
+    ctrl, hass = make_controller(
+        config_overrides={
+            CONF_FAN_MASTER: "switch.fan_master",
+            CONF_FAN_O1_POWER: "sensor.fan_power",
+        }
+    )
     hass.states.set("switch.fan_master", "off")
+    hass.states.set("sensor.fan_power", "0.0")
     ctrl.applied[ZA] = PRESET_COMFORT  # heat demand via the preset fallback
     run(ctrl._reconcile_fans())  # winter run-on-loss: fans commanded on
 
@@ -213,6 +308,7 @@ def test_fan_state_changes_are_audited():
     assert evt["on"] is True
     assert evt["mode"] == "winter"
     assert evt["demand"] is True
+    assert evt["o1_w"] == 0.0  # dial state at the moment of the change
 
     run(ctrl._reconcile_fans())  # steady state: no new event
     assert len(events(ctrl, "fan_change")) == 1
@@ -250,6 +346,23 @@ def test_audit_events_survive_a_restart():
     assert ctrl2.audit.to_list()[-1]["event"] == "marker"
 
 
+def test_trace_survives_a_restart():
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 20)
+    ctrl._sample_trace()
+    snap = ctrl._state_snapshot()
+
+    ctrl2, _ = make_controller()
+
+    class _Store:
+        async def async_load(self):
+            return snap
+
+    ctrl2._store = _Store()
+    run(ctrl2._async_restore_state())
+    assert ctrl2.trace.to_list() == ctrl.trace.to_list()
+
+
 def test_diagnostics_data_is_json_serialisable_and_complete():
     ctrl, hass = make_controller()
     _hall_temp(hass, 20)
@@ -264,6 +377,7 @@ def test_diagnostics_data_is_json_serialisable_and_complete():
     assert data["readings"]["zones"][ZA]["coldest"] == 20.0
     assert data["readings"]["outdoor"] == 15.0
     assert data["events"][-1]["event"] == "marker"
+    assert "trace" in data
 
 
 def test_diagnostics_platform_returns_the_controller_export():

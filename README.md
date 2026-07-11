@@ -273,9 +273,15 @@ restarts) of everything it decides and learns:
   target at the moment each booking begins. A positive `shortfall` means the
   room arrived under target (lead too short); a consistently negative one
   means heating started earlier than needed.
-- **`preset` / `fan_change` / `seasonal` / `water_hygiene` / `water_frost` /
-  `fan_fault` / `overheat_holdoff` / `fan_sensor_lost`** — the actuation and
-  safety record around those samples.
+- **`preset` / `fan_change` / `manual_hold` / `seasonal` / `water_hygiene` /
+  `water_frost` / `fan_fault` / `overheat_holdoff` / `fan_sensor_lost`** — the
+  actuation and safety record around those samples.
+- **A readings trace** — a week of 15-minute points of the exact computed
+  values the decisions used (ceiling, the hall "floor" average and coldest
+  reading, office, shared, outdoor, fan state, heat demand, and the O1
+  wattage). The wattage matters because it encodes the manual transformer
+  dial's tap — warm-up samples also carry their average O1 watts, so a moved
+  dial perturbing the learned rates is visible in the data.
 
 Download it from **Settings → Devices & Services → Scout Hut Heating → ⋮ →
 Download diagnostics**. The JSON also contains every tunable's current value
