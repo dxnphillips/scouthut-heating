@@ -2679,10 +2679,21 @@ class ScoutController:
             ).total_seconds() < self.number("fan_min_run_minutes") * 60:
                 return  # honour minimum run time before an ordinary stop
 
+        # Cold start (fan_on None) with a physically running master: turning
+        # it off is None -> False, which the change detector reads as "no
+        # change" — capture the master's real state so that stop is audited
+        # too (seen in the field: a restart mid-hold silently stopped the
+        # fans, leaving a gap in the log).
+        first_sight = self.fan_on is None
+        master_was_on = self._is_on(master)
         prev_on, prev_dir = bool(self.fan_on), self.fan_direction
         await self._async_ensure_fans(want_on, want_dir)
         self.fan_mode = mode
-        if bool(self.fan_on) != prev_on or (self.fan_on and self.fan_direction != prev_dir):
+        if (
+            bool(self.fan_on) != prev_on
+            or (self.fan_on and self.fan_direction != prev_dir)
+            or (first_sight and master_was_on and not self.fan_on)
+        ):
             self.audit.record(
                 "fan_change",
                 now,

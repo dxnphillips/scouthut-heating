@@ -513,3 +513,27 @@ def test_vent_pass_granted_during_sensor_loss_still_gets_verified():
     run(ctrl._reconcile_fans())
     assert ctrl._vent_effective is False
     assert ctrl.fan_breeze_hot is True  # the hold came back
+
+
+def test_cold_start_stop_of_a_running_master_is_audited():
+    # Restart mid-hold: the fresh controller (fan_on None) finds the master
+    # physically running and turns it off. None -> False looked like "no
+    # change" to the audit, silently dropping the stop from the log.
+    from scout_testkit import make_controller, on, run
+
+    ctrl, hass = make_controller(config_overrides={CONF_FAN_MASTER: MASTER})
+    on(hass, MASTER)  # fans physically running from before the restart
+    ctrl.seasonal_lockout = True  # summer regime, nobody there -> want off
+    assert ctrl.fan_on is None
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_on is False
+    assert hass.states.get(MASTER).state == "off"  # actually stopped
+    events = [e for e in ctrl.audit.to_list() if e["event"] == "fan_change"]
+    assert len(events) == 1 and events[0]["on"] is False
+
+    # A cold start with the master already off stays silent.
+    ctrl2, hass2 = make_controller(config_overrides={CONF_FAN_MASTER: MASTER})
+    off(hass2, MASTER)
+    ctrl2.seasonal_lockout = True
+    run(ctrl2._reconcile_fans())
+    assert not [e for e in ctrl2.audit.to_list() if e["event"] == "fan_change"]
