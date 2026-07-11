@@ -139,12 +139,15 @@ SEASONAL_SNAP_BAND = 2.0  # °C
 FAN_RUNNING_MIN_WATTS = 20.0
 
 # Hot-breeze guard ventilation override: an open door/window grants the fans
-# a provisional pass (a cross-breeze helps even in warm air), kept only while
-# the venting measurably works — the mixed-air estimate must fall by at least
-# this much over each grace window, or the guard re-engages. "It's not about
-# what is open, it's about what is actually making a difference."
-BREEZE_VENT_GRACE = timedelta(minutes=15)
-BREEZE_VENT_MIN_DROP = 0.3  # °C per grace window
+# a provisional pass (a cross-breeze helps even in warm air), kept while the
+# venting is at least HOLDING the line. The test is trend-direction, not
+# speed: measured no-venting solar charge RAISES the mix ~1.8 °C/h, while
+# genuine venting against a small indoor-outdoor gap may only manage a slow
+# drift down — so the pass is revoked only when the mix climbs this far above
+# the best (lowest) value seen since venting began. Flat or falling = the
+# venting is making a difference. "It's not about what is open, it's about
+# what is actually making a difference."
+BREEZE_VENT_MAX_RISE = 0.5  # °C above the best mix seen while venting
 
 # Winter condensation watch (Historic England: unoccupied fabric is happiest
 # at 8-10 °C; the Rointe anti-frost floor is fixed at 7, so the gap is covered
@@ -236,8 +239,7 @@ class ScoutController:
         self.fan_overheated: bool = False          # room past the fan-cooling ceiling
         self.fan_breeze_hot: bool = False          # breeze guard holding (mix hot, hall shut)
         self._breeze_latch = False                 # raw mixed-air-too-warm latch
-        self._vent_since: datetime | None = None   # provisional vent pass started
-        self._vent_anchor_mix: float | None = None
+        self._vent_anchor_mix: float | None = None  # best (lowest) mix while venting
         self._vent_effective = True
         self.fan_mix: float | None = None          # estimated mixed-air temp at head height
         self.heat_demand: bool = False             # any radiator drawing power
@@ -2567,39 +2569,21 @@ class ScoutController:
 
         # Ventilation override, effect-verified: ANY open mapped contact
         # (either zone, shared, internal — all can feed a cross-draft) grants
-        # the fans a provisional pass, but the pass is kept only while the
-        # venting measurably works: the mix must keep falling by
-        # BREEZE_VENT_MIN_DROP per grace window. What matters is not which
-        # opening is open but whether it is actually making a difference —
-        # a token window that cools nothing hands the hold back.
-        now = self._now()
+        # the fans a provisional pass, kept while the venting at least HOLDS
+        # the line. The anchor ratchets down to the best (lowest) mix seen
+        # since venting began; only a genuine climb above it — the measured
+        # signature of solar charge winning (~1.8 °C/h with nothing open) —
+        # revokes the pass. Slow-but-real venting against a small
+        # indoor-outdoor gap therefore keeps its fans; a token window that
+        # changes nothing while the hall keeps heating hands the hold back.
         vent = self._any_opening_open()
         if self._breeze_latch and vent:
-            if self._vent_since is None or (
-                # Pass granted while the sensors were lost (anchor None):
-                # re-anchor the moment a mix is readable again, or the
-                # effectiveness check could never run and a token opening
-                # would keep the pass forever.
-                self._vent_anchor_mix is None
-                and self.fan_mix is not None
-            ):
-                self._vent_since = now
-                self._vent_anchor_mix = self.fan_mix
-                self._vent_effective = True
-            elif (
-                self._vent_effective
-                and self.fan_mix is not None
-                and self._vent_anchor_mix is not None
-                and now - self._vent_since >= BREEZE_VENT_GRACE
-            ):
-                if self.fan_mix <= self._vent_anchor_mix - BREEZE_VENT_MIN_DROP:
-                    # Working: roll the window and keep the pass.
-                    self._vent_since = now
-                    self._vent_anchor_mix = self.fan_mix
-                else:
+            if self._vent_effective and self.fan_mix is not None:
+                if self._vent_anchor_mix is None or self.fan_mix < self._vent_anchor_mix:
+                    self._vent_anchor_mix = self.fan_mix  # ratchet down only
+                elif self.fan_mix >= self._vent_anchor_mix + BREEZE_VENT_MAX_RISE:
                     self._vent_effective = False
         else:
-            self._vent_since = None
             self._vent_anchor_mix = None
             self._vent_effective = True
         self.fan_breeze_hot = self._breeze_latch and not (vent and self._vent_effective)

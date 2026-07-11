@@ -413,9 +413,7 @@ def test_quiet_ceiling_sensor_is_fresh_while_available():
     assert ctrl.fan_sensor_stale is True
 
 
-def test_breeze_hold_is_overridden_by_venting_that_actually_works():
-    from datetime import timedelta
-
+def test_breeze_hold_is_overridden_by_venting_that_holds_the_line():
     from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
     from scout_testkit import E, make_controller, on, run
 
@@ -436,10 +434,11 @@ def test_breeze_hold_is_overridden_by_venting_that_actually_works():
     assert ctrl.fan_breeze_hot is False
     assert ctrl.fan_on is True
 
-    # The venting works: mix falls > 0.3 within the grace window -> pass kept.
-    ctrl._vent_since -= timedelta(minutes=16)
+    # Slow-but-real venting (small outdoor gap): flat, then drifting down —
+    # trend not worsening, so the pass is kept indefinitely.
+    run(ctrl._reconcile_fans())
     for eid in E["hall"]:
-        hass.states.set(eid, "heat", {"current_temperature": 29.0})  # mix 31.25
+        hass.states.set(eid, "heat", {"current_temperature": 29.5})  # mix 31.62
     run(ctrl._reconcile_fans())
     assert ctrl.fan_breeze_hot is False
     assert ctrl.fan_on is True
@@ -466,12 +465,15 @@ def test_breeze_vent_pass_is_revoked_when_it_makes_no_difference():
     run(ctrl._reconcile_fans())
     assert ctrl.fan_on is True
 
-    # ...but a token window that cools nothing hands the hold back (the
-    # 16 simulated minutes also age past the minimum-run timer).
+    # ...but a token window while the solar charge keeps WINNING (mix climbs
+    # past the best seen) hands the hold back. Advance past the minimum-run
+    # timer so the stop can actually land.
     from scout_testkit import advance
 
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 31.0})  # mix 32.75
     advance(ctrl, 16)
-    run(ctrl._reconcile_fans())  # mix unchanged at 32
+    run(ctrl._reconcile_fans())
     assert ctrl._vent_effective is False
     assert ctrl.fan_breeze_hot is True
     assert not ctrl.fan_on
@@ -502,11 +504,12 @@ def test_vent_pass_granted_during_sensor_loss_still_gets_verified():
     run(ctrl._reconcile_fans())
     assert ctrl._vent_anchor_mix is None  # pass granted blind
 
-    hass.states.set("sensor.ceiling", "38.0")  # sensors return, mix still 32
+    hass.states.set("sensor.ceiling", "38.0")  # sensors return, mix 32
     run(ctrl._reconcile_fans())
-    assert ctrl._vent_anchor_mix is not None  # re-anchored: verifiable again
+    assert ctrl._vent_anchor_mix is not None  # anchored: verifiable again
 
-    advance(ctrl, 16)  # grace elapses with no improvement
+    hass.states.set("sensor.ceiling", "41.0")  # solar winning: mix 32.75
+    advance(ctrl, 16)  # past the minimum-run timer
     run(ctrl._reconcile_fans())
     assert ctrl._vent_effective is False
     assert ctrl.fan_breeze_hot is True  # the hold came back

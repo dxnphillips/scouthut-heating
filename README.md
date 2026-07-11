@@ -154,10 +154,14 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
   (default 29 °C): past that a breeze gives rapidly diminishing benefit, so a
   notification asks for doors/windows to be opened. **Any** open mapped
   contact grants the fans an immediate provisional pass (a cross-draft makes
-  them useful again) — kept only while the venting *measurably works* (the
-  mix must keep falling ~0.3 °C per 15 min, or the hold returns: what matters
-  is not which opening is open but whether it is actually making a
-  difference). With nothing open, the fans resume by themselves once the air
+  them useful again) — kept while the venting at least *holds the line*: the
+  test is trend-direction, not speed. The pass tracks the best (lowest) mix
+  seen since venting began and is revoked only if the mix climbs ~0.5 °C
+  above it — the measured signature of solar charge winning (~1.8 °C/h rise
+  with nothing open), while genuine venting against a small indoor–outdoor
+  gap may only manage a slow drift down and rightly keeps its fans. What
+  matters is not which opening is open but whether it is actually making a
+  difference. With nothing open, the fans resume by themselves once the air
   cools 1 °C below the threshold. The breeze is what cools
   people, so an empty hall never runs them; there is deliberately **no
   pre-cooling** — a fan's benefit is instantaneous wind-chill, so starting
