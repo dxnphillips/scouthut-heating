@@ -224,10 +224,17 @@ cannot cut the lead short for the cold end — with a small extra margin when it
 clamped between 15 minutes and the **Pre-heat lead time (max)** slider (the
 safety cap — a room with no readable temperature also falls back to the cap,
 so a cold start is never missed). When the event's start time is known, the
-zone's **learned heat-loss rate** (°C/h, measured whenever the room coasts
-unheated) predicts how much further it will cool before the pre-heat begins,
-so a booking many hours away still gets a long-enough lead (never predicting
-below the 7 °C anti-frost floor).
+zone's **learned heat-loss constant** (the % of the indoor–outdoor gap lost
+per hour, measured whenever the room coasts unheated) predicts how much
+further it will cool before the pre-heat begins — Newton cooling toward the
+outdoor temperature, never below the 7 °C anti-frost floor — so a booking
+many hours away still gets a long-enough lead. Normalising by the gap is
+what makes the learning season-proof: a July cool-off and a January one
+teach the same fabric constant, only the gap differs, so the first cold
+snap of autumn is predicted correctly instead of waiting for the model to
+re-learn winter (measured here in July 2026: hall ~10 %/h, insulated office
+~4.5 %/h; when the weather entity is unreadable the prediction assumes a
+cold 5 °C outside and errs warm).
 
 All the learned numbers are **fail-safe by construction**: the warm-up rates
 are seeded at the slowest plausible value, so an unlearned zone uses
@@ -240,7 +247,7 @@ hall keeps **two** warm-up rates — with and without the destratification fans
 running — judged from the Shelly O1 power reading (a closed master with the
 dial at zero doesn't count), because the fans materially change warm-up
 speed. All the learned numbers are visible and adjustable — re-seed them
-after any building change, or set the heat-loss rate to 0 to disable the
+after any building change, or set the heat-loss constant to 0 to disable the
 cooling prediction.
 
 The **shared zone** follows either calendar / any motion / boost, and the
@@ -271,8 +278,9 @@ reality, the controller keeps a rolling audit log (bounded, persisted across
 restarts) of everything it decides and learns:
 
 - **`warmup_sample` / `cooloff_sample`** — every learning observation, accepted
-  or rejected, with the raw inputs (duration, temperature change, fan
-  assistance, old and new rate), so the EWMA behaviour can be re-derived.
+  or rejected, with the raw inputs (duration, temperature change, the average
+  indoor–outdoor gap, fan assistance and wattage, old and new value), so the
+  EWMA behaviour can be re-derived.
 - **`preheat_start`** — each time a pre-heat window opens: the lead chosen and
   every input it was computed from (rate, coldest reading, target, outdoor,
   heat-loss rate, gap to the event).

@@ -67,8 +67,8 @@ _OPTIMUM_START = [
     ("zone_a_warmup_rate", "Hall warm-up rate"),
     ("zone_a_warmup_rate_fans", "Hall warm-up rate (fans running)"),
     ("zone_b_warmup_rate", "Office warm-up rate"),
-    ("zone_a_cooloff_rate", "Hall heat-loss rate"),
-    ("zone_b_cooloff_rate", "Office heat-loss rate"),
+    ("zone_a_heatloss_pct", "Hall heat loss %/h"),
+    ("zone_b_heatloss_pct", "Office heat loss %/h"),
 ]
 _WATER = [
     ("water_manual_override", "Manual override"),

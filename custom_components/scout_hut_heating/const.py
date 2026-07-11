@@ -184,13 +184,16 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     "zone_a_warmup_rate": (5, 60, 0.5, 60, "min/°C"),
     "zone_a_warmup_rate_fans": (5, 60, 0.5, 60, "min/°C"),
     "zone_b_warmup_rate": (5, 60, 0.5, 60, "min/°C"),
-    # Learned heat-loss (cool-off) rates (°C per hour), one per zone, measured
-    # while a zone coasts unheated after use. Used to predict how far a room
-    # will have cooled by the time a pre-heat begins, so a booking many hours
-    # away still gets a long-enough lead. Seeded high (cautious: predicts
-    # colder, heats earlier); set to 0 to disable the prediction.
-    "zone_a_cooloff_rate": (0, 5, 0.1, 2.0, "°C/h"),
-    "zone_b_cooloff_rate": (0, 5, 0.1, 2.0, "°C/h"),
+    # Learned heat-loss constants: the PERCENTAGE of the indoor-outdoor
+    # temperature gap a zone loses per hour while coasting unheated (Newton
+    # cooling). Gap-normalising is what lets summer cool-offs teach winter
+    # predictions — the constant is a property of the fabric, not the season.
+    # Measured July 2026: hall ~10 %/h, insulated office ~4.5 %/h. Used to
+    # predict how far a room will have cooled by the time a pre-heat begins.
+    # Seeded lossy (cautious: predicts colder, heats earlier); set to 0 to
+    # disable the prediction.
+    "zone_a_heatloss_pct": (0, 50, 0.5, 25, "%/h"),
+    "zone_b_heatloss_pct": (0, 50, 0.5, 25, "%/h"),
     "motion_timeout_minutes": (5, 60, 5, 15, "min"),
     "door_ice_minutes": (2, 30, 1, 10, "min"),
     "window_ice_minutes": (5, 60, 5, 10, "min"),
@@ -248,8 +251,8 @@ NUMBER_ICONS: dict[str, str] = {
     "zone_a_warmup_rate": "mdi:chart-line",
     "zone_a_warmup_rate_fans": "mdi:fan-chevron-up",
     "zone_b_warmup_rate": "mdi:chart-line",
-    "zone_a_cooloff_rate": "mdi:snowflake-thermometer",
-    "zone_b_cooloff_rate": "mdi:snowflake-thermometer",
+    "zone_a_heatloss_pct": "mdi:snowflake-thermometer",
+    "zone_b_heatloss_pct": "mdi:snowflake-thermometer",
     "motion_timeout_minutes": "mdi:timer-outline",
     "door_ice_minutes": "mdi:door-open",
     "window_ice_minutes": "mdi:window-open",
