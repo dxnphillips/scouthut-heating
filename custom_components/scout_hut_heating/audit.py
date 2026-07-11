@@ -50,3 +50,59 @@ class AuditLog:
 
     def __len__(self) -> int:
         return len(self._events)
+
+
+# A week of 15-minute points. Self-recorded rather than mined from HA's
+# recorder at download time: it survives recorder purges, needs no
+# semi-internal recorder API, and captures the exact *computed* values the
+# controller acted on (the hall "floor" average, the coldest reading), which
+# exist as no single Home Assistant entity.
+TRACE_INTERVAL_MINUTES = 15
+TRACE_MAX_POINTS = 7 * 24 * 4
+
+
+class Trace:
+    """A bounded, throttled time-series of the readings behind the decisions."""
+
+    def __init__(
+        self,
+        maxlen: int = TRACE_MAX_POINTS,
+        interval_minutes: float = TRACE_INTERVAL_MINUTES,
+    ) -> None:
+        self._points: deque[dict[str, Any]] = deque(maxlen=maxlen)
+        self._interval = interval_minutes
+        self._last: datetime | None = None
+
+    def maybe_sample(self, when: datetime, **values: Any) -> bool:
+        """Append a point unless one was taken within the sampling interval."""
+        if (
+            self._last is not None
+            and (when - self._last).total_seconds() < self._interval * 60
+        ):
+            return False
+        self._last = when
+        point: dict[str, Any] = {"t": when.isoformat(timespec="seconds")}
+        for key, value in values.items():
+            if value is None:
+                continue
+            if isinstance(value, float):
+                value = round(value, 2)
+            point[key] = value
+        self._points.append(point)
+        return True
+
+    def to_list(self) -> list[dict[str, Any]]:
+        return list(self._points)
+
+    def load(self, items: Any) -> None:
+        """Restore persisted points, keeping the sampling cadence across restarts."""
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if isinstance(item, dict):
+                self._points.append(item)
+        if self._points:
+            try:
+                self._last = datetime.fromisoformat(self._points[-1]["t"])
+            except (KeyError, TypeError, ValueError):
+                self._last = None

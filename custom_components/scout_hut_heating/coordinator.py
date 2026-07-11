@@ -40,7 +40,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .audit import AuditLog
+from .audit import AuditLog, Trace
 from .fan_logic import fan_decision
 from .preheat import (
     MAX_RATE,
@@ -237,11 +237,13 @@ class ScoutController:
 
         # Optimum-start learning: an in-flight warm-up sample per zone
         # (started-at, start temperature, ticks-with-fans-running, total
-        # ticks), an in-flight cool-off sample per zone (started-at, start
-        # temperature), and the last comfort target seen on the zone's own
-        # heater (used as the office target, which the integration does not
-        # otherwise know).
-        self._warmup_start: dict[str, tuple[datetime, float, int, int] | None] = {
+        # ticks, O1 wattage sum, wattage reading count), an in-flight
+        # cool-off sample per zone (started-at, start temperature), and the
+        # last comfort target seen on the zone's own heater (used as the
+        # office target, which the integration does not otherwise know).
+        self._warmup_start: dict[
+            str, tuple[datetime, float, int, int, float, int] | None
+        ] = {
             ZONE_A: None,
             ZONE_B: None,
         }
@@ -254,8 +256,10 @@ class ScoutController:
         # Rolling audit trail of decisions, learning samples and outcomes,
         # persisted with the snapshot and exported via the diagnostics
         # download so the tuning constants can be checked against the hut's
-        # real behaviour.
+        # real behaviour. The trace records the readings behind the
+        # decisions (a week at 15-minute spacing) alongside the events.
         self.audit = AuditLog()
+        self.trace = Trace()
         # The inputs behind the most recent lead computation per zone, stashed
         # so the pre-heat-start audit event can carry them.
         self._last_lead_calc: dict[str, dict[str, Any]] = {}
@@ -760,13 +764,24 @@ class ScoutController:
         master = self.config.get(CONF_FAN_MASTER)
         if not master or not self._is_on(master):
             return False
-        o1 = self.config.get(CONF_FAN_O1_POWER)
-        if o1 and not self._stale(o1, self.number("fan_sensor_stale_minutes")):
-            power = self._num_state(o1)
-            if power is not None:
-                return power > FAN_RUNNING_MIN_WATTS
+        power = self._o1_watts()
+        if power is not None:
+            return power > FAN_RUNNING_MIN_WATTS
         # No fresh power reading: trust the commanded master state.
         return True
+
+    def _o1_watts(self) -> float | None:
+        """Fresh O1 power reading, or None.
+
+        Beyond the running/not gate, the wattage encodes the transformer
+        dial's tap — a manual control the integration cannot see otherwise —
+        so it is recorded with warm-up samples, fan events and the trace to
+        show whether dial changes are perturbing the learned rates.
+        """
+        o1 = self.config.get(CONF_FAN_O1_POWER)
+        if not o1 or self._stale(o1, self.number("fan_sensor_stale_minutes")):
+            return None
+        return self._num_state(o1)
 
     def _update_warmup_learning(self) -> None:
         """Time real comfort warm-ups and fold them into the learned rates.
@@ -804,16 +819,36 @@ class ScoutController:
             if sample is None:
                 if comfort and temp is not None and temp < target - 0.5:
                     fans = 1 if self._fans_running() else 0
-                    self._warmup_start[zone] = (now, temp, fans, 1)
+                    w = self._o1_watts() if zone == ZONE_A else None
+                    self._warmup_start[zone] = (
+                        now,
+                        temp,
+                        fans,
+                        1,
+                        w or 0.0,
+                        1 if w is not None else 0,
+                    )
                 continue
 
-            started, start_temp, fan_ticks, ticks = sample
+            started, start_temp, fan_ticks, ticks, watt_sum, watt_n = sample
             done = comfort and temp is not None and temp >= target
             if comfort and not done:
                 # Still warming (or temp reading lost: wait). Keep tallying
-                # whether the fans are assisting.
+                # whether the fans are assisting and how hard (the O1 wattage
+                # encodes the manual dial tap).
                 fan_ticks += 1 if self._fans_running() else 0
-                self._warmup_start[zone] = (started, start_temp, fan_ticks, ticks + 1)
+                w = self._o1_watts() if zone == ZONE_A else None
+                if w is not None:
+                    watt_sum += w
+                    watt_n += 1
+                self._warmup_start[zone] = (
+                    started,
+                    start_temp,
+                    fan_ticks,
+                    ticks + 1,
+                    watt_sum,
+                    watt_n,
+                )
                 continue
 
             # Warm-up finished (target reached) or ended early (preset left
@@ -846,6 +881,7 @@ class ScoutController:
                 end_temp=temp,
                 fan_ticks=fan_ticks,
                 ticks=ticks,
+                o1_avg_w=(watt_sum / watt_n) if watt_n else None,
                 reached_target=done,
                 accepted=rise >= MIN_SAMPLE_RISE and minutes >= MIN_SAMPLE_MINUTES,
                 old_rate=old_rate,
@@ -1085,6 +1121,7 @@ class ScoutController:
             },
             "manual_hold": dict(self.manual_hold),
             "audit": self.audit.to_list(),
+            "trace": self.trace.to_list(),
         }
 
     async def _async_restore_state(self) -> None:
@@ -1112,6 +1149,7 @@ class ScoutController:
             if (data.get("manual_hold") or {}).get(zone):
                 self.manual_hold[zone] = True
         self.audit.load(data.get("audit"))
+        self.trace.load(data.get("trace"))
 
     def diagnostics_data(self) -> dict[str, Any]:
         """Everything needed to audit the controller offline.
@@ -1220,9 +1258,11 @@ class ScoutController:
                 "outdoor": self._outdoor_temp(),
                 "shared_coldest": self._shared_room_temp(),
                 "power": power,
+                "fan_o1_w": self._o1_watts(),
                 "heat_demand": self.heat_demand,
             },
             "events": self.audit.to_list(),
+            "trace": self.trace.to_list(),
         }
 
     async def async_reset_tunables(self) -> None:
@@ -1523,6 +1563,7 @@ class ScoutController:
             await self._reconcile_shared()
             await self._reconcile_water()
             await self._reconcile_fans()
+            self._sample_trace()
             self._detect_drift()
             self._expire_boosts()
             self._store.async_delay_save(self._state_snapshot, 60)
@@ -1532,6 +1573,28 @@ class ScoutController:
         if self._reconcile_pending:
             self._reconcile_pending = False
             await self.async_reconcile()
+
+    def _sample_trace(self) -> None:
+        """Append a point to the rolling temperature/wattage trace.
+
+        Runs every reconcile; the Trace itself throttles to one point per
+        15 minutes. These are the exact computed values the decisions used
+        (the hall average IS the fan logic's floor reading), which exist as
+        no single Home Assistant entity — so the diagnostics download can
+        show the curves the audited decisions were reacting to.
+        """
+        self.trace.maybe_sample(
+            self._now(),
+            ceiling=self._ceiling_temp(),
+            floor=self._floor_temp(),
+            hall_coldest=self._zone_room_temp(ZONE_A, coldest=True),
+            office=self._zone_room_temp(ZONE_B),
+            shared=self._shared_room_temp(),
+            outdoor=self._outdoor_temp(),
+            o1_w=self._o1_watts(),
+            fans=bool(self.fan_on),
+            demand=self.heat_demand,
+        )
 
     def _record_booking_starts(self) -> None:
         """Audit the moment each booking actually begins.
@@ -2346,6 +2409,7 @@ class ScoutController:
                 mode=mode,
                 dt=self.fan_dt,
                 demand=self.heat_demand,
+                o1_w=self._o1_watts(),
             )
 
     async def _async_ensure_fans(self, want_on: bool, want_direction: str | None) -> None:
