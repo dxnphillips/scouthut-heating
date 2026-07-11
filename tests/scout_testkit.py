@@ -245,7 +245,14 @@ def advance(ctrl, minutes):
             ctrl.boost_until[zone] = ts - delta
     for zone in list(ctrl._last_apply):
         ctrl._last_apply[zone] = ctrl._last_apply[zone] - delta
-    for attr in ("fan_last_on", "fan_last_off", "fan_master_off_since", "fan_action_grace_until"):
+    for attr in (
+        "fan_last_on",
+        "fan_last_off",
+        "fan_master_off_since",
+        "fan_action_grace_until",
+        "_vent_since",
+        "_rh_high_since",
+    ):
         ts = getattr(ctrl, attr)
         if ts is not None:
             setattr(ctrl, attr, ts - delta)

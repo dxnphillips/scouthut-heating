@@ -411,3 +411,67 @@ def test_quiet_ceiling_sensor_is_fresh_while_available():
     hass.states.set("sensor.ceiling", "unavailable")  # actually dead
     ctrl._fan_target()
     assert ctrl.fan_sensor_stale is True
+
+
+def test_breeze_hold_is_overridden_by_venting_that_actually_works():
+    from datetime import timedelta
+
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller, on, run
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = True
+    on(hass, E["cal_hall"])
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 30.0})
+    hass.states.set("sensor.ceiling", "38.0")  # mix 32: held
+    run(ctrl._reconcile_fans())
+    assert not ctrl.fan_on
+
+    on(hass, E["a_door"])  # doors opened: provisional pass, fans resume NOW
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_breeze_hot is False
+    assert ctrl.fan_on is True
+
+    # The venting works: mix falls > 0.3 within the grace window -> pass kept.
+    ctrl._vent_since -= timedelta(minutes=16)
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 29.0})  # mix 31.25
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_breeze_hot is False
+    assert ctrl.fan_on is True
+
+
+def test_breeze_vent_pass_is_revoked_when_it_makes_no_difference():
+    from datetime import timedelta
+
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller, on, run
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = True
+    on(hass, E["cal_hall"])
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 30.0})
+    hass.states.set("sensor.ceiling", "38.0")
+    run(ctrl._reconcile_fans())  # held
+
+    on(hass, E["shared_window"])  # ANY contact grants the pass (kitchen window)
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_on is True
+
+    # ...but a token window that cools nothing hands the hold back (the
+    # 16 simulated minutes also age past the minimum-run timer).
+    from scout_testkit import advance
+
+    advance(ctrl, 16)
+    run(ctrl._reconcile_fans())  # mix unchanged at 32
+    assert ctrl._vent_effective is False
+    assert ctrl.fan_breeze_hot is True
+    assert not ctrl.fan_on
