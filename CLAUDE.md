@@ -92,6 +92,33 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     preset) has passed tests but not yet caught a real mid-booking manual
     change. Office-eco remains unjudgeable by design.
 
+## Documented trade-offs (deliberate — re-read the reasoning before "fixing")
+
+- **A breeze-guard stop respects the minimum-run timer.** A 2-second door
+  blip grants the vent pass, starts the fans, and its closure leaves up to
+  10 minutes of running fans under an active hold (observed in the field,
+  2026-07-11 15:41). Kept: bypassing min-run would make drop-off-style door
+  traffic flap the fans every minute, and during genuinely busy door periods
+  the repeated grants keep fans running exactly when the cross-vent makes
+  them useful. The tail is bounded and visible in the audit.
+- **A revoked vent pass stays revoked** until every contact closes or the
+  latch clears at threshold−1. Opening *more* doors cannot re-grant — the
+  contacts are booleans, "more open than before" is invisible. A falling mix
+  from the extra opening still releases everything via the latch.
+- **Presets re-apply (and re-audit) on every restart** because `applied` is
+  deliberately not persisted: re-asserting the hardware state after downtime
+  beats suppressing three noise events.
+- **The condensation clock resets on restart or a lost reading** — worst
+  case is a notification delayed by hours on a days-scale watch.
+- **Rejected cool-off folds are audited on every ice→eco transition** — a
+  few no-op events per booking day, kept as the evidence the acceptance
+  thresholds get tuned from.
+- **Sensor-loss fail directions differ by season on purpose**: winter fans
+  keep running on loss while demand holds (fail-warm, heat is being made);
+  summer fans stop (fail-safe for people).
+- **Office eco drift is unjudgeable** (the setpoint lives on the device and
+  is never pushed); skipped rather than guessed.
+
 **Owner-side outstanding** (not code): set `MIN_RUN_W ≈ 100` in the Shelly
 fan script (measured normal draw ~195 W); tag a release after updating;
 delete the two orphaned "learned heat-loss rate" entities; possible future
