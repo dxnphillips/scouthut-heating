@@ -316,8 +316,8 @@ restarts) of everything it decides and learns:
   `seasonal_lockout`, `alarm`, `opening`, `boost`, `building_empty`, ...).
 - **A readings trace** — a week of 15-minute points of the exact computed
   values the decisions used (ceiling, the hall "floor" average and coldest
-  reading, office, shared, outdoor, fan state, heat demand, and the O1
-  wattage). The wattage matters because it encodes the manual transformer
+  reading, office, shared, outdoor, ceiling humidity, fan state, heat
+  demand, and the O1 wattage). The wattage matters because it encodes the manual transformer
   dial's tap — warm-up samples also carry their average O1 watts, so a moved
   dial perturbing the learned rates is visible in the data.
 
@@ -325,6 +325,47 @@ Download it from **Settings → Devices & Services → Scout Hut Heating → ⋮
 Download diagnostics**. The JSON also contains every tunable's current value
 against its default, the learned rates, and a live snapshot of all readings —
 no credentials or tokens, so it is safe to share for analysis.
+
+## Winter condensation watch
+
+The Rointe anti-frost floor is fixed at 7 °C, but fabric-care guidance
+(Historic England) prefers an 8–10 °C background for unoccupied buildings —
+the risk being condensation and mould on cold fabric, not freezing. The gap
+is covered by monitoring: the ceiling H&T's **humidity** sensor is
+auto-discovered, and if the hall sits at ≥80 % RH below 12 °C for 12+ hours
+during the heating season, a notification suggests a spell of background
+heat (Boost) or airing the building on the next dry day. It clears itself
+when the humidity drops or the hall warms; it never fires in summer.
+
+## Field watch-list (open questions the data will settle)
+
+The tuning constants started as researched values, not measurements of this
+building; the audit trail exists to replace them with measured ones. Items
+currently **awaiting field confirmation**, each with its pre-agreed
+response (the full ledger with decision rules lives in
+[`CLAUDE.md`](CLAUDE.md)):
+
+- **Winter fan stop threshold (ΔT 0.5)** — if the first heated week shows
+  the fans running continuously with ΔT plateaued just above it, the stop
+  threshold moves to 1.0 (a slider).
+- **Pre-heat cap (120 min)** — judged by `booking_start` shortfalls on
+  cold-start mornings; slider headroom to 240 already shipped.
+- **Warm-up & heat-loss learning** — seeds are fail-safe (warm); the first
+  booked autumn weeks pull them to the building's truth. Success metric:
+  arrival shortfall ≈ 0.
+- **Calendar entity blips** — one mid-event dropout observed (2026-07-11);
+  `booking_end`/`booking_start` pairs mid-slot now make it visible. If it
+  recurs, an entity-off debounce gets built.
+- **Hot-breeze guard (29 °C mix) and its vent trend-test (+0.5 °C
+  revoke)** — calibrated from one measured solar-charge day; verified
+  against the next heatwave. Also open: whether the hard 35 °C cutoff
+  should drop toward 32 for a children's building.
+- **Fan dial stability** — O1 wattage travels with every learning sample;
+  if warm-up rates cluster by dial tap, band-aware learning gets
+  considered.
+- **Destratification savings forecast** (500–800 kWh/winter net) — checked
+  against degree-day-normalised Rointe statistics after the season.
+- **Sealed-hut fan-clearing test** — still pending a hot, still evening.
 
 ---
 
