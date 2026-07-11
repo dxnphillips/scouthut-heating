@@ -475,3 +475,38 @@ def test_breeze_vent_pass_is_revoked_when_it_makes_no_difference():
     assert ctrl._vent_effective is False
     assert ctrl.fan_breeze_hot is True
     assert not ctrl.fan_on
+
+
+def test_vent_pass_granted_during_sensor_loss_still_gets_verified():
+    # Regression: latch engages, sensors drop, a door opens while the mix is
+    # unreadable (anchor None), sensors return. The pass must re-anchor and
+    # the effectiveness check must still run - not be skipped forever.
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, advance, make_controller, on, run
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = True
+    on(hass, E["cal_hall"])
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 30.0})
+    hass.states.set("sensor.ceiling", "38.0")  # mix 32: latch + hold
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_breeze_hot is True
+
+    hass.states.set("sensor.ceiling", "unavailable")  # sensors lost
+    run(ctrl._reconcile_fans())
+    on(hass, E["a_door"])  # opened while the mix is unreadable
+    run(ctrl._reconcile_fans())
+    assert ctrl._vent_anchor_mix is None  # pass granted blind
+
+    hass.states.set("sensor.ceiling", "38.0")  # sensors return, mix still 32
+    run(ctrl._reconcile_fans())
+    assert ctrl._vent_anchor_mix is not None  # re-anchored: verifiable again
+
+    advance(ctrl, 16)  # grace elapses with no improvement
+    run(ctrl._reconcile_fans())
+    assert ctrl._vent_effective is False
+    assert ctrl.fan_breeze_hot is True  # the hold came back

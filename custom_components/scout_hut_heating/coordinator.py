@@ -2575,7 +2575,14 @@ class ScoutController:
         now = self._now()
         vent = self._any_opening_open()
         if self._breeze_latch and vent:
-            if self._vent_since is None:
+            if self._vent_since is None or (
+                # Pass granted while the sensors were lost (anchor None):
+                # re-anchor the moment a mix is readable again, or the
+                # effectiveness check could never run and a token opening
+                # would keep the pass forever.
+                self._vent_anchor_mix is None
+                and self.fan_mix is not None
+            ):
                 self._vent_since = now
                 self._vent_anchor_mix = self.fan_mix
                 self._vent_effective = True
