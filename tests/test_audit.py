@@ -358,6 +358,33 @@ def test_fan_state_changes_are_audited():
     assert len(events(ctrl, "fan_change")) == 1
 
 
+def test_preset_changes_carry_the_deciding_reason():
+    from scout_testkit import end_booking, motion
+
+    ctrl, hass = make_controller()
+    booking(ctrl, ZA, "Beavers")
+    motion(ctrl, "hall")
+    run(ctrl.async_reconcile())  # comfort: booking with people present
+
+    ctrl.seasonal_lockout = True
+    run(ctrl.async_reconcile())  # ice: lockout outranks the booking
+
+    ctrl.seasonal_lockout = False
+    advance(ctrl, 20)  # motion times out mid-booking
+    run(ctrl.async_reconcile())  # eco: booking gone quiet
+
+    end_booking(ctrl, ZA)
+    run(ctrl.async_reconcile())  # ice: building empty
+
+    reasons = [(e["to"], e.get("reason")) for e in events(ctrl, "preset") if e["zone"] == ZA]
+    assert reasons == [
+        (PRESET_COMFORT, "booking"),
+        (PRESET_ICE, "seasonal_lockout"),
+        (PRESET_ECO, "booking_quiet"),
+        (PRESET_ICE, "building_empty"),
+    ]
+
+
 def test_zone_preset_changes_are_audited():
     ctrl, hass = make_controller()
     run(ctrl._async_set_preset(ZA, PRESET_COMFORT))

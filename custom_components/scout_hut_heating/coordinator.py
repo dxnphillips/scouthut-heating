@@ -276,6 +276,10 @@ class ScoutController:
         # Previous running state per calendar; None = not yet observed, so a
         # restart mid-booking does not audit a phantom booking start.
         self._cal_running_prev: dict[str, bool | None] = {ZONE_A: None, ZONE_B: None}
+        # Why each zone's desired preset is what it is (the rung of the
+        # priority ladder that decided it), stashed by _desired_zone/_shared
+        # so preset audit events can say WHY, not just what.
+        self._preset_reason: dict[str, str] = {}
 
         # Durable state (safety latches and long clocks survive a restart).
         self._store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}")
@@ -1418,6 +1422,11 @@ class ScoutController:
     def _cal_active(self, zone: str) -> bool:
         return self._is_on(self.config.get(ZONE_CALENDAR[zone])) or self.cal_window[zone]
 
+    def _reason(self, zone: str, reason: str, preset: str | None) -> str | None:
+        """Stash why a zone's desired preset is what it is (for the audit)."""
+        self._preset_reason[zone] = reason
+        return preset
+
     def _desired_zone(self, zone: str) -> str | None:
         enabled_key = f"{zone}_automation_enabled"
         if not self.switch_on(enabled_key, default=True):
@@ -1425,11 +1434,11 @@ class ScoutController:
         if self.manual_hold[zone]:
             return None
         if self.opening_ice[zone]:
-            return PRESET_ICE
+            return self._reason(zone, "opening", PRESET_ICE)
         if self.boost_active(zone):
-            return PRESET_COMFORT
+            return self._reason(zone, "boost", PRESET_COMFORT)
         if self.seasonal_lockout:
-            return PRESET_ICE
+            return self._reason(zone, "seasonal_lockout", PRESET_ICE)
 
         cal_on = self._cal_active(zone)
         alarm_on = self._is_on(self.config.get(ZONE_ALARM[zone]))
@@ -1441,7 +1450,7 @@ class ScoutController:
             force_off = getattr(override, "force_off", None)
             if force_off is not None and override.is_on:
                 force_off()
-            return PRESET_ICE
+            return self._reason(zone, "alarm", PRESET_ICE)
 
         timeout = self.number("motion_timeout_minutes")
         area = ZONE_MOTION_AREA[zone]
@@ -1458,38 +1467,40 @@ class ScoutController:
                 and event_running
                 and not self._motion_recent(area, timeout)
             ):
-                return PRESET_ECO
-            return base
+                return self._reason(zone, "booking_quiet", PRESET_ECO)
+            if base == PRESET_ECO:
+                return self._reason(zone, "booking_eco", base)
+            return self._reason(zone, "booking" if event_running else "preheat", base)
 
         if self.switch_on(f"{zone}_occupied_override"):
-            return PRESET_ECO
+            return self._reason(zone, "occupied_override", PRESET_ECO)
         if self._motion_recent(area, timeout):
-            return PRESET_ECO
+            return self._reason(zone, "motion", PRESET_ECO)
         if not self._motion_recent_any(timeout):
-            return PRESET_ICE
+            return self._reason(zone, "building_empty", PRESET_ICE)
         # Zone quiet but someone is elsewhere in the building: rest at eco rather
         # than leaving a stale comfort preset running (e.g. the hall after a
         # booking ends while a cleaner is still in the kitchen).
-        return PRESET_ECO
+        return self._reason(zone, "others_present", PRESET_ECO)
 
     def _desired_shared(self) -> str | None:
         if not self.config.get(CONF_SHARED_CLIMATES):
             return None
         if self.seasonal_lockout:
-            return PRESET_ICE
+            return self._reason("shared", "seasonal_lockout", PRESET_ICE)
         if self.opening_ice["shared"]:
-            return PRESET_ICE
+            return self._reason("shared", "opening", PRESET_ICE)
         if self.boost_active(ZONE_A) or self.boost_active(ZONE_B):
-            return PRESET_COMFORT
+            return self._reason("shared", "boost", PRESET_COMFORT)
         if self._is_on(self.config.get(CONF_ALARM_MAIN)) and self._is_on(
             self.config.get(CONF_ALARM_OFFICE)
         ):
-            return PRESET_ICE
+            return self._reason("shared", "alarm", PRESET_ICE)
         if self._cal_active(ZONE_A) or self._cal_active(ZONE_B):
-            return PRESET_ECO
+            return self._reason("shared", "booking", PRESET_ECO)
         if self._motion_recent_any(self.number("motion_timeout_minutes")):
-            return PRESET_ECO
-        return PRESET_ICE
+            return self._reason("shared", "motion", PRESET_ECO)
+        return self._reason("shared", "building_empty", PRESET_ICE)
 
     def _shared_room_temp(self) -> float | None:
         """Coldest reported room temperature around the water heater.
@@ -1795,7 +1806,12 @@ class ScoutController:
                 return  # nothing to do, or still waiting for reconnection
         else:
             self.audit.record(
-                "preset", self._now(), zone="shared", previous=self.applied["shared"], to=desired
+                "preset",
+                self._now(),
+                zone="shared",
+                previous=self.applied["shared"],
+                to=desired,
+                reason=self._preset_reason.get("shared"),
             )
         await self._async_apply_climate(climates, desired)
         self.applied["shared"] = desired
@@ -1940,7 +1956,12 @@ class ScoutController:
             return
         if preset != self.applied[zone]:
             self.audit.record(
-                "preset", self._now(), zone=zone, previous=self.applied[zone], to=preset
+                "preset",
+                self._now(),
+                zone=zone,
+                previous=self.applied[zone],
+                to=preset,
+                reason=self._preset_reason.get(zone),
             )
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
             await self._async_push_hall_temps(eco_low=self._eco_keyword_active(zone))

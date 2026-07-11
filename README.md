@@ -294,7 +294,10 @@ restarts) of everything it decides and learns:
   `water_frost` / `fan_fault` / `overheat_holdoff` / `fan_sensor_lost`** — the
   actuation and safety record around those samples. Fan changes carry the
   decision inputs (`occupied`, `warm`, ΔT, demand, O1 watts), so a stopped
-  fan is never ambiguous between "nobody there" and "not warm enough".
+  fan is never ambiguous between "nobody there" and "not warm enough" — and
+  preset changes carry the `reason` (which rung of the priority ladder
+  decided them: `booking`, `preheat`, `booking_quiet`, `motion`,
+  `seasonal_lockout`, `alarm`, `opening`, `boost`, `building_empty`, ...).
 - **A readings trace** — a week of 15-minute points of the exact computed
   values the decisions used (ceiling, the hall "floor" average and coldest
   reading, office, shared, outdoor, fan state, heat demand, and the O1
