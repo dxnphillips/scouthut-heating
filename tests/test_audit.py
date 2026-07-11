@@ -287,9 +287,9 @@ def test_booking_start_outcome_records_the_arrival_shortfall():
     ctrl, hass = make_controller()
     _set_rate(ctrl, "hall_comfort_temp", 22)  # pin: tests the recording, not the default
     _hall_temp(hass, 20)
-    ctrl._record_booking_starts()  # baseline observed: calendar off
+    ctrl._record_booking_edges()  # baseline observed: calendar off
     booking(ctrl, ZA, "Beavers")
-    ctrl._record_booking_starts()
+    ctrl._record_booking_edges()
 
     (evt,) = events(ctrl, "booking_start")
     assert evt["zone"] == ZA
@@ -299,14 +299,34 @@ def test_booking_start_outcome_records_the_arrival_shortfall():
     assert evt["shortfall"] == pytest.approx(2.0)  # arrived 2 °C under target
 
     # No repeat while the same booking keeps running.
-    ctrl._record_booking_starts()
+    ctrl._record_booking_edges()
     assert len(events(ctrl, "booking_start")) == 1
+
+
+def test_booking_end_is_audited_with_the_leaving_temperature():
+    from scout_testkit import end_booking
+
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 20)
+    ctrl._record_booking_edges()  # baseline
+    booking(ctrl, ZA, "Beavers")
+    ctrl._record_booking_edges()  # start
+    _hall_temp(hass, 21.5)
+    end_booking(ctrl, ZA)
+    ctrl._record_booking_edges()  # end
+
+    (evt,) = events(ctrl, "booking_end")
+    assert evt["zone"] == ZA
+    assert evt["coldest"] == 21.5
+    # No repeat while the calendar stays off.
+    ctrl._record_booking_edges()
+    assert len(events(ctrl, "booking_end")) == 1
 
 
 def test_restart_mid_booking_records_no_phantom_start():
     ctrl, hass = make_controller()
     booking(ctrl, ZA)
-    ctrl._record_booking_starts()  # first observation IS the baseline
+    ctrl._record_booking_edges()  # first observation IS the baseline
     assert not events(ctrl, "booking_start")
 
 
@@ -329,6 +349,10 @@ def test_fan_state_changes_are_audited():
     assert evt["mode"] == "winter"
     assert evt["demand"] is True
     assert evt["o1_w"] == 0.0  # dial state at the moment of the change
+    # The decision inputs travel with the event: no motion or running event
+    # (occupied False), and no readable floor (warm None -> omitted).
+    assert evt["occupied"] is False
+    assert "warm" not in evt
 
     run(ctrl._reconcile_fans())  # steady state: no new event
     assert len(events(ctrl, "fan_change")) == 1

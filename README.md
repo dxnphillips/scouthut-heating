@@ -284,13 +284,17 @@ restarts) of everything it decides and learns:
 - **`preheat_start`** — each time a pre-heat window opens: the lead chosen and
   every input it was computed from (rate, coldest reading, target, outdoor,
   heat-loss rate, gap to the event).
-- **`booking_start`** — the ground truth: the coldest reading against the
-  target at the moment each booking begins. A positive `shortfall` means the
-  room arrived under target (lead too short); a consistently negative one
-  means heating started earlier than needed.
+- **`booking_start` / `booking_end`** — the ground truth: the coldest reading
+  against the target at the moment each booking begins (a positive
+  `shortfall` means the room arrived under target — lead too short; a
+  consistently negative one means heating started earlier than needed), and
+  the temperature and preset at the moment the controller saw the calendar
+  event finish — so fan/preset changes shortly after can be read against it.
 - **`preset` / `fan_change` / `manual_hold` / `seasonal` / `water_hygiene` /
   `water_frost` / `fan_fault` / `overheat_holdoff` / `fan_sensor_lost`** — the
-  actuation and safety record around those samples.
+  actuation and safety record around those samples. Fan changes carry the
+  decision inputs (`occupied`, `warm`, ΔT, demand, O1 watts), so a stopped
+  fan is never ambiguous between "nobody there" and "not warm enough".
 - **A readings trace** — a week of 15-minute points of the exact computed
   values the decisions used (ceiling, the hall "floor" average and coldest
   reading, office, shared, outdoor, fan state, heat demand, and the O1
