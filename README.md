@@ -72,7 +72,13 @@ entirely, the button fails soft and points at the YAML files:
 - **Numbers:** pre-heat lead time (the *maximum* — see optimum start below),
   hall/office learned warm-up rates, no-motion eco timeout, door/window ice
   delays, seasonal-lockout threshold, hall comfort/eco/eco-low temperatures,
-  water pre-heat lead time, water keep-on-after-motion.
+  water pre-heat lead time, water keep-on-after-motion. The hall setpoint
+  defaults (comfort 19.5 °C, eco 16 °C, eco-low 14 °C) are sized for **active**
+  hall use per CIBSE Guide A (~17 °C for higher-activity spaces) and
+  sports-hall practice (12–16 °C for games), anchored to the 18 °C classroom
+  floor for the most sedentary regulars — crafts, closing circle, parents at
+  pick-up. Use Boost for a genuinely sedentary cold evening and the ECO
+  keyword tier for pure-activity lettings.
 - **Select:** boost duration (30/60/90 min).
 - **Switches:** hall/office automation enabled, hall/office occupied override,
   water heater manual override.
@@ -140,7 +146,8 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
 - **Summer cooling** → fans **forward (down air)** when someone is there to
   cool — recent hall motion, or a hall event actually running (so a seated
   group outside PIR coverage keeps its breeze) — and the floor temperature is
-  above the warm-enough threshold (default 24 °C). The breeze is what cools
+  above the warm-enough threshold (default 23 °C — a degree under the
+  sedentary norm because hall users are active). The breeze is what cools
   people, so an empty hall never runs them; there is deliberately **no
   pre-cooling** — a fan's benefit is instantaneous wind-chill, so starting
   before anyone arrives would only add motor heat to an empty room. Above

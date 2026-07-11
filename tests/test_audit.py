@@ -235,6 +235,7 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
     from homeassistant.util import dt as dt_util
 
     ctrl, hass = make_controller()
+    _set_rate(ctrl, "hall_comfort_temp", 22)  # pin: tests the recording, not the default
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "zone_a_cooloff_rate", 0)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
@@ -266,6 +267,7 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
 
 def test_booking_start_outcome_records_the_arrival_shortfall():
     ctrl, hass = make_controller()
+    _set_rate(ctrl, "hall_comfort_temp", 22)  # pin: tests the recording, not the default
     _hall_temp(hass, 20)
     ctrl._record_booking_starts()  # baseline observed: calendar off
     booking(ctrl, ZA, "Beavers")

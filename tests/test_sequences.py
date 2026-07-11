@@ -158,21 +158,21 @@ def test_setpoint_drift_flags_manual_hold_when_preset_is_unpublished():
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_COMFORT
 
-    # Heater agrees with the pushed comfort setpoint (22): no hold.
-    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 22.0})
+    # Heater agrees with the pushed comfort setpoint (19.5): no hold.
+    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 19.5})
     advance(ctrl, 4)  # past the drift settle window
     run(ctrl.async_reconcile())
     assert ctrl.manual_hold[ZA] is False
 
     # Someone drops it to eco in the app -> setpoint no longer matches.
-    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 18.0})
+    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 16.0})
     advance(ctrl, 4)
     run(ctrl.async_reconcile())
     assert ctrl.manual_hold[ZA] is True
     assert any(e["event"] == "manual_hold" for e in ctrl.audit.to_list())
 
     # They put it back -> hold releases.
-    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 22.0})
+    hass.states.set("climate.hall_back", "heat", {"preset_mode": None, "temperature": 19.5})
     run(ctrl.async_reconcile())
     assert ctrl.manual_hold[ZA] is False
 
