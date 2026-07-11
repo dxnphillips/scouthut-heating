@@ -173,7 +173,11 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # Maximum pre-heat lead. The actual lead is computed adaptively per zone
     # (learned warm-up rate x temperature deficit, with a cold-weather margin)
     # and clamped to this — the optimum-start cap, like Rointe's own 2 h limit.
-    "preheat_minutes": (0, 120, 5, 120, "min"),
+    # Slider maximum widened to 240: commercial guidance (Heatmiser) suggests
+    # cold buildings can need ~3 h of preheat, and this hall from a 7 °C
+    # winter start may prove it. The default stays 120 until the winter
+    # booking_start shortfalls say otherwise.
+    "preheat_minutes": (0, 240, 5, 120, "min"),
     # Learned warm-up rates (minutes per °C), one per zone (plus a separate
     # hall rate for when the destratification fans are running, which
     # materially speeds warm-up). Updated automatically from every completed
@@ -237,6 +241,13 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # A degree under the sedentary norm because hall users are active — moving
     # bodies want the airflow earlier than seated ones.
     "cooling_temp_high": (18, 30, 0.5, 23, "°C"),
+    # Hot-breeze guard: hold the summer fans (and suggest opening the doors)
+    # once the MIXED air they would fold down to head height — estimated as
+    # 0.75 x floor + 0.25 x ceiling — reaches this. Between here and the hard
+    # 35 °C floor cutoff a breeze gives rapidly diminishing benefit (CDC
+    # advises not relying on fans from 32 °C for vulnerable occupants — and
+    # this is a children's building). Release 1 °C below to avoid flapping.
+    "cooling_mix_max_temp": (26, 34, 0.5, 29, "°C"),
     # A Rointe Effective Power reading above this means that heater is calling.
     "heat_demand_watts": (0, 200, 5, 20, "W"),
     # Winter fans recirculate ceiling heat while the floor is below this cap, even
@@ -268,6 +279,7 @@ NUMBER_ICONS: dict[str, str] = {
     "fan_min_off_minutes": "mdi:timer-off",
     "fan_sensor_stale_minutes": "mdi:timer-alert",
     "cooling_temp_high": "mdi:thermometer-high",
+    "cooling_mix_max_temp": "mdi:weather-windy-variant",
     "heat_demand_watts": "mdi:flash",
     "fan_recirc_max_floor_temp": "mdi:thermometer-chevron-up",
 }
@@ -333,4 +345,6 @@ NOTIFY_FAN_FAULT = "scout_fan_fault"
 NOTIFY_FAN_DIAL = "scout_fan_dial_high"
 NOTIFY_FAN_SENSOR_LOST = "scout_fan_sensor_lost"
 NOTIFY_FAN_TOO_HOT = "scout_fan_too_hot"
+NOTIFY_FAN_BREEZE = "scout_fan_breeze_hot"
+NOTIFY_CONDENSATION = "scout_condensation"
 NOTIFY_DASHBOARDS = "scout_dashboards"

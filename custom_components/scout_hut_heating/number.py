@@ -34,6 +34,7 @@ NAMES: dict[str, str] = {
     "fan_min_off_minutes": "Fan: minimum off time",
     "fan_sensor_stale_minutes": "Fan: sensor stale after",
     "cooling_temp_high": "Cooling: warm-enough temperature",
+    "cooling_mix_max_temp": "Cooling: max useful breeze temperature",
     "heat_demand_watts": "Fan: heat-demand power threshold",
     "fan_recirc_max_floor_temp": "Fan: recirculate until floor reaches",
 }

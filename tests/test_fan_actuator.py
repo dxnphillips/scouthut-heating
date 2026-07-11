@@ -352,3 +352,62 @@ def test_no_readable_sensors_falls_back_to_presets():
     hass.states.set("sensor.rointe_power", "unavailable")
     ctrl.applied[ZA] = PRESET_COMFORT
     assert ctrl._heat_demand() is True
+
+
+# --- Hot-breeze guard + ceiling freshness (availability, not report age) ---------
+
+def test_breeze_guard_holds_fans_and_releases_when_air_cools():
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller, on, run
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = True  # summer regime via follows-season
+    on(hass, E["cal_hall"])  # event running: occupied
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 30.0})
+    hass.states.set("sensor.ceiling", "38.0")  # mix = 0.75*30 + 0.25*38 = 32
+
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_breeze_hot is True
+    assert not ctrl.fan_on  # held: warm and occupied, but the breeze would not help
+    assert any(e["event"] == "breeze_holdoff" for e in ctrl.audit.to_list())
+    assert ctrl.fan_overheated is False  # distinct from the hard 35 cutoff
+
+    # The building vents: mixed air falls below the release band -> breeze resumes.
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 26.0})
+    hass.states.set("sensor.ceiling", "30.0")  # mix = 27 <= 28
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_breeze_hot is False
+    assert ctrl.fan_on is True
+
+
+def test_quiet_ceiling_sensor_is_fresh_while_available():
+    # The ceiling H&T only reports on a 0.5 degC change: hours of silence mean
+    # "unchanged", not "lost". Freshness is availability, not report age.
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 18.0})
+    hass.states.set("sensor.ceiling", "22.0")
+    st = hass.states.get("sensor.ceiling")
+    st.last_updated = st.last_reported = dt_util.utcnow() - timedelta(hours=5)
+
+    ctrl._fan_target()
+    assert ctrl.fan_sensor_stale is False
+    assert ctrl.fan_dt == pytest.approx(4.0)
+
+    hass.states.set("sensor.ceiling", "unavailable")  # actually dead
+    ctrl._fan_target()
+    assert ctrl.fan_sensor_stale is True

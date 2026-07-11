@@ -51,11 +51,21 @@ signals and drive the Shelly.
 | Behaviour | Reconciler |
 | --- | --- |
 | Winter destratification (up air) | `_fan_target` + `fan_decision`: ceiling-floor ΔT above `fan_dt_on` **and** the heat is worth moving — `_heat_demand()` true (any Rointe *Effective Power* over `heat_demand_watts`, across hall/office/shared) **or** the floor is below `fan_recirc_max_floor_temp`. The recirculation term decouples the fans from the heater's on/off cycle, so residual heat is harvested after a heater cuts out. Runs for loss reduction as well as comfort, so it is **not** gated on hall occupancy. Hysteresis via `fan_dt_off`, `fan_min_run_minutes`, `fan_min_off_minutes`. Direction reverse. |
-| Summer cooling (down air) | Regime active when `summer_mode` is on (manual force) or `summer_follows_season` (default on) + seasonal lockout engaged; runs when occupied + floor above `cooling_temp_high`, held off with a notification at/above `FAN_COOLING_MAX_TEMP` (35 °C — air hotter than skin heats people). Direction forward. |
+| Summer cooling (down air) | Regime active when `summer_mode` is on (manual force) or `summer_follows_season` (default on) + seasonal lockout engaged; runs when occupied + floor above `cooling_temp_high`. A hot-breeze guard holds the fans (and asks for the doors to be opened) once the estimated mixed air at head height (0.75×floor + 0.25×ceiling) reaches `cooling_mix_max_temp` (29 °C, releasing 1 °C lower); the hard hold-off at `FAN_COOLING_MAX_TEMP` (35 °C — air hotter than skin heats people) remains the backstop. Direction forward. |
 | Direction change | `_async_ensure_fans`: preset the O2 relay only while the master is off, otherwise press the reverse button (id 200); a `FAN_REVERSE_GRACE` window holds HA off the fans during the Shelly's 45 s sequence. |
-| Sensor lost | `fans_run_on_sensor_loss` (default on): assume stratification and keep the winter fans running while demand holds; else fans off. `NOTIFY_FAN_SENSOR_LOST`. |
+| Sensor lost | `fans_run_on_sensor_loss` (default on): assume stratification and keep the winter fans running while demand holds; else fans off. `NOTIFY_FAN_SENSOR_LOST`. The ceiling H&T is a local threshold reporter (silence = unchanged), so its freshness is judged from entity availability only; the `last_reported` staleness window applies to the floor/Rointe readings, where a cloud value can freeze while looking alive. |
 | Fault | `_fan_fault`: mapped boolean wins, else inferred from an unexpected master-off beyond `FAN_FAULT_GRACE`; refuses to run and notifies (`NOTIFY_FAN_FAULT`). Re-arm via `async_fan_rearm` (the *Ceiling fans enabled* switch off→on). |
 | Dial-high reminder | `_notify_dial_high` (`NOTIFY_FAN_DIAL`) before every reversal. |
+
+## Winter condensation watch (new)
+
+Historic England recommends 8–10 °C background for unoccupied building
+fabric; the Rointe anti-frost floor is fixed at 7 °C, so the gap is covered
+by monitoring: the ceiling H&T's humidity sensor is auto-discovered, and if
+the hall sits at ≥80 % RH below 12 °C for 12+ hours during the heating
+season, a notification suggests background heat or airing
+(`NOTIFY_CONDENSATION`, audit event `condensation`, RH recorded in the
+trace). Clears when the humidity drops or the hall warms.
 
 ## Audit log & diagnostics (new)
 
