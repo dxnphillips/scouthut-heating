@@ -152,8 +152,13 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
   the fans once the mixed air they would fold down to head height
   (0.75 × floor + 0.25 × ceiling) reaches the *max useful breeze temperature*
   (default 29 °C): past that a breeze gives rapidly diminishing benefit, so a
-  notification asks for the doors to be opened instead, and the fans resume
-  automatically once the air cools 1 °C below the threshold. The breeze is what cools
+  notification asks for doors/windows to be opened. **Any** open mapped
+  contact grants the fans an immediate provisional pass (a cross-draft makes
+  them useful again) — kept only while the venting *measurably works* (the
+  mix must keep falling ~0.3 °C per 15 min, or the hold returns: what matters
+  is not which opening is open but whether it is actually making a
+  difference). With nothing open, the fans resume by themselves once the air
+  cools 1 °C below the threshold. The breeze is what cools
   people, so an empty hall never runs them; there is deliberately **no
   pre-cooling** — a fan's benefit is instantaneous wind-chill, so starting
   before anyone arrives would only add motor heat to an empty room. Above

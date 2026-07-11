@@ -138,6 +138,14 @@ SEASONAL_SNAP_BAND = 2.0  # °C
 # Shelly script's MIN_RUN_W commissioning placeholder.
 FAN_RUNNING_MIN_WATTS = 20.0
 
+# Hot-breeze guard ventilation override: an open door/window grants the fans
+# a provisional pass (a cross-breeze helps even in warm air), kept only while
+# the venting measurably works — the mixed-air estimate must fall by at least
+# this much over each grace window, or the guard re-engages. "It's not about
+# what is open, it's about what is actually making a difference."
+BREEZE_VENT_GRACE = timedelta(minutes=15)
+BREEZE_VENT_MIN_DROP = 0.3  # °C per grace window
+
 # Winter condensation watch (Historic England: unoccupied fabric is happiest
 # at 8-10 °C; the Rointe anti-frost floor is fixed at 7, so the gap is covered
 # by monitoring). Sustained high humidity in a cold hall is the condensation /
@@ -226,7 +234,11 @@ class ScoutController:
         self.fan_last_off: datetime | None = None
         self.fan_dt: float | None = None           # ceiling - floor (diagnostic)
         self.fan_overheated: bool = False          # room past the fan-cooling ceiling
-        self.fan_breeze_hot: bool = False          # mixed air too warm for a useful breeze
+        self.fan_breeze_hot: bool = False          # breeze guard holding (mix hot, hall shut)
+        self._breeze_latch = False                 # raw mixed-air-too-warm latch
+        self._vent_since: datetime | None = None   # provisional vent pass started
+        self._vent_anchor_mix: float | None = None
+        self._vent_effective = True
         self.fan_mix: float | None = None          # estimated mixed-air temp at head height
         self.heat_demand: bool = False             # any radiator drawing power
         self.fan_sensor_stale: bool = False        # ceiling/floor lost
@@ -499,6 +511,19 @@ class ScoutController:
 
     def _motion_recent_any(self, timeout_min: float) -> bool:
         return any(self._motion_recent(a, timeout_min) for a in MOTION_AREAS)
+
+    def _any_opening_open(self) -> bool:
+        """Any mapped opening contact at all (used by the breeze override)."""
+        for key in (
+            CONF_ZONE_A_DOORS,
+            CONF_ZONE_A_WINDOWS,
+            CONF_ZONE_B_DOORS,
+            CONF_ZONE_B_WINDOWS,
+            CONF_SHARED_WINDOWS,
+        ):
+            if self._any_on(self._as_list(self.config.get(key))):
+                return True
+        return self._is_on(self.config.get(CONF_INTERNAL_DOOR))
 
     def _exterior_open(self, zone: str) -> bool:
         doors = self._as_list(self.config.get(ZONE_DOORS[zone]))
@@ -2474,6 +2499,7 @@ class ScoutController:
             self.fan_dt = None
             self.fan_overheated = False
             self.fan_breeze_hot = False
+            self._breeze_latch = False
             self.fan_mix = None
             self._fan_occupied = None
             self._fan_warm = None
@@ -2486,6 +2512,7 @@ class ScoutController:
             self.fan_dt = None
             self.fan_overheated = False
             self.fan_breeze_hot = False
+            self._breeze_latch = False
             self.fan_mix = None
             self._fan_occupied = None
             self._fan_warm = None
@@ -2528,17 +2555,47 @@ class ScoutController:
         # ceiling, a breeze gives diminishing-to-negative benefit — hold the
         # summer fans and tell people to open the doors instead. Releases 1 °C
         # below the threshold so a value hovering there cannot flap the fans.
-        # Deliberately door-blind: the fans resume when the air actually
-        # cools, however that was achieved.
         if ct is not None and ft is not None:
             self.fan_mix = 0.75 * ft + 0.25 * ct
             max_mix = self.number("cooling_mix_max_temp")
             if self.fan_mix >= max_mix:
-                self.fan_breeze_hot = True
+                self._breeze_latch = True
             elif self.fan_mix <= max_mix - 1.0:
-                self.fan_breeze_hot = False
+                self._breeze_latch = False
         else:
             self.fan_mix = None
+
+        # Ventilation override, effect-verified: ANY open mapped contact
+        # (either zone, shared, internal — all can feed a cross-draft) grants
+        # the fans a provisional pass, but the pass is kept only while the
+        # venting measurably works: the mix must keep falling by
+        # BREEZE_VENT_MIN_DROP per grace window. What matters is not which
+        # opening is open but whether it is actually making a difference —
+        # a token window that cools nothing hands the hold back.
+        now = self._now()
+        vent = self._any_opening_open()
+        if self._breeze_latch and vent:
+            if self._vent_since is None:
+                self._vent_since = now
+                self._vent_anchor_mix = self.fan_mix
+                self._vent_effective = True
+            elif (
+                self._vent_effective
+                and self.fan_mix is not None
+                and self._vent_anchor_mix is not None
+                and now - self._vent_since >= BREEZE_VENT_GRACE
+            ):
+                if self.fan_mix <= self._vent_anchor_mix - BREEZE_VENT_MIN_DROP:
+                    # Working: roll the window and keep the pass.
+                    self._vent_since = now
+                    self._vent_anchor_mix = self.fan_mix
+                else:
+                    self._vent_effective = False
+        else:
+            self._vent_since = None
+            self._vent_anchor_mix = None
+            self._vent_effective = True
+        self.fan_breeze_hot = self._breeze_latch and not (vent and self._vent_effective)
         # Recirculate residual / leaked ceiling heat while the occupied zone is
         # still below the cap, decoupled from whether a heater is drawing power.
         recirc_ok = ft is not None and ft < self.number("fan_recirc_max_floor_temp")
@@ -2788,13 +2845,13 @@ class ScoutController:
                 (
                     f"The hall air is warm enough (~{self.fan_mix:.0f}°C mixed) "
                     "that a fan breeze no longer helps — it would blow warm air "
-                    "onto people. The fans are held off: open the doors and "
-                    "windows to let the building vent, and they will resume "
-                    "automatically once the air cools."
+                    "onto people. The fans are held off: open doors/windows and "
+                    "they resume immediately — and stay running as long as the "
+                    "venting is actually cooling the hall."
                     if self.fan_mix is not None
                     else "The hall air is too warm for a useful fan breeze. The "
-                    "fans are held off; open the doors and windows and they "
-                    "will resume automatically once the air cools."
+                    "fans are held off; open doors/windows and they resume "
+                    "immediately while the venting is actually cooling the hall."
                 ),
                 title="🏕 Scout Hut – Too warm for the fans to help; open the doors",
                 notification_id=NOTIFY_FAN_BREEZE,
