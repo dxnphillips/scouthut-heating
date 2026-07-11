@@ -221,6 +221,11 @@ class ScoutController:
         self.fan_master_expected: bool | None = None  # what we last told O1 to be
         self.fan_master_off_since: datetime | None = None  # for dwell-safe infer
         self.fan_action_grace_until: datetime | None = None  # Shelly mid-sequence
+        # The occupancy/warmth inputs behind the last fan decision, stashed so
+        # fan_change audit events can carry them (a stopped fan is otherwise
+        # ambiguous between "nobody there" and "not warm enough").
+        self._fan_occupied: bool | None = None
+        self._fan_warm: bool | None = None
         self._fan_master_seen_unavailable = False  # device rebooted, not manual off
         self._reverse_attempts = 0  # consecutive reversals with no relay change
         self._fan_fault_notified: bool = False
@@ -1607,7 +1612,7 @@ class ScoutController:
         try:
             self._refresh_motion_from_states()
             await self._evaluate_openings()
-            self._record_booking_starts()
+            self._record_booking_edges()
             await self._reconcile_zones()
             self._update_warmup_learning()
             self._update_cooloff_learning()
@@ -1647,14 +1652,17 @@ class ScoutController:
             demand=self.heat_demand,
         )
 
-    def _record_booking_starts(self) -> None:
-        """Audit the moment each booking actually begins.
+    def _record_booking_edges(self) -> None:
+        """Audit the moment each booking begins and ends.
 
-        The temperature at that instant against the target is the ground
-        truth for whether the optimum-start lead was sized right — the one
-        number that judges the whole learning stack. A positive shortfall
-        means the coldest end arrived under target; negative means it was
-        already warmer (the lead, or the seed, is oversized).
+        The start temperature against the target is the ground truth for
+        whether the optimum-start lead was sized right — the one number that
+        judges the whole learning stack. A positive shortfall means the
+        coldest end arrived under target; negative means it was already
+        warmer (the lead, or the seed, is oversized). The end event marks
+        when the CONTROLLER saw the calendar entity finish — so a fan or
+        preset change shortly after can be read against it — and its
+        temperature anchors the cool-off that follows.
         """
         for zone in (ZONE_A, ZONE_B):
             cal = self.config.get(ZONE_CALENDAR[zone])
@@ -1663,7 +1671,18 @@ class ScoutController:
             running = self._is_on(cal)
             was = self._cal_running_prev[zone]
             self._cal_running_prev[zone] = running
-            if was is None or not running or was:
+            if was is None or running == was:
+                continue
+            if not running:
+                self.audit.record(
+                    "booking_end",
+                    self._now(),
+                    zone=zone,
+                    coldest=self._zone_room_temp(zone, coldest=True),
+                    average=self._zone_room_temp(zone),
+                    outdoor=self._outdoor_temp(),
+                    preset=self.applied[zone],
+                )
                 continue
             eco = self._eco_keyword_active(zone)
             target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
@@ -2325,6 +2344,8 @@ class ScoutController:
             self.fan_sensor_stale = False
             self.fan_dt = None
             self.fan_overheated = False
+            self._fan_occupied = None
+            self._fan_warm = None
             return False, None, "off"
         if self._fan_fault():
             # Reset the condition flags like the disabled branch does, so
@@ -2333,6 +2354,8 @@ class ScoutController:
             self.fan_sensor_stale = False
             self.fan_dt = None
             self.fan_overheated = False
+            self._fan_occupied = None
+            self._fan_warm = None
             return False, None, "off"
 
         stale_min = self.number("fan_sensor_stale_minutes")
@@ -2359,10 +2382,12 @@ class ScoutController:
         warm = None if ft is None else ft > self.number("cooling_temp_high")
         overheated = ft is not None and ft >= FAN_COOLING_MAX_TEMP
         self.fan_overheated = overheated
+        self._fan_warm = warm
         # Recirculate residual / leaked ceiling heat while the occupied zone is
         # still below the cap, decoupled from whether a heater is drawing power.
         recirc_ok = ft is not None and ft < self.number("fan_recirc_max_floor_temp")
         occupied = self._cooling_occupied()
+        self._fan_occupied = occupied
         demand = self._heat_demand()
         self.heat_demand = demand
         currently_winter = bool(self.fan_on) and self.fan_mode == "winter"
@@ -2460,6 +2485,8 @@ class ScoutController:
                 mode=mode,
                 dt=self.fan_dt,
                 demand=self.heat_demand,
+                occupied=self._fan_occupied,
+                warm=self._fan_warm,
                 o1_w=self._o1_watts(),
             )
 
