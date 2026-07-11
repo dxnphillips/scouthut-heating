@@ -51,8 +51,9 @@ entities you leave blank simply switches itself off.
 You can re-map any of these later via the integration's **Configure** button —
 including *clearing* a mapping (leave the field empty and the entity is
 unmapped). Safety latches and long-running clocks (manual holds, boosts, the
-inferred fan fault, the water hygiene clock) are persisted and survive a Home
-Assistant restart.
+inferred fan fault, the water hygiene clock, the seasonal-lockout flag and
+the fan anti-short-cycle timers) are persisted and survive a Home Assistant
+restart.
 
 ### Tunable controls (created automatically)
 
@@ -147,7 +148,12 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
   cool — recent hall motion, or a hall event actually running (so a seated
   group outside PIR coverage keeps its breeze) — and the floor temperature is
   above the warm-enough threshold (default 23 °C — a degree under the
-  sedentary norm because hall users are active). The breeze is what cools
+  sedentary norm because hall users are active). A **hot-breeze guard** holds
+  the fans once the mixed air they would fold down to head height
+  (0.75 × floor + 0.25 × ceiling) reaches the *max useful breeze temperature*
+  (default 29 °C): past that a breeze gives rapidly diminishing benefit, so a
+  notification asks for the doors to be opened instead, and the fans resume
+  automatically once the air cools 1 °C below the threshold. The breeze is what cools
   people, so an empty hall never runs them; there is deliberately **no
   pre-cooling** — a fan's benefit is instantaneous wind-chill, so starting
   before anyone arrives would only add motor heat to an empty room. Above
@@ -291,7 +297,8 @@ restarts) of everything it decides and learns:
   the temperature and preset at the moment the controller saw the calendar
   event finish — so fan/preset changes shortly after can be read against it.
 - **`preset` / `fan_change` / `manual_hold` / `seasonal` / `water_hygiene` /
-  `water_frost` / `fan_fault` / `overheat_holdoff` / `fan_sensor_lost`** — the
+  `water_frost` / `fan_fault` / `overheat_holdoff` / `breeze_holdoff` /
+  `condensation` / `fan_sensor_lost`** — the
   actuation and safety record around those samples. Fan changes carry the
   decision inputs (`occupied`, `warm`, ΔT, demand, O1 watts), so a stopped
   fan is never ambiguous between "nobody there" and "not warm enough" — and

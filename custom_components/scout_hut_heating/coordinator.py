@@ -87,6 +87,8 @@ from .const import (
     CONF_ZONE_B_WINDOWS,
     DOMAIN,
     FAN_COOLING_MAX_TEMP,
+    NOTIFY_CONDENSATION,
+    NOTIFY_FAN_BREEZE,
     NOTIFY_FAN_DIAL,
     NOTIFY_FAN_FAULT,
     NOTIFY_FAN_SENSOR_LOST,
@@ -135,6 +137,15 @@ SEASONAL_SNAP_BAND = 2.0  # °C
 # with the transformer dial at zero draws next to nothing). Just below the
 # Shelly script's MIN_RUN_W commissioning placeholder.
 FAN_RUNNING_MIN_WATTS = 20.0
+
+# Winter condensation watch (Historic England: unoccupied fabric is happiest
+# at 8-10 °C; the Rointe anti-frost floor is fixed at 7, so the gap is covered
+# by monitoring). Sustained high humidity in a cold hall is the condensation /
+# mould signature; the fix (background heat, ventilation) is a human decision.
+CONDENSATION_RH_ON = 80.0  # % — start the clock at/above this
+CONDENSATION_RH_OFF = 75.0  # % — clock keeps running until RH drops below this
+CONDENSATION_MAX_TEMP = 12.0  # °C — only a COLD hall condenses on its fabric
+CONDENSATION_HOURS = 12.0  # sustained hours before notifying
 
 # Consecutive reverse-button presses that fail to change the direction relay
 # before the controller concludes the Shelly script is absent/broken and
@@ -215,6 +226,8 @@ class ScoutController:
         self.fan_last_off: datetime | None = None
         self.fan_dt: float | None = None           # ceiling - floor (diagnostic)
         self.fan_overheated: bool = False          # room past the fan-cooling ceiling
+        self.fan_breeze_hot: bool = False          # mixed air too warm for a useful breeze
+        self.fan_mix: float | None = None          # estimated mixed-air temp at head height
         self.heat_demand: bool = False             # any radiator drawing power
         self.fan_sensor_stale: bool = False        # ceiling/floor lost
         self.fan_fault_latched: bool = False       # inferred (unpublished) fault
@@ -226,6 +239,10 @@ class ScoutController:
         # ambiguous between "nobody there" and "not warm enough").
         self._fan_occupied: bool | None = None
         self._fan_warm: bool | None = None
+        # Winter condensation watch state.
+        self._humidity_entity: str | None = None  # auto-found ceiling RH sensor
+        self._rh_high_since: datetime | None = None
+        self._condensation_notified = False
         self._fan_master_seen_unavailable = False  # device rebooted, not manual off
         self._reverse_attempts = 0  # consecutive reversals with no relay change
         self._fan_fault_notified: bool = False
@@ -1180,6 +1197,12 @@ class ScoutController:
                 for zone, until in self.boost_until.items()
             },
             "manual_hold": dict(self.manual_hold),
+            # Restart hardening: the anti-short-cycle timers and the seasonal
+            # flag survive a reload, so a restart cannot stutter the fans or
+            # re-announce the lockout.
+            "seasonal_lockout": self.seasonal_lockout,
+            "fan_last_on": self.fan_last_on.isoformat() if self.fan_last_on else None,
+            "fan_last_off": self.fan_last_off.isoformat() if self.fan_last_off else None,
             "audit": self.audit.to_list(),
             "trace": self.trace.to_list(),
         }
@@ -1208,6 +1231,9 @@ class ScoutController:
                 self.boost_until[zone] = until
             if (data.get("manual_hold") or {}).get(zone):
                 self.manual_hold[zone] = True
+        self.seasonal_lockout = bool(data.get("seasonal_lockout", False))
+        self.fan_last_on = _dt(data.get("fan_last_on"))
+        self.fan_last_off = _dt(data.get("fan_last_off"))
         self.audit.load(data.get("audit"))
         self.trace.load(data.get("trace"))
 
@@ -1297,6 +1323,8 @@ class ScoutController:
                     "fault": self.fan_fault_effective,
                     "sensor_stale": self.fan_sensor_stale,
                     "overheated": self.fan_overheated,
+                    "breeze_hot": self.fan_breeze_hot,
+                    "mix": self.fan_mix,
                     "last_on": _iso(self.fan_last_on),
                     "last_off": _iso(self.fan_last_off),
                 },
@@ -1319,6 +1347,7 @@ class ScoutController:
                 "shared_coldest": self._shared_room_temp(),
                 "power": power,
                 "fan_o1_w": self._o1_watts(),
+                "ceiling_rh": self._ceiling_humidity(),
                 "heat_demand": self.heat_demand,
             },
             "events": self.audit.to_list(),
@@ -1630,6 +1659,7 @@ class ScoutController:
             await self._reconcile_shared()
             await self._reconcile_water()
             await self._reconcile_fans()
+            self._check_condensation()
             self._sample_trace()
             self._detect_drift()
             self._expire_boosts()
@@ -1658,6 +1688,7 @@ class ScoutController:
             office=self._zone_room_temp(ZONE_B),
             shared=self._shared_room_temp(),
             outdoor=self._outdoor_temp(),
+            rh=self._ceiling_humidity(),
             o1_w=self._o1_watts(),
             fans=bool(self.fan_on),
             demand=self.heat_demand,
@@ -2085,6 +2116,83 @@ class ScoutController:
     def _ceiling_temp(self) -> float | None:
         return self._num_state(self.config.get(CONF_CEILING_TEMP))
 
+    def _ceiling_humidity(self) -> float | None:
+        """RH from the ceiling H&T's own humidity sensor (auto-discovered)."""
+        if not self._humidity_entity:
+            found = self._discover_ceiling_humidity()
+            if found:
+                self._humidity_entity = found
+            return self._num_state(found) if found else None
+        return self._num_state(self._humidity_entity)
+
+    def _discover_ceiling_humidity(self) -> str | None:
+        """Find the humidity sensor on the ceiling sensor's device."""
+        ceiling = self.config.get(CONF_CEILING_TEMP)
+        if not ceiling:
+            return None
+        registry = er.async_get(self.hass)
+        entry = registry.async_get(ceiling)
+        if entry is None or entry.device_id is None:
+            return None
+        for member in er.async_entries_for_device(
+            registry, entry.device_id, include_disabled_entities=False
+        ):
+            if member.domain != "sensor":
+                continue
+            if (getattr(member, "original_device_class", None) or "") == "humidity" or (
+                "humidity" in member.entity_id.lower()
+            ):
+                return member.entity_id
+        return None
+
+    def _check_condensation(self) -> None:
+        """Winter fabric watch: notify on a sustained cold-and-damp hall.
+
+        Historic England recommends 8-10 °C background for unoccupied fabric;
+        the Rointe anti-frost floor is fixed at 7 °C, so the gap is covered by
+        watching for the failure signature instead: high humidity held for
+        many hours while the hall fabric is cold. Only meaningful in the
+        heating season — a warm summer hall does not condense on its walls.
+        """
+        rh = self._ceiling_humidity()
+        floor = self._floor_temp()
+        now = self._now()
+        threshold = CONDENSATION_RH_OFF if self._rh_high_since else CONDENSATION_RH_ON
+        cold_damp = (
+            not self.seasonal_lockout
+            and rh is not None
+            and floor is not None
+            and floor <= CONDENSATION_MAX_TEMP
+            and rh >= threshold
+        )
+        if cold_damp:
+            if self._rh_high_since is None:
+                self._rh_high_since = now
+            elif (
+                not self._condensation_notified
+                and now - self._rh_high_since >= timedelta(hours=CONDENSATION_HOURS)
+            ):
+                self._condensation_notified = True
+                self.audit.record("condensation", now, rh=rh, floor=floor)
+                persistent_notification.async_create(
+                    self.hass,
+                    (
+                        f"The hall has sat at {rh:.0f}% humidity below "
+                        f"{CONDENSATION_MAX_TEMP:.0f}°C for over "
+                        f"{CONDENSATION_HOURS:.0f} hours — conditions where "
+                        "moisture condenses on cold fabric and mould follows. "
+                        "Consider a spell of background heat (Boost) or airing "
+                        "the building on the next dry day."
+                    ),
+                    title="🏕 Scout Hut – Cold and damp: condensation risk",
+                    notification_id=NOTIFY_CONDENSATION,
+                )
+            return
+        self._rh_high_since = None
+        if self._condensation_notified:
+            self._condensation_notified = False
+            persistent_notification.async_dismiss(self.hass, NOTIFY_CONDENSATION)
+
     def _floor_temp(self, stale_min: float | None = None) -> float | None:
         """Floor / occupant temperature.
 
@@ -2365,6 +2473,8 @@ class ScoutController:
             self.fan_sensor_stale = False
             self.fan_dt = None
             self.fan_overheated = False
+            self.fan_breeze_hot = False
+            self.fan_mix = None
             self._fan_occupied = None
             self._fan_warm = None
             return False, None, "off"
@@ -2375,16 +2485,24 @@ class ScoutController:
             self.fan_sensor_stale = False
             self.fan_dt = None
             self.fan_overheated = False
+            self.fan_breeze_hot = False
+            self.fan_mix = None
             self._fan_occupied = None
             self._fan_warm = None
             return False, None, "off"
 
         stale_min = self.number("fan_sensor_stale_minutes")
-        ceiling_id = self.config.get(CONF_CEILING_TEMP)
         floor_id = self.config.get(CONF_FLOOR_TEMP)
         ct = self._ceiling_temp()
         ft = self._floor_temp(stale_min)
-        ceiling_bad = ct is None or self._stale(ceiling_id, stale_min)
+        # The ceiling H&T is a LOCAL threshold reporter (it only transmits on a
+        # 0.5 °C change, with no periodic-report setting), so a long silence
+        # means "unchanged", not "lost" — its freshness is judged from entity
+        # availability alone (the Shelly integration marks a dead device
+        # unavailable). The last_reported staleness check stays for the floor /
+        # Rointe readings, where a cloud integration can freeze while looking
+        # alive.
+        ceiling_bad = ct is None
         floor_bad = ft is None or (bool(floor_id) and self._stale(floor_id, stale_min))
         sensors_bad = ceiling_bad or floor_bad
         self.fan_sensor_stale = sensors_bad
@@ -2404,6 +2522,23 @@ class ScoutController:
         overheated = ft is not None and ft >= FAN_COOLING_MAX_TEMP
         self.fan_overheated = overheated
         self._fan_warm = warm
+
+        # Hot-breeze guard: once the MIXED air the fans would fold down to
+        # head height (~0.75 x floor + 0.25 x ceiling) reaches the tunable
+        # ceiling, a breeze gives diminishing-to-negative benefit — hold the
+        # summer fans and tell people to open the doors instead. Releases 1 °C
+        # below the threshold so a value hovering there cannot flap the fans.
+        # Deliberately door-blind: the fans resume when the air actually
+        # cools, however that was achieved.
+        if ct is not None and ft is not None:
+            self.fan_mix = 0.75 * ft + 0.25 * ct
+            max_mix = self.number("cooling_mix_max_temp")
+            if self.fan_mix >= max_mix:
+                self.fan_breeze_hot = True
+            elif self.fan_mix <= max_mix - 1.0:
+                self.fan_breeze_hot = False
+        else:
+            self.fan_mix = None
         # Recirculate residual / leaked ceiling heat while the occupied zone is
         # still below the cap, decoupled from whether a heater is drawing power.
         recirc_ok = ft is not None and ft < self.number("fan_recirc_max_floor_temp")
@@ -2417,7 +2552,10 @@ class ScoutController:
             summer=self._summer_active(),
             occupied=occupied,
             warm=warm,
-            overheated=overheated,
+            # The breeze guard holds the summer fans exactly like the hard
+            # overheat cutoff does (the flag only gates the summer branch);
+            # the notifications stay distinct.
+            overheated=overheated or self.fan_breeze_hot,
             dt=dt,
             dt_on=self.number("fan_dt_on"),
             dt_off=self.number("fan_dt_off"),
@@ -2438,15 +2576,14 @@ class ScoutController:
         # the condition-edge notifications, or a sensor loss / overheat that
         # begins during the grace window would never be announced.
         if self.fan_action_grace_until is not None and now < self.fan_action_grace_until:
-            prev_stale, prev_hot = self.fan_sensor_stale, self.fan_overheated
+            prev = (self.fan_sensor_stale, self.fan_overheated, self.fan_breeze_hot)
             self._fan_target()
-            self._notify_condition_edges(prev_stale, prev_hot)
+            self._notify_condition_edges(*prev)
             return
 
-        prev_stale = self.fan_sensor_stale
-        prev_hot = self.fan_overheated
+        prev = (self.fan_sensor_stale, self.fan_overheated, self.fan_breeze_hot)
         want_on, want_dir, mode = self._fan_target()
-        self._notify_condition_edges(prev_stale, prev_hot)
+        self._notify_condition_edges(*prev)
 
         # The master reads off while we believe it should be on: do NOT
         # re-command it. Closing O1 is the Shelly script's re-arm gesture, so
@@ -2614,8 +2751,10 @@ class ScoutController:
         if self.fan_last_on is None:
             self.fan_last_on = now
 
-    def _notify_condition_edges(self, prev_stale: bool, prev_hot: bool) -> None:
-        """Raise / dismiss the sensor-lost and overheat notifications on edges."""
+    def _notify_condition_edges(
+        self, prev_stale: bool, prev_hot: bool, prev_breeze: bool
+    ) -> None:
+        """Raise / dismiss the sensor-lost / overheat / hot-breeze notifications."""
         if self.fan_sensor_stale and not prev_stale:
             self.audit.record("fan_sensor_lost", self._now())
             self._notify_sensor_lost()
@@ -2639,6 +2778,29 @@ class ScoutController:
             )
         elif prev_hot and not self.fan_overheated:
             persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_TOO_HOT)
+
+        # Hot-breeze guard: between the useful-breeze ceiling and the hard
+        # overheat cutoff, the fans are held and the fix is ventilation.
+        if self.fan_breeze_hot and not prev_breeze and self._summer_active():
+            self.audit.record("breeze_holdoff", self._now(), mix=self.fan_mix)
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    f"The hall air is warm enough (~{self.fan_mix:.0f}°C mixed) "
+                    "that a fan breeze no longer helps — it would blow warm air "
+                    "onto people. The fans are held off: open the doors and "
+                    "windows to let the building vent, and they will resume "
+                    "automatically once the air cools."
+                    if self.fan_mix is not None
+                    else "The hall air is too warm for a useful fan breeze. The "
+                    "fans are held off; open the doors and windows and they "
+                    "will resume automatically once the air cools."
+                ),
+                title="🏕 Scout Hut – Too warm for the fans to help; open the doors",
+                notification_id=NOTIFY_FAN_BREEZE,
+            )
+        elif prev_breeze and not self.fan_breeze_hot:
+            persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_BREEZE)
 
     def _notify_dial_high(self) -> None:
         persistent_notification.async_create(

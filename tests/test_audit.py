@@ -459,3 +459,70 @@ def test_diagnostics_platform_returns_the_controller_export():
     data = run(diagnostics.async_get_config_entry_diagnostics(hass, ctrl.entry))
     assert data["events"] == []
     assert "tunables" in data and "readings" in data
+
+
+# --- Condensation watch and restart hardening ---------------------------------------
+
+def test_condensation_watch_notifies_on_sustained_cold_damp():
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import set_registry
+
+    ctrl, hass = make_controller(config_overrides={CONF_CEILING_TEMP: "sensor.ceiling"})
+    set_registry(
+        {"dev_ht": ["sensor.ceiling", "sensor.ceiling_humidity"]},
+        {"sensor.ceiling": "dev_ht"},
+    )
+    ctrl.seasonal_lockout = False  # heating season
+    _hall_temp(hass, 10.0)  # cold fabric
+    hass.states.set("sensor.ceiling_humidity", "85.0")
+
+    ctrl._check_condensation()  # clock starts
+    assert ctrl._rh_high_since is not None
+    assert not events(ctrl, "condensation")
+
+    ctrl._rh_high_since -= timedelta(hours=13)  # ...13 damp hours later
+    ctrl._check_condensation()
+    (evt,) = events(ctrl, "condensation")
+    assert evt["rh"] == 85.0
+    assert ctrl._condensation_notified is True
+
+    hass.states.set("sensor.ceiling_humidity", "70.0")  # aired out
+    ctrl._check_condensation()
+    assert ctrl._condensation_notified is False
+    assert ctrl._rh_high_since is None
+
+
+def test_condensation_watch_is_summer_silent():
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import set_registry
+
+    ctrl, hass = make_controller(config_overrides={CONF_CEILING_TEMP: "sensor.ceiling"})
+    set_registry(
+        {"dev_ht": ["sensor.ceiling", "sensor.ceiling_humidity"]},
+        {"sensor.ceiling": "dev_ht"},
+    )
+    ctrl.seasonal_lockout = True  # summer: a warm hall does not condense
+    _hall_temp(hass, 10.0)
+    hass.states.set("sensor.ceiling_humidity", "90.0")
+    ctrl._check_condensation()
+    assert ctrl._rh_high_since is None
+
+
+def test_fan_timers_and_seasonal_flag_survive_a_restart():
+    ctrl, _ = make_controller()
+    ctrl.seasonal_lockout = True
+    ctrl.fan_last_on = ctrl._now()
+    ctrl.fan_last_off = ctrl._now()
+    snap = ctrl._state_snapshot()
+
+    ctrl2, _ = make_controller()
+
+    class _Store:
+        async def async_load(self):
+            return snap
+
+    ctrl2._store = _Store()
+    run(ctrl2._async_restore_state())
+    assert ctrl2.seasonal_lockout is True
+    assert ctrl2.fan_last_on is not None
+    assert ctrl2.fan_last_off is not None
