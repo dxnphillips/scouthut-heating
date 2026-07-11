@@ -194,14 +194,15 @@ def test_warmup_sample_records_the_average_fan_wattage():
     assert evt["o1_avg_w"] == pytest.approx(120.0)
 
 
-def test_cooloff_sample_is_audited():
+def test_cooloff_sample_is_audited_with_its_gap():
     ctrl, hass = make_controller()
-    _set_rate(ctrl, "zone_a_cooloff_rate", 2.0)
+    _set_rate(ctrl, "zone_a_heatloss_pct", 20)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 10})
     _hall_temp(hass, 20)
     ctrl.applied[ZA] = PRESET_ICE
     ctrl._update_cooloff_learning()
     advance(ctrl, 240)
-    _hall_temp(hass, 16)  # 4 °C over 4 h -> observed 1 °C/h
+    _hall_temp(hass, 16)  # 4 °C over 4 h at an average gap of 8 -> k = 0.125/h
     ctrl._update_cooloff_learning()
 
     (evt,) = events(ctrl, "cooloff_sample")
@@ -209,8 +210,25 @@ def test_cooloff_sample_is_audited():
     assert evt["accepted"] is True
     assert evt["hours"] == pytest.approx(4.0, abs=0.01)
     assert evt["drop"] == pytest.approx(4.0)
-    assert evt["old_rate"] == 2.0
-    assert evt["new_rate"] == pytest.approx(1.7, abs=0.01)
+    assert evt["gap"] == pytest.approx(8.0, abs=0.01)
+    assert evt["old_pct"] == 20.0
+    assert evt["new_pct"] == pytest.approx(17.75, abs=0.01)
+
+
+def test_cooloff_sample_without_outdoor_is_rejected_not_guessed():
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_heatloss_pct", 20)
+    _hall_temp(hass, 20)  # no weather state at all
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 240)
+    _hall_temp(hass, 16)
+    ctrl._update_cooloff_learning()
+
+    (evt,) = events(ctrl, "cooloff_sample")
+    assert evt["accepted"] is False
+    assert evt["reason"] == "no_outdoor"
+    assert ctrl.number("zone_a_heatloss_pct") == 20  # unchanged
 
 
 def test_cooloff_sample_discarded_by_an_opening_is_audited():
@@ -237,7 +255,7 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
     ctrl, hass = make_controller()
     _set_rate(ctrl, "hall_comfort_temp", 22)  # pin: tests the recording, not the default
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
-    _set_rate(ctrl, "zone_a_cooloff_rate", 0)
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
     _hall_temp(hass, 19)  # 3 °C deficit x 20 min/°C -> 60 min lead
     start = dt_util.now() + timedelta(minutes=30)

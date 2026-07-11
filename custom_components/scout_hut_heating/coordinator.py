@@ -45,11 +45,12 @@ from .fan_logic import fan_decision
 from .preheat import (
     MAX_RATE,
     MIN_COOL_SAMPLE_DROP,
+    MIN_COOL_SAMPLE_GAP,
     MIN_COOL_SAMPLE_HOURS,
     MIN_SAMPLE_MINUTES,
     MIN_SAMPLE_RISE,
     required_lead_minutes,
-    updated_cooling_rate,
+    updated_cooling_k,
     updated_rate,
 )
 from .const import (
@@ -238,16 +239,20 @@ class ScoutController:
         # Optimum-start learning: an in-flight warm-up sample per zone
         # (started-at, start temperature, ticks-with-fans-running, total
         # ticks, O1 wattage sum, wattage reading count), an in-flight
-        # cool-off sample per zone (started-at, start temperature), and the
-        # last comfort target seen on the zone's own heater (used as the
-        # office target, which the integration does not otherwise know).
+        # cool-off sample per zone (started-at, start temperature, outdoor
+        # reading sum, outdoor reading count — the average gap normalises the
+        # observed loss), and the last comfort target seen on the zone's own
+        # heater (used as the office target, which the integration does not
+        # otherwise know).
         self._warmup_start: dict[
             str, tuple[datetime, float, int, int, float, int] | None
         ] = {
             ZONE_A: None,
             ZONE_B: None,
         }
-        self._cooloff_start: dict[str, tuple[datetime, float] | None] = {
+        self._cooloff_start: dict[
+            str, tuple[datetime, float, float, int] | None
+        ] = {
             ZONE_A: None,
             ZONE_B: None,
         }
@@ -698,7 +703,7 @@ class ScoutController:
         # warm end's heater must not cut the lead short for the cold end.
         indoor = self._zone_room_temp(zone, coldest=True)
         outdoor = self._outdoor_temp()
-        cool_rate = self.number(f"{zone}_cooloff_rate")
+        loss_pct = self.number(f"{zone}_heatloss_pct")
         minutes = required_lead_minutes(
             rate=rate,
             indoor=indoor,
@@ -706,7 +711,7 @@ class ScoutController:
             outdoor=outdoor,
             max_minutes=self.number("preheat_minutes"),
             gap_hours=gap_hours,
-            cool_rate=cool_rate,
+            cool_k=loss_pct / 100,
         )
         lead = int(round(minutes))
         # Stash the inputs so the caller can audit the computation that
@@ -720,7 +725,7 @@ class ScoutController:
             "indoor_coldest": indoor,
             "target": target,
             "outdoor": outdoor,
-            "cool_rate": cool_rate,
+            "loss_pct": loss_pct,
         }
         return lead
 
@@ -914,52 +919,98 @@ class ScoutController:
 
             cooling = self.applied[zone] == PRESET_ICE
             temp = self._zone_room_temp(zone)
+            outdoor = self._outdoor_temp()
             sample = self._cooloff_start[zone]
+
+            def _anchor(anchor_temp: float) -> tuple[datetime, float, float, int]:
+                return (
+                    now,
+                    anchor_temp,
+                    outdoor if outdoor is not None else 0.0,
+                    1 if outdoor is not None else 0,
+                )
 
             if sample is None:
                 if cooling and temp is not None:
-                    self._cooloff_start[zone] = (now, temp)
+                    self._cooloff_start[zone] = _anchor(temp)
                 continue
 
-            started, start_temp = sample
+            started, start_temp, out_sum, out_n = sample
+            # Accumulate the outdoor reading every tick: the sample's average
+            # gap is what normalises the observed loss into the constant.
+            if outdoor is not None:
+                out_sum += outdoor
+                out_n += 1
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
                 # drop there was and stop sampling.
                 self._cooloff_start[zone] = None
                 if temp is not None:
                     hours = (now - started).total_seconds() / 3600
-                    self._fold_cooloff(zone, hours, start_temp - temp)
+                    self._fold_cooloff(
+                        zone, hours, start_temp - temp, start_temp, temp, out_sum, out_n
+                    )
                 continue
 
             if temp > start_temp + 0.3:
-                self._cooloff_start[zone] = (now, temp)  # gaining, not losing
+                self._cooloff_start[zone] = _anchor(temp)  # gaining, not losing
                 continue
+            self._cooloff_start[zone] = (started, start_temp, out_sum, out_n)
             drop = start_temp - temp
             hours = (now - started).total_seconds() / 3600
             # Roll the window ONLY when the sample is long enough to be
             # accepted: re-anchoring on a rejected (too-short) sample would
-            # create a dead zone where fast heat loss (>2 °C/h reaches the
-            # drop trigger in under the minimum duration) could never be
-            # learned at all.
+            # create a dead zone where fast heat loss (reaching the drop
+            # trigger in under the minimum duration) could never be learned.
             if drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS:
-                self._fold_cooloff(zone, hours, drop)
-                self._cooloff_start[zone] = (now, temp)  # rolling window
+                self._fold_cooloff(zone, hours, drop, start_temp, temp, out_sum, out_n)
+                self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
-    def _fold_cooloff(self, zone: str, hours: float, drop: float) -> None:
-        key = f"{zone}_cooloff_rate"
+    def _fold_cooloff(
+        self,
+        zone: str,
+        hours: float,
+        drop: float,
+        start_temp: float,
+        end_temp: float,
+        out_sum: float,
+        out_n: int,
+    ) -> None:
+        key = f"{zone}_heatloss_pct"
         current = self.number(key)
         if current <= 0:
             return  # prediction disabled by the user; leave it that way
-        new = updated_cooling_rate(current, hours, drop)
+        if out_n == 0:
+            # No outdoor reading during the whole sample: the gap — and so
+            # the loss constant — is unknowable. Never guess.
+            self.audit.record(
+                "cooloff_sample",
+                self._now(),
+                zone=zone,
+                hours=hours,
+                drop=drop,
+                accepted=False,
+                reason="no_outdoor",
+            )
+            return
+        gap = (start_temp + end_temp) / 2 - out_sum / out_n
+        k = current / 100
+        new_k = updated_cooling_k(k, hours, drop, gap)
+        new = current if new_k == k else new_k * 100
         self.audit.record(
             "cooloff_sample",
             self._now(),
             zone=zone,
             hours=hours,
             drop=drop,
-            accepted=drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS,
-            old_rate=current,
-            new_rate=new,
+            gap=gap,
+            accepted=(
+                drop >= MIN_COOL_SAMPLE_DROP
+                and hours >= MIN_COOL_SAMPLE_HOURS
+                and gap >= MIN_COOL_SAMPLE_GAP
+            ),
+            old_pct=current,
+            new_pct=new,
         )
         entity = self._numbers.get(key)
         write = getattr(entity, "write_value", None)
