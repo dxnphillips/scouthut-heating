@@ -250,7 +250,6 @@ def advance(ctrl, minutes):
         "fan_last_off",
         "fan_master_off_since",
         "fan_action_grace_until",
-        "_vent_since",
         "_rh_high_since",
     ):
         ts = getattr(ctrl, attr)
