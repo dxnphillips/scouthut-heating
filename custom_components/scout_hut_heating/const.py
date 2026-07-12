@@ -237,9 +237,12 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # default suits a battery Shelly H&T, which sleeps aggressively and can go
     # well over an hour between reports when the temperature is steady.
     "fan_sensor_stale_minutes": (5, 240, 5, 120, "min"),
-    # Summer: floor temperature above this is "warm enough" to want a breeze.
-    # A degree under the sedentary norm because hall users are active — moving
-    # bodies want the airflow earlier than seated ones.
+    # Summer: the head-height comfort estimate (0.75 x floor + 0.25 x ceiling —
+    # the air an occupant actually feels) above this is "warm enough" to want a
+    # breeze. Judged there, not at the low floor sensor, which under-reads the
+    # occupied room on a still hot day under a hot ceiling. A degree under the
+    # sedentary norm because hall users are active — moving bodies want the
+    # airflow earlier than seated ones.
     "cooling_temp_high": (18, 30, 0.5, 23, "°C"),
     # Hot-breeze guard: hold the summer fans (and suggest opening the doors)
     # once the MIXED air they would fold down to head height — estimated as
