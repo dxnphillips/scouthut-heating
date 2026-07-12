@@ -1351,6 +1351,28 @@ class ScoutController:
             for sensor in self._power_sensors()
         }
 
+        # Raw door/window contact states, per group. The `opening_ice` flags
+        # above are a *derived* 10-minute held-open latch, not the live door
+        # state, and the breeze vent pass reads these raw contacts instead —
+        # so exporting them makes both decisions legible (an open door with
+        # `opening_ice` still false is a door not yet held past the delay, or
+        # one opening and closing during traffic). Unmapped groups show as
+        # empty; `any_open` mirrors the exact signal the vent override uses.
+        opening_groups = {
+            "zone_a_doors": CONF_ZONE_A_DOORS,
+            "zone_a_windows": CONF_ZONE_A_WINDOWS,
+            "zone_b_doors": CONF_ZONE_B_DOORS,
+            "zone_b_windows": CONF_ZONE_B_WINDOWS,
+            "shared_windows": CONF_SHARED_WINDOWS,
+        }
+        openings: dict[str, Any] = {
+            name: {eid: self._is_on(eid) for eid in self._as_list(self.config.get(key))}
+            for name, key in opening_groups.items()
+        }
+        internal = self.config.get(CONF_INTERNAL_DOOR)
+        openings["internal_door"] = {internal: self._is_on(internal)} if internal else {}
+        openings["any_open"] = self._any_opening_open()
+
         return {
             "generated": _iso(self._now()),
             "config": dict(self.config),
@@ -1377,6 +1399,7 @@ class ScoutController:
                 "expected": dict(self.expected_preset),
                 "manual_hold": dict(self.manual_hold),
                 "opening_ice": dict(self.opening_ice),
+                "openings": openings,
                 "boost_until": {z: _iso(t) for z, t in self.boost_until.items()},
                 "seasonal_lockout": self.seasonal_lockout,
                 "summer_active": self._summer_active(),

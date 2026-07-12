@@ -514,6 +514,21 @@ def test_diagnostics_data_is_json_serialisable_and_complete():
     assert "trace" in data
 
 
+def test_diagnostics_exports_raw_opening_contacts():
+    # The raw door/window states must be visible, distinct from the derived
+    # 10-minute `opening_ice` latch: a door physically open but not yet held
+    # past the delay reads open here while `opening_ice` is still false.
+    from scout_testkit import E, on
+
+    ctrl, hass = make_controller()
+    on(hass, E["a_door"])  # a hall door open, but not held long enough to ice
+
+    openings = ctrl.diagnostics_data()["state"]["openings"]
+    assert openings["zone_a_doors"][E["a_door"]] is True
+    assert openings["any_open"] is True
+    assert ctrl.diagnostics_data()["state"]["opening_ice"][ZA] is False
+
+
 def test_diagnostics_platform_returns_the_controller_export():
     from custom_components.scout_hut_heating import diagnostics
 
