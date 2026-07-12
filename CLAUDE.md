@@ -14,8 +14,8 @@ Shelly Pro 2PM. The building is a poorly insulated ~20×5 m timber hall
   because merges are squashes.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 253
-  passing as of 2026-07-11.
+  a fully wired controller). Every behaviour change ships with tests. 255
+  passing as of 2026-07-12.
 - **Data before constants.** This project's core discipline: tuning values
   are changed only against evidence from the audit trail (below), never
   guessed twice. When a value is uncertain, prefer the fail-safe direction
@@ -61,6 +61,13 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    July measurements: hall ~10 %/h, office ~4.5 %/h. Verify autumn/winter
    `cooloff_sample` events (they carry `gap`) confirm season transfer;
    winter wind/infiltration may run k somewhat higher — EWMA absorbs.
+   **Fan-mixed samples**: cool-offs now carry `fan_ticks`/`ticks` (the
+   2026-07-11 sealed test measured mixing at roughly *half* the stratified
+   gap-normalised loss, so the 11–12 Jul overnight hall samples are biased
+   low). Winter recirculation runs the fans through many evening cool-offs;
+   if the samples cluster into distinct fans-on/fans-off rates, split the
+   constant — otherwise the single EWMA stays (a fan-mixed overnight decay
+   may be the *more* honest prediction input on fan-harvesting nights).
 5. **Calendar entity mid-event blips.** 2026-07-11 forensics: the calendar
    entity read not-running mid-event once (fans stopped 08:53 BST during a
    06:00–11:00 booking). Watch for `booking_end` + fresh `booking_start`
@@ -77,9 +84,14 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    record the transformer tap (~195 W at the current setting). If rates
    cluster by wattage band, consider band-aware learning; if the dial never
    moves, speed-blind stays correct.
-9. **Sealed-hut fan-clearing test** (pending a hot evening): calendar-event
-   recipe in session notes; verdict decides whether evening mixing is ever
-   worth automating (expectation: no — the roof is the best exit).
+9. **Sealed-hut fan-clearing test** — **RESOLVED 2026-07-12** (run
+   2026-07-11 evening, everything shut, fans forced via calendar event +
+   sliders). Gap-normalised bulk (0.75×floor+0.25×ceiling) loss: ~14 %/h
+   fan-mixed vs ~26 %/h stratified in the adjacent natural-decay control.
+   Mixing pulls the hottest air away from the roof (the best exit) and adds
+   ~200 W. Verdict: unoccupied evening fan-clearing is counterproductive;
+   summer fans stay occupied-only. Do not automate it; do not "fix" the
+   occupancy gate.
 10. **Winter savings forecast**: 500–800 kWh (~£125–215 net) hall heating
     saved by destratification, ±50 %. Verify via degree-day-normalised
     Rointe app statistics vs last winter + duty cycles in the trace.

@@ -213,6 +213,39 @@ def test_cooloff_sample_is_audited_with_its_gap():
     assert evt["gap"] == pytest.approx(8.0, abs=0.01)
     assert evt["old_pct"] == 20.0
     assert evt["new_pct"] == pytest.approx(17.75, abs=0.01)
+    # Fans were off throughout: the sample says so.
+    assert evt["fan_ticks"] == 0
+    assert evt["ticks"] == 2
+
+
+def test_cooloff_sample_records_a_fan_mixed_window():
+    """A cool-off measured with the fans stirring the air is tagged as such.
+
+    The 2026-07-11 sealed test showed mixing roughly halves the sealed hut's
+    gap-normalised loss, and in winter the recirculation term runs the fans
+    through the evening cool-off routinely — so the tally is the evidence a
+    future fan-aware split of the constant would be tuned from.
+    """
+    ctrl, hass = make_controller(
+        config_overrides={
+            CONF_FAN_MASTER: "switch.fan_master",
+            CONF_FAN_O1_POWER: "sensor.fan_power",
+        }
+    )
+    _set_rate(ctrl, "zone_a_heatloss_pct", 20)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 10})
+    hass.states.set("switch.fan_master", "on")
+    hass.states.set("sensor.fan_power", "195.0")
+    _hall_temp(hass, 20)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()  # anchors with fans already running
+    advance(ctrl, 240)
+    _hall_temp(hass, 16)
+    ctrl._update_cooloff_learning()
+
+    (evt,) = events(ctrl, "cooloff_sample")
+    assert evt["accepted"] is True
+    assert evt["fan_ticks"] == 2 and evt["ticks"] == 2  # mixed the whole way
 
 
 def test_cooloff_sample_without_outdoor_is_rejected_not_guessed():

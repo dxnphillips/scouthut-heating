@@ -287,7 +287,7 @@ class ScoutController:
             ZONE_B: None,
         }
         self._cooloff_start: dict[
-            str, tuple[datetime, float, float, int] | None
+            str, tuple[datetime, float, float, int, int, int] | None
         ] = {
             ZONE_A: None,
             ZONE_B: None,
@@ -975,12 +975,14 @@ class ScoutController:
             outdoor = self._outdoor_temp()
             sample = self._cooloff_start[zone]
 
-            def _anchor(anchor_temp: float) -> tuple[datetime, float, float, int]:
+            def _anchor(anchor_temp: float) -> tuple[datetime, float, float, int, int, int]:
                 return (
                     now,
                     anchor_temp,
                     outdoor if outdoor is not None else 0.0,
                     1 if outdoor is not None else 0,
+                    1 if self._fans_running() else 0,
+                    1,
                 )
 
             if sample is None:
@@ -988,12 +990,17 @@ class ScoutController:
                     self._cooloff_start[zone] = _anchor(temp)
                 continue
 
-            started, start_temp, out_sum, out_n = sample
+            started, start_temp, out_sum, out_n, fan_ticks, ticks = sample
             # Accumulate the outdoor reading every tick: the sample's average
-            # gap is what normalises the observed loss into the constant.
+            # gap is what normalises the observed loss into the constant. The
+            # fan tally rides along because a fan-mixed cool-off measurably
+            # differs from a still one (2026-07-11 sealed test: mixing roughly
+            # halved the gap-normalised loss) — recorded, not yet acted on.
             if outdoor is not None:
                 out_sum += outdoor
                 out_n += 1
+            fan_ticks += 1 if self._fans_running() else 0
+            ticks += 1
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
                 # drop there was and stop sampling.
@@ -1001,14 +1008,22 @@ class ScoutController:
                 if temp is not None:
                     hours = (now - started).total_seconds() / 3600
                     self._fold_cooloff(
-                        zone, hours, start_temp - temp, start_temp, temp, out_sum, out_n
+                        zone,
+                        hours,
+                        start_temp - temp,
+                        start_temp,
+                        temp,
+                        out_sum,
+                        out_n,
+                        fan_ticks,
+                        ticks,
                     )
                 continue
 
             if temp > start_temp + 0.3:
                 self._cooloff_start[zone] = _anchor(temp)  # gaining, not losing
                 continue
-            self._cooloff_start[zone] = (started, start_temp, out_sum, out_n)
+            self._cooloff_start[zone] = (started, start_temp, out_sum, out_n, fan_ticks, ticks)
             drop = start_temp - temp
             hours = (now - started).total_seconds() / 3600
             # Roll the window ONLY when the sample is long enough to be
@@ -1016,7 +1031,9 @@ class ScoutController:
             # create a dead zone where fast heat loss (reaching the drop
             # trigger in under the minimum duration) could never be learned.
             if drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS:
-                self._fold_cooloff(zone, hours, drop, start_temp, temp, out_sum, out_n)
+                self._fold_cooloff(
+                    zone, hours, drop, start_temp, temp, out_sum, out_n, fan_ticks, ticks
+                )
                 self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
     def _fold_cooloff(
@@ -1028,6 +1045,8 @@ class ScoutController:
         end_temp: float,
         out_sum: float,
         out_n: int,
+        fan_ticks: int,
+        ticks: int,
     ) -> None:
         key = f"{zone}_heatloss_pct"
         current = self.number(key)
@@ -1044,6 +1063,8 @@ class ScoutController:
                 drop=drop,
                 accepted=False,
                 reason="no_outdoor",
+                fan_ticks=fan_ticks,
+                ticks=ticks,
             )
             return
         gap = (start_temp + end_temp) / 2 - out_sum / out_n
@@ -1064,6 +1085,8 @@ class ScoutController:
             ),
             old_pct=current,
             new_pct=new,
+            fan_ticks=fan_ticks,
+            ticks=ticks,
         )
         entity = self._numbers.get(key)
         write = getattr(entity, "write_value", None)
