@@ -409,7 +409,7 @@ class ScoutController:
             entity_id = event.data.get("entity_id")
             new_state = event.data.get("new_state")
             if entity_id in motion_entities and new_state is not None and new_state.state == "on":
-                self.last_motion[motion_entities[entity_id]] = dt_util.utcnow()
+                self._feed_motion(motion_entities[entity_id], dt_util.utcnow())
             self.async_request_reconcile()
 
         if watched:
@@ -513,6 +513,22 @@ class ScoutController:
 
     def _motion_recent_any(self, timeout_min: float) -> bool:
         return any(self._motion_recent(a, timeout_min) for a in MOTION_AREAS)
+
+    def _feed_motion(self, area: str, now: datetime) -> None:
+        """Stamp motion in an area, auditing only a genuine fresh arrival.
+
+        A PIR re-firing while the area is still occupied (another trip within
+        the occupancy timeout) would flood the bounded audit log during a
+        busy session, so it just refreshes the timestamp; a trip after the
+        area has gone quiet is a new arrival worth a `motion` event — the
+        evidence that the PIRs are alive, which motion otherwise leaves only
+        indirectly (when it moves a preset or the fans).
+        """
+        prev = self.last_motion.get(area)
+        timeout = self.number("motion_timeout_minutes")
+        if prev is None or (now - prev).total_seconds() > timeout * 60:
+            self.audit.record("motion", now, area=area)
+        self.last_motion[area] = now
 
     def _any_opening_open(self) -> bool:
         """Any mapped opening contact at all (used by the breeze override)."""

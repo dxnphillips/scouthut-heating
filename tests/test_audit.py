@@ -30,6 +30,7 @@ from scout_testkit import (
     advance,
     booking,
     make_controller,
+    motion,
     run,
 )
 
@@ -262,6 +263,35 @@ def test_cooloff_sample_without_outdoor_is_rejected_not_guessed():
     assert evt["accepted"] is False
     assert evt["reason"] == "no_outdoor"
     assert ctrl.number("zone_a_heatloss_pct") == 20  # unchanged
+
+
+def test_motion_records_a_fresh_arrival():
+    ctrl, _ = make_controller()
+    motion(ctrl, "hall")
+
+    (evt,) = events(ctrl, "motion")
+    assert evt["area"] == "hall"
+
+
+def test_repeated_motion_within_the_timeout_does_not_flood_the_log():
+    # A PIR re-firing while the area is still occupied refreshes the timestamp
+    # but must not append a second event — a busy session would otherwise push
+    # the learning samples out of the bounded log.
+    ctrl, _ = make_controller()
+    motion(ctrl, "hall")
+    advance(ctrl, 5)  # still within the 15-min occupancy timeout
+    motion(ctrl, "hall")
+
+    assert len(events(ctrl, "motion")) == 1
+
+
+def test_motion_after_the_area_goes_quiet_is_a_new_arrival():
+    ctrl, _ = make_controller()
+    motion(ctrl, "hall")
+    advance(ctrl, 20)  # longer than the 15-min timeout: the hall emptied
+    motion(ctrl, "hall")
+
+    assert len(events(ctrl, "motion")) == 2
 
 
 def test_cooloff_sample_discarded_by_an_opening_is_audited():
