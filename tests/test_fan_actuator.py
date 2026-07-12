@@ -356,6 +356,50 @@ def test_no_readable_sensors_falls_back_to_presets():
 
 # --- Hot-breeze guard + ceiling freshness (availability, not report age) ---------
 
+def test_summer_breeze_triggers_on_head_height_not_the_floor_sensor():
+    # The floor sensor sits low and lags on a still, hot day: here it reads
+    # 22.4 — just under the 23 cooling line — while the hot ceiling makes the
+    # air a person actually stands in 24.1. The breeze must start on that
+    # head-height estimate, not leave the occupant sweating at "22.4".
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller, motion, run
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = True  # summer regime
+    motion(ctrl, "hall")  # someone is in the hall
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 22.4})  # floor < 23
+    hass.states.set("sensor.ceiling", "29.2")  # mix = 0.75*22.4 + 0.25*29.2 = 24.1
+
+    run(ctrl._reconcile_fans())
+    assert ctrl._fan_warm is True  # judged warm on the head-height mix, not the floor
+    assert ctrl.fan_on is True  # the occupant gets their breeze
+
+
+def test_ceiling_lost_falls_back_to_the_floor_for_the_warm_trigger():
+    # With no ceiling reading there is no head-height estimate, so the trigger
+    # falls back to the bare floor rather than refusing to cool.
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller, motion, run
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = True
+    motion(ctrl, "hall")
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 25.0})  # floor above 23
+    hass.states.set("sensor.ceiling", "unavailable")
+
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_mix is None
+    assert ctrl._fan_warm is True  # floor 25 > 23 keeps the breeze available
+
+
 def test_breeze_guard_holds_fans_and_releases_when_air_cools():
     from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
     from scout_testkit import E, make_controller, on, run

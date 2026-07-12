@@ -45,12 +45,14 @@ def fan_decision(
             destratification runs regardless of occupancy so it can knock down
             the hot ceiling layer and cut roof heat-loss even when people are
             only in the office.
-        warm: floor temperature is above the cooling threshold; ``None`` when the
-            floor temperature is unavailable.
-        overheated: the room is at/above the fan-cooling ceiling (~35 °C, skin
-            temperature). Above it a breeze blows heat *onto* people, so the
-            summer fans are held off (public-health guidance: CDC 32 °C for the
-            vulnerable, UK guidance 35 °C).
+        warm: the head-height comfort estimate (a floor/ceiling blend, the air
+            an occupant actually feels) is above the cooling threshold; ``None``
+            when the floor temperature is unavailable — with no floor the room's
+            warmth is unknown and a breeze is not blown on assumption.
+        overheated: that head-height air is at/above the fan-cooling ceiling
+            (~35 °C, skin temperature). Above it a breeze blows heat *onto*
+            people, so the summer fans are held off (public-health guidance:
+            CDC 32 °C for the vulnerable, UK guidance 35 °C).
         dt: ceiling minus floor temperature; ``None`` when either reading is
             unavailable or stale.
         dt_on / dt_off: hysteresis band for winter start / stop.

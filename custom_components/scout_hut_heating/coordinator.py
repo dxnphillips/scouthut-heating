@@ -2586,25 +2586,40 @@ class ScoutController:
             dt = ct - ft
             self.fan_dt = dt
 
-        warm = None if ft is None else ft > self.number("cooling_temp_high")
-        overheated = ft is not None and ft >= FAN_COOLING_MAX_TEMP
+        # Head-height comfort estimate (0.75 x floor + 0.25 x ceiling): the air
+        # a standing/seated occupant actually feels, part-way up the room. The
+        # summer start trigger, the overheat cutoff and the hot-breeze guard all
+        # read THIS single number, so the fans start, stop and hold on the same
+        # basis. Needs both readings; the trigger falls back to the bare floor
+        # when only the ceiling is missing (never the reverse — no floor means
+        # "unknown", as before).
+        self.fan_mix = None if (ct is None or ft is None) else 0.75 * ft + 0.25 * ct
+
+        # Summer breeze judges warmth at head height, not at the floor sensor.
+        # That sensor sits low on the wall and, on a still hot day under a hot
+        # ceiling, reads cooler than the room a person is standing in — so
+        # anchoring the trigger to it left occupants sweating just below the
+        # line (observed 2026-07-12: floor 22.4 < 23 while head-height was 24.1,
+        # fans stayed off). The overheat cutoff rides the same estimate: once
+        # the air a fan would deliver hits skin temperature a breeze heats
+        # people, whatever the floor lags at.
+        comfort = self.fan_mix if self.fan_mix is not None else ft
+        warm = None if comfort is None else comfort > self.number("cooling_temp_high")
+        overheated = comfort is not None and comfort >= FAN_COOLING_MAX_TEMP
         self.fan_overheated = overheated
         self._fan_warm = warm
 
-        # Hot-breeze guard: once the MIXED air the fans would fold down to
-        # head height (~0.75 x floor + 0.25 x ceiling) reaches the tunable
-        # ceiling, a breeze gives diminishing-to-negative benefit — hold the
-        # summer fans and tell people to open the doors instead. Releases 1 °C
-        # below the threshold so a value hovering there cannot flap the fans.
-        if ct is not None and ft is not None:
-            self.fan_mix = 0.75 * ft + 0.25 * ct
+        # Hot-breeze guard: once that mixed air reaches the tunable ceiling a
+        # breeze gives diminishing-to-negative benefit — hold the summer fans
+        # and ask for the doors open instead. Releases 1 °C below so a value
+        # hovering at the line cannot flap the fans; a lost reading leaves the
+        # latch as-is (it clears only on a real drop below the release band).
+        if self.fan_mix is not None:
             max_mix = self.number("cooling_mix_max_temp")
             if self.fan_mix >= max_mix:
                 self._breeze_latch = True
             elif self.fan_mix <= max_mix - 1.0:
                 self._breeze_latch = False
-        else:
-            self.fan_mix = None
 
         # Ventilation override, effect-verified: ANY open mapped contact
         # (either zone, shared, internal — all can feed a cross-draft) grants
