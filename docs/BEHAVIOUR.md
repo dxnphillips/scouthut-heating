@@ -71,7 +71,11 @@ trace). Clears when the humidity drops or the hall warms.
 
 Every decision and learning sample is appended to a bounded audit log
 (`audit.py`, persisted with the state snapshot): warm-up and cool-off samples
-with their raw inputs and accept/reject outcome, pre-heat window openings with
+with their raw inputs and accept/reject outcome (both carry a fan-running
+tally — the 2026-07-11 sealed test measured a fan-mixed hut shedding heat at
+roughly half the stratified gap-normalised rate, so the tally is what any
+future fan-aware split of the heat-loss constant would be judged from),
+pre-heat window openings with
 the full lead computation, the temperature-vs-target outcome at each booking
 start, preset changes, fan starts/stops/reversals/faults, seasonal lockout
 transitions and water frost/hygiene events. A rolling readings trace (a week

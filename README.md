@@ -295,7 +295,10 @@ restarts) of everything it decides and learns:
 - **`warmup_sample` / `cooloff_sample`** — every learning observation, accepted
   or rejected, with the raw inputs (duration, temperature change, the average
   indoor–outdoor gap, fan assistance and wattage, old and new value), so the
-  EWMA behaviour can be re-derived.
+  EWMA behaviour can be re-derived. Cool-off samples carry the fan-running
+  tally too: the 2026-07-11 sealed test showed a fan-mixed hut sheds heat at
+  roughly **half** the gap-normalised rate of a stratified one, and winter
+  recirculation runs the fans through the evening cool-off routinely.
 - **`preheat_start`** — each time a pre-heat window opens: the lead chosen and
   every input it was computed from (rate, coldest reading, target, outdoor,
   heat-loss rate, gap to the event).
@@ -365,7 +368,22 @@ response (the full ledger with decision rules lives in
   considered.
 - **Destratification savings forecast** (500–800 kWh/winter net) — checked
   against degree-day-normalised Rointe statistics after the season.
-- **Sealed-hut fan-clearing test** — still pending a hot, still evening.
+- **Fan-mixed cool-off samples** — the sealed test showed mixing roughly
+  halves the gap-normalised loss rate, and winter recirculation will run the
+  fans through many evening cool-offs. Every `cooloff_sample` now records its
+  fan tally; if the winter samples cluster into clearly different fans-on /
+  fans-off rates, the constant gets split — until then one EWMA absorbs both.
+
+**Settled by field data** (the method works — measured, not guessed):
+
+- **Sealed-hut fan-clearing test** (run 2026-07-11, hot still evening,
+  everything shut): fans dropped the *ceiling* reading fast, but
+  gap-normalised the whole hut lost heat at barely **half** its natural rate
+  (~14 %/h mixed vs ~26 %/h stratified). Stratification parks the hottest
+  air against the roof — the building's best exit — and mixing pulls it away
+  while adding ~200 W of motor heat. Verdict: unoccupied evening
+  fan-clearing is counterproductive; summer fans stay occupied-only, exactly
+  as coded.
 
 ---
 
