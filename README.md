@@ -331,8 +331,12 @@ restarts) of everything it decides and learns:
 
 Download it from **Settings → Devices & Services → Scout Hut Heating → ⋮ →
 Download diagnostics**. The JSON also contains every tunable's current value
-against its default, the learned rates, and a live snapshot of all readings —
-no credentials or tokens, so it is safe to share for analysis.
+against its default, the learned rates, a live snapshot of all readings, and
+the **raw door/window/internal contact states** per group (with an
+`any_open` roll-up) — distinct from the derived `opening_ice` latch, which
+only trips after a contact is held open past the ice delay, so an open door
+that hasn't been held that long reads open in `openings` while `opening_ice`
+is still false. No credentials or tokens, so it is safe to share for analysis.
 
 ## Winter condensation watch
 
