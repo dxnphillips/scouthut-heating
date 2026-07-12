@@ -78,7 +78,10 @@ future fan-aware split of the heat-loss constant would be judged from),
 pre-heat window openings with
 the full lead computation, the temperature-vs-target outcome at each booking
 start, preset changes, fan starts/stops/reversals/faults, seasonal lockout
-transitions and water frost/hygiene events. A rolling readings trace (a week
+transitions, water frost/hygiene events and motion arrivals (a PIR trip after
+its area has been quiet past the occupancy timeout — throttled to fresh
+arrivals so a busy session cannot flood the log, and the only direct evidence
+that the motion sensors are alive). A rolling readings trace (a week
 of 15-minute points) records the exact computed values the decisions used —
 ceiling, the hall floor average and coldest reading, office, shared, outdoor,
 fan state, heat demand and the O1 wattage (which encodes the manual

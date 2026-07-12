@@ -308,6 +308,11 @@ restarts) of everything it decides and learns:
   consistently negative one means heating started earlier than needed), and
   the temperature and preset at the moment the controller saw the calendar
   event finish — so fan/preset changes shortly after can be read against it.
+- **`motion`** — a PIR trip after its area has been quiet longer than the
+  occupancy timeout (a genuine *arrival*, not every re-trigger while someone
+  is already there — that would flood the log during a busy session). This
+  is the only direct trace that the motion sensors are alive: motion
+  otherwise shows up only indirectly, when it moves a preset or the fans.
 - **`preset` / `fan_change` / `manual_hold` / `seasonal` / `water_hygiene` /
   `water_frost` / `fan_fault` / `overheat_holdoff` / `breeze_holdoff` /
   `condensation` / `fan_sensor_lost`** — the

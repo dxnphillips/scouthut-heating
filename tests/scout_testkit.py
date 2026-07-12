@@ -298,8 +298,12 @@ def end_booking(ctrl, zone):
 
 
 def motion(ctrl, area):
-    """Record recent motion in an area (hall/office/kitchen/gents/female)."""
-    ctrl.last_motion[area] = ctrl._now()
+    """Record recent motion in an area (hall/office/kitchen/gents/female).
+
+    Routes through the real feed so occupancy setup in sequence tests takes
+    the same path as a live PIR (including the fresh-arrival audit event).
+    """
+    ctrl._feed_motion(area, ctrl._now())
 
 
 def boost(ctrl, zone, minutes=30):
