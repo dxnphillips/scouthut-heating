@@ -5,6 +5,13 @@ Rointe electric radiators (hall / office / shared kitchen+toilets), a Hyco
 Speedflow 15 L water heater, and 3 reversible Vent-Axia ceiling fans on a
 Shelly Pro 2PM. The building is a poorly insulated ~20×5 m timber hall
 (2.5 m walls, 4 m ridge); the office has loft insulation, the hall does not.
+The ceiling fans hang at 11 ft (3.35 m) on standard downrods — ~0.65 m below
+the ridge and inside the warm stratified layer, so they are well placed to
+reclaim ceiling heat in winter (up-air) and, in summer down-air, drag
+apex heat back into the room (which is *why* unoccupied fan-clearing lost
+to natural roof venting — open question 9). The ~0.65 m of air above the
+blade sweep, right at the apex, is reclaimed by entrainment not direct
+sweep, so the ceiling sensor can read hotter than the air the fans reach.
 
 ## Working conventions
 
