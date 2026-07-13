@@ -113,10 +113,15 @@ from .const import (
     ZONE_B,
 )
 
-# The Shelly reverse sequence takes ~45 s of coast-down plus a settle. While it
-# runs, the master relay legitimately reads off. Home Assistant must not touch
-# the fans during this window, and must not mistake the dwell for a fault.
-FAN_REVERSE_GRACE = 70  # seconds
+# A LIVE reverse (a spinning fan changing direction) is slow: the heavy blades
+# must coast fully to a stop before the Finder interlock lets the opposite
+# winding energise, measured at ~5 minutes wall-clock. While it runs the master
+# relay legitimately reads off; Home Assistant must stay hands-off for the whole
+# sequence and must not mistake the long dwell for a fault. Sized above the
+# measurement with margin (a too-short window latches a false fault on a normal
+# reversal, which does not auto-clear). A cold start from an already-stopped fan
+# does NOT coast — it only waits FAN_DIRECTION_SETTLE for the contactor.
+FAN_REVERSE_GRACE = 420  # seconds (~5 min measured reversal + margin)
 FAN_FAULT_GRACE = 70  # seconds a master may be unexpectedly off before we latch
 # Pause between presetting the direction relay and closing the master, so the
 # Finder contactor has finished travelling before the load is applied (the
@@ -2220,9 +2225,10 @@ class ScoutController:
     # Destratification / cooling fans
     #
     # Home Assistant only decides when the fans are wanted and in which
-    # direction. The Shelly Pro 2PM script owns all timing and safety (the 45 s
-    # coast-down dwell, the coil verification, stall / low-tap protection and the
-    # latched fault). We never reproduce any of that here.
+    # direction. The Shelly Pro 2PM script owns all timing and safety (the
+    # coast-down dwell — the heavy blades take ~5 min to stop before the Finder
+    # lets the other winding energise — the coil verification, stall / low-tap
+    # protection and the latched fault). We never reproduce any of that here.
     #
     # Direction relay (O2 / switch.fan_direction): OFF/open = forward (down air,
     # summer cooling); ON/closed = reverse (up air, winter destratification).

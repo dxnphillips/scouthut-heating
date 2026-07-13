@@ -40,7 +40,12 @@
 // ---------- configuration ----------
 var MASTER_ID   = 0;
 var DIR_ID      = 1;
-var DWELL_MS    = 45000;   // coast down time
+// Coast-down time: O1 stays OFF this long so the blades stop BEFORE O2 flips
+// and O1 re-energises. It must exceed the real full-stop time — measured at
+// ~5 min on these fans. Too short and the coil flips into a still-spinning fan
+// (reverse torque, stall-trip, failed reversal). Err long; a slower reversal
+// is harmless. Time the blades to a dead stop from full speed and set above it.
+var DWELL_MS    = 300000;  // coast down time (~5 min full stop; verify + margin)
 var SETTLE_MS   = 1500;    // relay settle before re energising
 var VERIFY_MS   = 800;     // wait before verifying a switch command
 var BUTTON_ID   = 200;     // virtual button "Reverse fans"

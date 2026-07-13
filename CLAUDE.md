@@ -43,7 +43,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   freeze while looking alive (hence `last_reported` staleness checks). The
   ceiling Shelly H&T G3 is the opposite: a local threshold reporter (0.5 °C)
   whose silence means "unchanged" — its freshness is availability-only.
-- The Shelly script owns all fan timing/safety (45 s reversal dwell, stall
+- The Shelly script owns all fan timing/safety (coast-down reversal dwell —
+  the blades take ~5 min to stop, so `DWELL_MS` must cover that, not 45 s; stall
   latch). HA must **never** re-command an unexpectedly-off fan master (that
   re-arms the Shelly's own latch) and only writes the direction relay while
   the master is off.
