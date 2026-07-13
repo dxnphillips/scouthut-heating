@@ -76,8 +76,11 @@ tally — the 2026-07-11 sealed test measured a fan-mixed hut shedding heat at
 roughly half the stratified gap-normalised rate, so the tally is what any
 future fan-aware split of the heat-loss constant would be judged from),
 pre-heat window openings with
-the full lead computation, the temperature-vs-target outcome at each booking
-start, preset changes, fan starts/stops/reversals/faults, seasonal lockout
+the full lead computation (including which learned rate drove the lead and the
+fan tap the fans were last seen at — the winter pre-heat leans on the
+optimistic fan-assisted rate while the master is off and cannot see a
+dialled-down speed), the temperature-vs-target outcome at each booking
+start (the hall's start also carrying that last-seen fan tap), preset changes, fan starts/stops/reversals/faults, seasonal lockout
 transitions, water frost/hygiene events and motion arrivals (a PIR trip after
 its area has been quiet past the occupancy timeout — throttled to fresh
 arrivals so a busy session cannot flood the log, and the only direct evidence

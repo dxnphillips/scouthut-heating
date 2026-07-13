@@ -110,6 +110,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
 13. **Drift detection in the field**: setpoint-fallback (Rointe publishes no
     preset) has passed tests but not yet caught a real mid-booking manual
     change. Office-eco remains unjudgeable by design.
+14. **Pre-heat fan-speed assumption.** Winter pre-heat predicts the hall
+    warm-up with the *optimistic* fan-assisted rate (`zone_a_warmup_rate_fans`),
+    committing the lead while the Shelly master is off — so a manual dial drop
+    is invisible until the fans actually run, and the room can arrive cold.
+    `preheat_start.rate_key`/`fan_w_last` and `booking_start.fan_w_last` now
+    record which rate drove the lead and the tap the fans were last seen at
+    (data-only; the prediction is unchanged). **Decision rule:** if winter
+    `booking_start.shortfall` is positive on mornings where `fan_w_last` sits
+    in a *lower* band than the ~195 W norm (occupants left the dial down), the
+    optimistic assumption is the cause — flip the pre-heat to predict on the
+    base rate (`zone_a_warmup_rate`, arrive-warm fail-safe). If shortfalls do
+    not track a low `fan_w_last`, the fan-assisted rate stays. The transient
+    case (speed changed *during* the idle gap) is unobservable with no
+    HA-commandable fan and stays accepted risk. Pairs with Q8: a persistent
+    band-aware rate would let the lead size to the *actual* last-seen tap.
 
 ## Documented trade-offs (deliberate — re-read the reasoning before "fixing")
 

@@ -304,6 +304,13 @@ class ScoutController:
         # The inputs behind the most recent lead computation per zone, stashed
         # so the pre-heat-start audit event can carry them.
         self._last_lead_calc: dict[str, dict[str, Any]] = {}
+        # Last fan transformer-tap wattage seen while the fans were genuinely
+        # running. Through a pre-heat idle gap the Shelly master is off (O1
+        # reads zero), so the live power cannot say which fan speed the
+        # optimistic fan-assisted warm-up rate is implicitly assuming — this
+        # remembers the tap the fans were last at, recorded on preheat_start /
+        # hall booking_start for shortfall-vs-speed analysis (open question 14).
+        self._fan_w_last_seen: float | None = None
         # Previous running state per calendar; None = not yet observed, so a
         # restart mid-booking does not audit a phantom booking start.
         self._cal_running_prev: dict[str, bool | None] = {ZONE_A: None, ZONE_B: None}
@@ -768,6 +775,7 @@ class ScoutController:
         """
         target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
         rate = self._prediction_rate(zone)
+        rate_key = self._warmup_rate_key(zone)
         # Size the pre-heat for the coldest reading, not the average: the
         # warm end's heater must not cut the lead short for the cold end.
         indoor = self._zone_room_temp(zone, coldest=True)
@@ -791,6 +799,12 @@ class ScoutController:
             "gap_min": None if gap_hours is None else gap_hours * 60,
             "lead_min": lead,
             "rate": rate,
+            # Which learned rate drove the lead: "zone_a_warmup_rate_fans" is
+            # the optimistic fan-assisted path whose speed assumption is only
+            # verifiable once the Shelly turns on. Paired with fan_w_last, this
+            # is what a cold-arrival shortfall gets read against.
+            "rate_key": rate_key,
+            "fan_w_last": self._fan_w_last_seen if zone == ZONE_A else None,
             "indoor_coldest": indoor,
             "target": target,
             "outdoor": outdoor,
@@ -856,6 +870,21 @@ class ScoutController:
         if not o1 or self._stale(o1, self.number("fan_sensor_stale_minutes")):
             return None
         return self._num_state(o1)
+
+    def _note_fan_speed(self) -> None:
+        """Remember the transformer tap while the fans are genuinely running.
+
+        The tap is a manual dial HA cannot command; through a pre-heat idle
+        gap the master is off and O1 reads zero, so this last-seen value is the
+        only record of which speed the fan-assisted pre-heat prediction is
+        leaning on. Only overwrite on a fan-scale reading — a None/zero draw is
+        the fans stopped, not a new (slower) setting.
+        """
+        if not self._fans_running():
+            return
+        w = self._o1_watts()
+        if w is not None and w > FAN_RUNNING_MIN_WATTS:
+            self._fan_w_last_seen = w
 
     def _update_warmup_learning(self) -> None:
         """Time real comfort warm-ups and fold them into the learned rates.
@@ -1748,6 +1777,7 @@ class ScoutController:
             await self._reconcile_shared()
             await self._reconcile_water()
             await self._reconcile_fans()
+            self._note_fan_speed()
             self._check_condensation()
             self._sample_trace()
             self._detect_drift()
@@ -1830,6 +1860,9 @@ class ScoutController:
                 shortfall=None if coldest is None else target - coldest,
                 outdoor=self._outdoor_temp(),
                 preset=self.applied[zone],
+                # The fan tap the pre-heat's fan-assisted rate assumed, so a
+                # shortfall can be read against a speed the occupants dropped.
+                fan_w_last=self._fan_w_last_seen if zone == ZONE_A else None,
             )
 
     def _refresh_motion_from_states(self) -> None:
