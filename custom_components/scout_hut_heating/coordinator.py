@@ -113,10 +113,15 @@ from .const import (
     ZONE_B,
 )
 
-# The Shelly reverse sequence takes ~45 s of coast-down plus a settle. While it
-# runs, the master relay legitimately reads off. Home Assistant must not touch
-# the fans during this window, and must not mistake the dwell for a fault.
-FAN_REVERSE_GRACE = 70  # seconds
+# A LIVE reverse (a spinning fan changing direction) is slow: the heavy blades
+# must coast fully to a stop before the Finder interlock lets the opposite
+# winding energise, measured at ~5 minutes wall-clock. While it runs the master
+# relay legitimately reads off; Home Assistant must stay hands-off for the whole
+# sequence and must not mistake the long dwell for a fault. Sized above the
+# measurement with margin (a too-short window latches a false fault on a normal
+# reversal, which does not auto-clear). A cold start from an already-stopped fan
+# does NOT coast — it only waits FAN_DIRECTION_SETTLE for the contactor.
+FAN_REVERSE_GRACE = 420  # seconds (~5 min measured reversal + margin)
 FAN_FAULT_GRACE = 70  # seconds a master may be unexpectedly off before we latch
 # Pause between presetting the direction relay and closing the master, so the
 # Finder contactor has finished travelling before the load is applied (the
@@ -287,7 +292,7 @@ class ScoutController:
             ZONE_B: None,
         }
         self._cooloff_start: dict[
-            str, tuple[datetime, float, float, int, int, int] | None
+            str, tuple[datetime, float, float, int, int, int, float, int] | None
         ] = {
             ZONE_A: None,
             ZONE_B: None,
@@ -304,6 +309,13 @@ class ScoutController:
         # The inputs behind the most recent lead computation per zone, stashed
         # so the pre-heat-start audit event can carry them.
         self._last_lead_calc: dict[str, dict[str, Any]] = {}
+        # Last fan transformer-tap wattage seen while the fans were genuinely
+        # running. Through a pre-heat idle gap the Shelly master is off (O1
+        # reads zero), so the live power cannot say which fan speed the
+        # optimistic fan-assisted warm-up rate is implicitly assuming — this
+        # remembers the tap the fans were last at, recorded on preheat_start /
+        # hall booking_start for shortfall-vs-speed analysis (open question 14).
+        self._fan_w_last_seen: float | None = None
         # Previous running state per calendar; None = not yet observed, so a
         # restart mid-booking does not audit a phantom booking start.
         self._cal_running_prev: dict[str, bool | None] = {ZONE_A: None, ZONE_B: None}
@@ -768,6 +780,7 @@ class ScoutController:
         """
         target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
         rate = self._prediction_rate(zone)
+        rate_key = self._warmup_rate_key(zone)
         # Size the pre-heat for the coldest reading, not the average: the
         # warm end's heater must not cut the lead short for the cold end.
         indoor = self._zone_room_temp(zone, coldest=True)
@@ -791,6 +804,12 @@ class ScoutController:
             "gap_min": None if gap_hours is None else gap_hours * 60,
             "lead_min": lead,
             "rate": rate,
+            # Which learned rate drove the lead: "zone_a_warmup_rate_fans" is
+            # the optimistic fan-assisted path whose speed assumption is only
+            # verifiable once the Shelly turns on. Paired with fan_w_last, this
+            # is what a cold-arrival shortfall gets read against.
+            "rate_key": rate_key,
+            "fan_w_last": self._fan_w_last_seen if zone == ZONE_A else None,
             "indoor_coldest": indoor,
             "target": target,
             "outdoor": outdoor,
@@ -856,6 +875,21 @@ class ScoutController:
         if not o1 or self._stale(o1, self.number("fan_sensor_stale_minutes")):
             return None
         return self._num_state(o1)
+
+    def _note_fan_speed(self) -> None:
+        """Remember the transformer tap while the fans are genuinely running.
+
+        The tap is a manual dial HA cannot command; through a pre-heat idle
+        gap the master is off and O1 reads zero, so this last-seen value is the
+        only record of which speed the fan-assisted pre-heat prediction is
+        leaning on. Only overwrite on a fan-scale reading — a None/zero draw is
+        the fans stopped, not a new (slower) setting.
+        """
+        if not self._fans_running():
+            return
+        w = self._o1_watts()
+        if w is not None and w > FAN_RUNNING_MIN_WATTS:
+            self._fan_w_last_seen = w
 
     def _update_warmup_learning(self) -> None:
         """Time real comfort warm-ups and fold them into the learned rates.
@@ -991,7 +1025,10 @@ class ScoutController:
             outdoor = self._outdoor_temp()
             sample = self._cooloff_start[zone]
 
-            def _anchor(anchor_temp: float) -> tuple[datetime, float, float, int, int, int]:
+            def _anchor(
+                anchor_temp: float,
+            ) -> tuple[datetime, float, float, int, int, int, float, int]:
+                w = self._o1_watts() if zone == ZONE_A else None
                 return (
                     now,
                     anchor_temp,
@@ -999,6 +1036,8 @@ class ScoutController:
                     1 if outdoor is not None else 0,
                     1 if self._fans_running() else 0,
                     1,
+                    w or 0.0,
+                    1 if w is not None else 0,
                 )
 
             if sample is None:
@@ -1006,17 +1045,25 @@ class ScoutController:
                     self._cooloff_start[zone] = _anchor(temp)
                 continue
 
-            started, start_temp, out_sum, out_n, fan_ticks, ticks = sample
+            started, start_temp, out_sum, out_n, fan_ticks, ticks, watt_sum, watt_n = sample
             # Accumulate the outdoor reading every tick: the sample's average
             # gap is what normalises the observed loss into the constant. The
             # fan tally rides along because a fan-mixed cool-off measurably
             # differs from a still one (2026-07-11 sealed test: mixing roughly
-            # halved the gap-normalised loss) — recorded, not yet acted on.
+            # halved the gap-normalised loss) — recorded, not yet acted on. The
+            # O1 wattage rides along too: the tap fingerprint is
+            # direction-dependent (summer forward ~195 W vs winter reverse
+            # ~158 W), so a future fan-aware split needs the speed, not just the
+            # count, to tell winter recirculation cool-offs apart.
             if outdoor is not None:
                 out_sum += outdoor
                 out_n += 1
             fan_ticks += 1 if self._fans_running() else 0
             ticks += 1
+            w = self._o1_watts() if zone == ZONE_A else None
+            if w is not None:
+                watt_sum += w
+                watt_n += 1
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
                 # drop there was and stop sampling.
@@ -1033,13 +1080,17 @@ class ScoutController:
                         out_n,
                         fan_ticks,
                         ticks,
+                        watt_sum,
+                        watt_n,
                     )
                 continue
 
             if temp > start_temp + 0.3:
                 self._cooloff_start[zone] = _anchor(temp)  # gaining, not losing
                 continue
-            self._cooloff_start[zone] = (started, start_temp, out_sum, out_n, fan_ticks, ticks)
+            self._cooloff_start[zone] = (
+                started, start_temp, out_sum, out_n, fan_ticks, ticks, watt_sum, watt_n
+            )
             drop = start_temp - temp
             hours = (now - started).total_seconds() / 3600
             # Roll the window ONLY when the sample is long enough to be
@@ -1048,7 +1099,8 @@ class ScoutController:
             # trigger in under the minimum duration) could never be learned.
             if drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS:
                 self._fold_cooloff(
-                    zone, hours, drop, start_temp, temp, out_sum, out_n, fan_ticks, ticks
+                    zone, hours, drop, start_temp, temp, out_sum, out_n,
+                    fan_ticks, ticks, watt_sum, watt_n,
                 )
                 self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
@@ -1063,6 +1115,8 @@ class ScoutController:
         out_n: int,
         fan_ticks: int,
         ticks: int,
+        watt_sum: float,
+        watt_n: int,
     ) -> None:
         key = f"{zone}_heatloss_pct"
         current = self.number(key)
@@ -1081,6 +1135,7 @@ class ScoutController:
                 reason="no_outdoor",
                 fan_ticks=fan_ticks,
                 ticks=ticks,
+                o1_avg_w=(watt_sum / watt_n) if watt_n else None,
             )
             return
         gap = (start_temp + end_temp) / 2 - out_sum / out_n
@@ -1103,6 +1158,7 @@ class ScoutController:
             new_pct=new,
             fan_ticks=fan_ticks,
             ticks=ticks,
+            o1_avg_w=(watt_sum / watt_n) if watt_n else None,
         )
         entity = self._numbers.get(key)
         write = getattr(entity, "write_value", None)
@@ -1748,6 +1804,7 @@ class ScoutController:
             await self._reconcile_shared()
             await self._reconcile_water()
             await self._reconcile_fans()
+            self._note_fan_speed()
             self._check_condensation()
             self._sample_trace()
             self._detect_drift()
@@ -1830,6 +1887,9 @@ class ScoutController:
                 shortfall=None if coldest is None else target - coldest,
                 outdoor=self._outdoor_temp(),
                 preset=self.applied[zone],
+                # The fan tap the pre-heat's fan-assisted rate assumed, so a
+                # shortfall can be read against a speed the occupants dropped.
+                fan_w_last=self._fan_w_last_seen if zone == ZONE_A else None,
             )
 
     def _refresh_motion_from_states(self) -> None:
@@ -2165,9 +2225,10 @@ class ScoutController:
     # Destratification / cooling fans
     #
     # Home Assistant only decides when the fans are wanted and in which
-    # direction. The Shelly Pro 2PM script owns all timing and safety (the 45 s
-    # coast-down dwell, the coil verification, stall / low-tap protection and the
-    # latched fault). We never reproduce any of that here.
+    # direction. The Shelly Pro 2PM script owns all timing and safety (the
+    # coast-down dwell — the heavy blades take ~5 min to stop before the Finder
+    # lets the other winding energise — the coil verification, stall / low-tap
+    # protection and the latched fault). We never reproduce any of that here.
     #
     # Direction relay (O2 / switch.fan_direction): OFF/open = forward (down air,
     # summer cooling); ON/closed = reverse (up air, winter destratification).

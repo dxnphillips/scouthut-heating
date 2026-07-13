@@ -296,18 +296,25 @@ restarts) of everything it decides and learns:
   or rejected, with the raw inputs (duration, temperature change, the average
   indoor–outdoor gap, fan assistance and wattage, old and new value), so the
   EWMA behaviour can be re-derived. Cool-off samples carry the fan-running
-  tally too: the 2026-07-11 sealed test showed a fan-mixed hut sheds heat at
-  roughly **half** the gap-normalised rate of a stratified one, and winter
-  recirculation runs the fans through the evening cool-off routinely.
+  tally and average wattage too: the 2026-07-11 sealed test showed a fan-mixed
+  hut sheds heat at roughly **half** the gap-normalised rate of a stratified
+  one, and winter recirculation runs the fans through the evening cool-off
+  routinely — the wattage separates the direction-dependent taps (summer
+  forward ~195 W vs winter reverse ~158 W) a future fan-aware split would need.
 - **`preheat_start`** — each time a pre-heat window opens: the lead chosen and
   every input it was computed from (rate, coldest reading, target, outdoor,
-  heat-loss rate, gap to the event).
+  heat-loss rate, gap to the event), plus `rate_key` (which learned rate drove
+  the lead — the optimistic fan-assisted one or the base) and `fan_w_last` (the
+  transformer tap the fans were last seen at, since the master is off while the
+  pre-heat is idle and the live power reads zero).
 - **`booking_start` / `booking_end`** — the ground truth: the coldest reading
   against the target at the moment each booking begins (a positive
   `shortfall` means the room arrived under target — lead too short; a
   consistently negative one means heating started earlier than needed), and
   the temperature and preset at the moment the controller saw the calendar
   event finish — so fan/preset changes shortly after can be read against it.
+  The hall `booking_start` also carries `fan_w_last`, so a cold-arrival
+  shortfall can be read against a fan speed the occupants had dialled down.
 - **`motion`** — a PIR trip after its area has been quiet longer than the
   occupancy timeout (a genuine *arrival*, not every re-trigger while someone
   is already there — that would flood the log during a busy session). This

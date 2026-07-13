@@ -5,7 +5,7 @@ These lock in the hard hardware rules:
     reconcile, with the grace window armed;
   * without a mapped direction relay (or reverse button) a live reversal is
     never attempted — a blind re-press every reconcile would otherwise cycle
-    the motor through a full 45 s reversal sequence forever;
+    the motor through a full (multi-minute) reversal sequence forever;
   * the direction relay is only ever written while the master is off, with a
     settle before the master is energised.
 """

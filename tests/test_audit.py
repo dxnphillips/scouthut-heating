@@ -247,6 +247,7 @@ def test_cooloff_sample_records_a_fan_mixed_window():
     (evt,) = events(ctrl, "cooloff_sample")
     assert evt["accepted"] is True
     assert evt["fan_ticks"] == 2 and evt["ticks"] == 2  # mixed the whole way
+    assert evt["o1_avg_w"] == pytest.approx(195.0)  # the tap it mixed at
 
 
 def test_cooloff_sample_without_outdoor_is_rejected_not_guessed():
@@ -344,6 +345,103 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
     # Staying inside the window on the next refresh records nothing new.
     run(ctrl._async_refresh_calendars())
     assert len(events(ctrl, "preheat_start")) == 1
+
+
+def test_note_fan_speed_remembers_the_last_running_tap():
+    """The last fan tap survives the master going off for a pre-heat idle gap.
+
+    HA cannot command the transformer dial, and the master is off while a
+    pre-heat waits — so this remembered value is the only record of the speed
+    the optimistic fan-assisted lead is leaning on. A zero draw is the fans
+    stopped, not a new (slower) setting, so it must not overwrite the memory.
+    """
+    ctrl, hass = make_controller(
+        config_overrides={
+            CONF_FAN_MASTER: "switch.fan_master",
+            CONF_FAN_O1_POWER: "sensor.fan_power",
+        }
+    )
+    hass.states.set("switch.fan_master", "on")
+    hass.states.set("sensor.fan_power", "195.0")
+    ctrl._note_fan_speed()
+    assert ctrl._fan_w_last_seen == pytest.approx(195.0)
+
+    hass.states.set("switch.fan_master", "off")
+    hass.states.set("sensor.fan_power", "0.0")
+    ctrl._note_fan_speed()
+    assert ctrl._fan_w_last_seen == pytest.approx(195.0)  # idle gap: memory holds
+
+    hass.states.set("switch.fan_master", "on")
+    hass.states.set("sensor.fan_power", "110.0")
+    ctrl._note_fan_speed()
+    assert ctrl._fan_w_last_seen == pytest.approx(110.0)  # a real lower tap updates
+
+
+def test_preheat_start_records_the_rate_key_and_assumed_fan_speed(monkeypatch):
+    """The pre-heat decision carries which rate drove it and the fan tap it assumes.
+
+    In winter with the fans expected to help, the lead is sized on the
+    optimistic ``zone_a_warmup_rate_fans``; the tap that rate implicitly
+    assumes is only knowable from the last time the fans ran, because the
+    master is off through the idle gap. Both land on the event so a cold
+    arrival can be read against a dialled-down speed (CLAUDE.md open Q14).
+    """
+    from homeassistant.util import dt as dt_util
+
+    ctrl, hass = make_controller(
+        config_overrides={
+            CONF_FAN_MASTER: "switch.fan_master",
+            CONF_FAN_O1_POWER: "sensor.fan_power",
+        }
+    )
+    _set_rate(ctrl, "hall_comfort_temp", 22)
+    _set_rate(ctrl, "zone_a_warmup_rate_fans", 20)
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 15})
+    _hall_temp(hass, 19)
+
+    # The fans ran at 195 W earlier, then the master went off for the idle gap.
+    hass.states.set("switch.fan_master", "on")
+    hass.states.set("sensor.fan_power", "195.0")
+    ctrl._note_fan_speed()
+    hass.states.set("switch.fan_master", "off")
+
+    start = dt_util.now() + timedelta(minutes=30)
+
+    async def _events(cal, minutes):
+        if cal == E["cal_hall"]:
+            return [{"start": start.isoformat(), "summary": "Beavers"}]
+        return []
+
+    monkeypatch.setattr(ctrl, "_async_calendar_events", _events)
+    run(ctrl._async_refresh_calendars())
+
+    (evt,) = events(ctrl, "preheat_start")
+    assert evt["rate_key"] == "zone_a_warmup_rate_fans"  # the optimistic path
+    assert evt["fan_w_last"] == pytest.approx(195.0)
+
+
+def test_hall_booking_start_records_the_assumed_fan_speed():
+    ctrl, hass = make_controller(
+        config_overrides={
+            CONF_FAN_MASTER: "switch.fan_master",
+            CONF_FAN_O1_POWER: "sensor.fan_power",
+        }
+    )
+    _set_rate(ctrl, "hall_comfort_temp", 22)
+    _hall_temp(hass, 20)
+    hass.states.set("switch.fan_master", "on")
+    hass.states.set("sensor.fan_power", "170.0")
+    ctrl._note_fan_speed()
+    hass.states.set("switch.fan_master", "off")
+
+    ctrl._record_booking_edges()  # baseline observed: calendar off
+    booking(ctrl, ZA, "Beavers")
+    ctrl._record_booking_edges()
+
+    (evt,) = events(ctrl, "booking_start")
+    assert evt["shortfall"] == pytest.approx(2.0)
+    assert evt["fan_w_last"] == pytest.approx(170.0)
 
 
 def test_booking_start_outcome_records_the_arrival_shortfall():

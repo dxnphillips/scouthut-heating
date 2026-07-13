@@ -52,7 +52,7 @@ signals and drive the Shelly.
 | --- | --- |
 | Winter destratification (up air) | `_fan_target` + `fan_decision`: ceiling-floor ΔT above `fan_dt_on` **and** the heat is worth moving — `_heat_demand()` true (any Rointe *Effective Power* over `heat_demand_watts`, across hall/office/shared) **or** the floor is below `fan_recirc_max_floor_temp`. The recirculation term decouples the fans from the heater's on/off cycle, so residual heat is harvested after a heater cuts out. Runs for loss reduction as well as comfort, so it is **not** gated on hall occupancy. Hysteresis via `fan_dt_off`, `fan_min_run_minutes`, `fan_min_off_minutes`. Direction reverse. |
 | Summer cooling (down air) | Regime active when `summer_mode` is on (manual force) or `summer_follows_season` (default on) + seasonal lockout engaged; runs when occupied + the **head-height comfort estimate** (0.75×floor + 0.25×ceiling — the air a person actually feels) is above `cooling_temp_high`. The trigger reads that estimate, not the bare floor sensor, which sits low on the wall and, on a still hot day under a hot ceiling, reads cooler than the occupied room (it left people sweating just below the line — floor 22.4 °C while head-height was 24.1 °C). It falls back to the floor alone only when the ceiling reading is missing (no floor at all still means "unknown", so no breeze on assumption). A hot-breeze guard holds the fans (and asks for doors/windows to be opened) once that same mixed air reaches `cooling_mix_max_temp` (29 °C, releasing 1 °C lower). Any open mapped contact (either zone, shared, internal — all can feed a cross-draft) grants an immediate provisional pass, kept while the venting at least holds the line: the anchor ratchets to the lowest mix seen since venting began, and only a climb of ≥0.5 °C above it (the signature of solar charge winning) revokes — trend-direction, not speed; effect-verified, not contact-modelled. The hard hold-off at `FAN_COOLING_MAX_TEMP` (35 °C — air hotter than skin heats people) rides the same head-height estimate and remains the backstop. Direction forward. |
-| Direction change | `_async_ensure_fans`: preset the O2 relay only while the master is off, otherwise press the reverse button (id 200); a `FAN_REVERSE_GRACE` window holds HA off the fans during the Shelly's 45 s sequence. |
+| Direction change | `_async_ensure_fans`: preset the O2 relay only while the master is off, otherwise press the reverse button (id 200); a `FAN_REVERSE_GRACE` window holds HA off the fans during the Shelly's coast-down sequence (~5 min for the blades to stop). |
 | Sensor lost | `fans_run_on_sensor_loss` (default on): assume stratification and keep the winter fans running while demand holds; else fans off. `NOTIFY_FAN_SENSOR_LOST`. The ceiling H&T is a local threshold reporter (silence = unchanged), so its freshness is judged from entity availability only; the `last_reported` staleness window applies to the floor/Rointe readings, where a cloud value can freeze while looking alive. |
 | Fault | `_fan_fault`: mapped boolean wins, else inferred from an unexpected master-off beyond `FAN_FAULT_GRACE`; refuses to run and notifies (`NOTIFY_FAN_FAULT`). Re-arm via `async_fan_rearm` (the *Ceiling fans enabled* switch off→on). |
 | Dial-high reminder | `_notify_dial_high` (`NOTIFY_FAN_DIAL`) before every reversal. |
@@ -72,12 +72,17 @@ trace). Clears when the humidity drops or the hall warms.
 Every decision and learning sample is appended to a bounded audit log
 (`audit.py`, persisted with the state snapshot): warm-up and cool-off samples
 with their raw inputs and accept/reject outcome (both carry a fan-running
-tally — the 2026-07-11 sealed test measured a fan-mixed hut shedding heat at
-roughly half the stratified gap-normalised rate, so the tally is what any
-future fan-aware split of the heat-loss constant would be judged from),
+tally and average O1 wattage — the 2026-07-11 sealed test measured a fan-mixed
+hut shedding heat at roughly half the stratified gap-normalised rate, so the
+tally is what any future fan-aware split of the heat-loss constant would be
+judged from, and the wattage tells apart the direction-dependent taps that
+mixing runs at, summer forward ~195 W vs winter reverse ~158 W),
 pre-heat window openings with
-the full lead computation, the temperature-vs-target outcome at each booking
-start, preset changes, fan starts/stops/reversals/faults, seasonal lockout
+the full lead computation (including which learned rate drove the lead and the
+fan tap the fans were last seen at — the winter pre-heat leans on the
+optimistic fan-assisted rate while the master is off and cannot see a
+dialled-down speed), the temperature-vs-target outcome at each booking
+start (the hall's start also carrying that last-seen fan tap), preset changes, fan starts/stops/reversals/faults, seasonal lockout
 transitions, water frost/hygiene events and motion arrivals (a PIR trip after
 its area has been quiet past the occupancy timeout — throttled to fresh
 arrivals so a busy session cannot flood the log, and the only direct evidence
