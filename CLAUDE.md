@@ -225,6 +225,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
 - **Sensor-loss fail directions differ by season on purpose**: winter fans
   keep running on loss while demand holds (fail-warm, heat is being made);
   summer fans stop (fail-safe for people).
+- **Active hall heating forces the reverse/destrat regime, even under summer
+  lockout.** Forward = down-air = wind-chill, so blowing it on a hall that is
+  being *heated* (a boost or booking sets comfort/eco) would chill the people
+  the heat is for. `_fan_target` sets `heating = applied[ZONE_A] in
+  (comfort, eco)` and passes it to `fan_decision`, which runs the reverse
+  (up-air) branch whenever heating is active. Keyed off the *preset*, not
+  `demand`, so the direction can't flap as the radiator thermostat cycles — the
+  cost is up to two reversals per *summer* boost (start + end), which is rare
+  and accepted. Winter is unchanged (already reverse). The winter run/stop
+  rules still apply, so heating a room that's already warm (no demand, floor
+  above the recirc cap) just leaves the fans off rather than blowing anything.
 - **Office eco drift is unjudgeable** (the setpoint lives on the device and
   is never pushed); skipped rather than guessed.
 

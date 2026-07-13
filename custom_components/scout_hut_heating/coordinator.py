@@ -2675,7 +2675,11 @@ class ScoutController:
         "Summer cooling follows season" enabled (the default), the regime
         tracks the seasonal heating lockout — cooling while heating is locked
         out for the season, winter destratification once it releases. Nobody
-        has to remember the changeover, and reversals stay seasonal-rare.
+        has to remember the changeover, and reversals stay seasonal-rare — the
+        one exception being an active hall heating preset, which forces the
+        reverse/destrat regime regardless (see `heating` in `_fan_target`), so a
+        summer-lockout boost costs up to two reversals but never cools the people
+        it is heating.
         """
         if self.switch_on("summer_mode", default=False):
             return True
@@ -2811,6 +2815,12 @@ class ScoutController:
         demand = self._heat_demand()
         self.heat_demand = demand
         currently_winter = bool(self.fan_on) and self.fan_mode == "winter"
+        # The hall is being heated (a boost or booking has set comfort/eco): a
+        # forward cooling draught would chill the people we are warming, so this
+        # forces the reverse/destrat regime even under the summer lockout. Keyed
+        # off the applied preset, not demand, so the fan direction cannot flap as
+        # the radiator thermostat cycles.
+        heating = self.applied[ZONE_A] in (PRESET_COMFORT, PRESET_ECO)
 
         return fan_decision(
             summer=self._summer_active(),
@@ -2828,6 +2838,7 @@ class ScoutController:
             recirc_needs_occupancy=self.switch_on(
                 "winter_fans_need_occupancy", default=True
             ),
+            heating=heating,
             currently_winter=currently_winter,
             run_on_loss=self.switch_on("fans_run_on_sensor_loss", default=True),
         )

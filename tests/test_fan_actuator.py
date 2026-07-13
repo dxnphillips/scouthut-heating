@@ -171,6 +171,31 @@ def test_winter_occupancy_gate_suppresses_empty_hall_recirc():
     assert ctrl._fan_target() == (True, "reverse", "winter")  # legacy behaviour
 
 
+def test_boost_during_summer_lockout_reverses_the_fans_not_forward():
+    # Heating the hall (comfort preset) under the summer lockout must destratify
+    # (reverse) rather than blow a cooling down-draught (forward) on the people
+    # being warmed.
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, PRESET_COMFORT, ZA, make_controller, motion
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = True  # summer regime engaged
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 22.0})  # floor 22 < cap
+    hass.states.set("sensor.ceiling", "28.0")  # dt 6, mix 23.5 (> cooling_temp_high)
+    motion(ctrl, "hall")  # occupied
+
+    # Not heating: the summer breeze blows forward as before.
+    assert ctrl._fan_target() == (True, "forward", "summer")
+
+    # A boost sets comfort -> heating -> reverse destrat instead of cooling.
+    ctrl.applied[ZA] = PRESET_COMFORT
+    assert ctrl._fan_target() == (True, "reverse", "winter")
+
+
 # --- Fan awareness in the optimum-start learning --------------------------------
 
 def test_warmup_rate_key_follows_fan_availability():

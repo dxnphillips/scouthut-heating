@@ -155,7 +155,13 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
   cool — recent hall motion, or a hall event actually running (so a seated
   group outside PIR coverage keeps its breeze) — and the floor temperature is
   above the warm-enough threshold (default 23 °C — a degree under the
-  sedentary norm because hall users are active). A **hot-breeze guard** holds
+  sedentary norm because hall users are active). **Exception — heating wins:**
+  if the hall is actively being *heated* (a boost or booking has set comfort/eco,
+  e.g. a boost forcing heat through the summer lockout), the fans run
+  **reverse (destrat)** instead, so a cooling down-draught is never blown on the
+  people the heat is for. That override follows the heating *preset*, not the
+  radiator's on/off cycle, so the direction can't flap; the only cost is up to
+  two reversals per summer boost. A **hot-breeze guard** holds
   the fans once the mixed air they would fold down to head height
   (0.75 × floor + 0.25 × ceiling) reaches the *max useful breeze temperature*
   (default 29 °C): past that a breeze gives rapidly diminishing benefit, so a

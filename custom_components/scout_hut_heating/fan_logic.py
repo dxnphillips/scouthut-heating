@@ -26,6 +26,7 @@ def fan_decision(
     demand: bool,
     recirc_ok: bool,
     recirc_needs_occupancy: bool = False,
+    heating: bool = False,
     currently_winter: bool,
     run_on_loss: bool,
 ) -> tuple[bool, str | None, str]:
@@ -71,6 +72,13 @@ def fan_decision(
             the recirc path only runs when someone is actually in the hall;
             active heat demand still runs regardless (the savings case). When
             clear, the legacy demand-independent behaviour stands.
+        heating: the hall is in a heating preset (a boost or booking is trying to
+            warm it). A forward (down-air) breeze is wind-chill — it would cool
+            the very people being heated — so heating forces the winter (reverse,
+            up-air destratification) regime even under the summer lockout,
+            delivering the made heat down to head height instead of blowing it
+            away. Keyed off the *preset*, not instantaneous demand, so the
+            direction does not flap as the radiator thermostat cycles.
         currently_winter: the fans are already running in winter mode (so the
             stop thresholds apply instead of the start thresholds).
         run_on_loss: when the ceiling / floor reading is lost, assume
@@ -81,11 +89,13 @@ def fan_decision(
     # threshold can never exceed the start threshold.
     dt_off = min(dt_off, dt_on)
 
-    if summer:
+    if summer and not heating:
         # Summer cooling: a forward breeze only helps someone who is present, and
         # we need a floor reading to know it is genuinely warm. Without one we do
         # not blow air on assumption (unlike winter). Above the overheat ceiling
-        # a fan makes people hotter, not cooler — hold off.
+        # a fan makes people hotter, not cooler — hold off. Active heating skips
+        # this branch entirely (see `heating`): you never blow a cooling draught
+        # on a hall that is being warmed — the reverse/destrat branch runs below.
         if warm is None or overheated:
             return False, None, "off"
         if occupied and warm:

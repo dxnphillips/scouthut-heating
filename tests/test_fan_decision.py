@@ -242,8 +242,37 @@ def test_winter_ignores_overheat_flag():
 
 
 def test_summer_ignores_winter_heat_demand():
-    # Summer regime never reverses, even if a radiator happens to draw power.
+    # A radiator merely drawing power does NOT reverse the summer breeze — the
+    # direction follows the heating *preset* (`heating`), not instantaneous
+    # demand, so it cannot flap as the thermostat cycles.
     assert summer(warm=True, occupied=True, demand=True) == (True, "forward", "summer")
+
+
+# --- Heating forces the reverse/destrat regime, even in summer ------------------
+
+def test_heating_reverses_the_fans_even_under_summer_lockout():
+    # A boost/booking is warming the hall: a forward down-draught would chill the
+    # people being heated, so the reverse/destrat branch runs instead.
+    assert summer(heating=True, dt=5.0, demand=True) == (True, "reverse", "winter")
+
+
+def test_heating_reverse_still_obeys_the_winter_run_rules():
+    # `heating` picks the reverse regime, but the winter run/stop logic still
+    # applies: no heat worth moving (no demand, room above the recirc cap) = off.
+    assert summer(
+        heating=True, dt=5.0, demand=False, recirc_ok=False, occupied=True
+    ) == (False, None, "off")
+
+
+def test_heating_reverse_harvests_when_occupied_below_cap():
+    assert summer(
+        heating=True, dt=5.0, demand=False, recirc_ok=True, occupied=True
+    ) == (True, "reverse", "winter")
+
+
+def test_summer_breeze_unchanged_when_not_heating():
+    # Regression guard: with no heating preset, the summer cooling breeze stands.
+    assert summer(warm=True, occupied=True, heating=False) == (True, "forward", "summer")
 
 
 if __name__ == "__main__":
