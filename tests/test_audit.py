@@ -247,6 +247,7 @@ def test_cooloff_sample_records_a_fan_mixed_window():
     (evt,) = events(ctrl, "cooloff_sample")
     assert evt["accepted"] is True
     assert evt["fan_ticks"] == 2 and evt["ticks"] == 2  # mixed the whole way
+    assert evt["o1_avg_w"] == pytest.approx(195.0)  # the tap it mixed at
 
 
 def test_cooloff_sample_without_outdoor_is_rejected_not_guessed():

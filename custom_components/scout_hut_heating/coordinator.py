@@ -287,7 +287,7 @@ class ScoutController:
             ZONE_B: None,
         }
         self._cooloff_start: dict[
-            str, tuple[datetime, float, float, int, int, int] | None
+            str, tuple[datetime, float, float, int, int, int, float, int] | None
         ] = {
             ZONE_A: None,
             ZONE_B: None,
@@ -1020,7 +1020,10 @@ class ScoutController:
             outdoor = self._outdoor_temp()
             sample = self._cooloff_start[zone]
 
-            def _anchor(anchor_temp: float) -> tuple[datetime, float, float, int, int, int]:
+            def _anchor(
+                anchor_temp: float,
+            ) -> tuple[datetime, float, float, int, int, int, float, int]:
+                w = self._o1_watts() if zone == ZONE_A else None
                 return (
                     now,
                     anchor_temp,
@@ -1028,6 +1031,8 @@ class ScoutController:
                     1 if outdoor is not None else 0,
                     1 if self._fans_running() else 0,
                     1,
+                    w or 0.0,
+                    1 if w is not None else 0,
                 )
 
             if sample is None:
@@ -1035,17 +1040,25 @@ class ScoutController:
                     self._cooloff_start[zone] = _anchor(temp)
                 continue
 
-            started, start_temp, out_sum, out_n, fan_ticks, ticks = sample
+            started, start_temp, out_sum, out_n, fan_ticks, ticks, watt_sum, watt_n = sample
             # Accumulate the outdoor reading every tick: the sample's average
             # gap is what normalises the observed loss into the constant. The
             # fan tally rides along because a fan-mixed cool-off measurably
             # differs from a still one (2026-07-11 sealed test: mixing roughly
-            # halved the gap-normalised loss) — recorded, not yet acted on.
+            # halved the gap-normalised loss) — recorded, not yet acted on. The
+            # O1 wattage rides along too: the tap fingerprint is
+            # direction-dependent (summer forward ~195 W vs winter reverse
+            # ~158 W), so a future fan-aware split needs the speed, not just the
+            # count, to tell winter recirculation cool-offs apart.
             if outdoor is not None:
                 out_sum += outdoor
                 out_n += 1
             fan_ticks += 1 if self._fans_running() else 0
             ticks += 1
+            w = self._o1_watts() if zone == ZONE_A else None
+            if w is not None:
+                watt_sum += w
+                watt_n += 1
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
                 # drop there was and stop sampling.
@@ -1062,13 +1075,17 @@ class ScoutController:
                         out_n,
                         fan_ticks,
                         ticks,
+                        watt_sum,
+                        watt_n,
                     )
                 continue
 
             if temp > start_temp + 0.3:
                 self._cooloff_start[zone] = _anchor(temp)  # gaining, not losing
                 continue
-            self._cooloff_start[zone] = (started, start_temp, out_sum, out_n, fan_ticks, ticks)
+            self._cooloff_start[zone] = (
+                started, start_temp, out_sum, out_n, fan_ticks, ticks, watt_sum, watt_n
+            )
             drop = start_temp - temp
             hours = (now - started).total_seconds() / 3600
             # Roll the window ONLY when the sample is long enough to be
@@ -1077,7 +1094,8 @@ class ScoutController:
             # trigger in under the minimum duration) could never be learned.
             if drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS:
                 self._fold_cooloff(
-                    zone, hours, drop, start_temp, temp, out_sum, out_n, fan_ticks, ticks
+                    zone, hours, drop, start_temp, temp, out_sum, out_n,
+                    fan_ticks, ticks, watt_sum, watt_n,
                 )
                 self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
@@ -1092,6 +1110,8 @@ class ScoutController:
         out_n: int,
         fan_ticks: int,
         ticks: int,
+        watt_sum: float,
+        watt_n: int,
     ) -> None:
         key = f"{zone}_heatloss_pct"
         current = self.number(key)
@@ -1110,6 +1130,7 @@ class ScoutController:
                 reason="no_outdoor",
                 fan_ticks=fan_ticks,
                 ticks=ticks,
+                o1_avg_w=(watt_sum / watt_n) if watt_n else None,
             )
             return
         gap = (start_temp + end_temp) / 2 - out_sum / out_n
@@ -1132,6 +1153,7 @@ class ScoutController:
             new_pct=new,
             fan_ticks=fan_ticks,
             ticks=ticks,
+            o1_avg_w=(watt_sum / watt_n) if watt_n else None,
         )
         entity = self._numbers.get(key)
         write = getattr(entity, "write_value", None)

@@ -72,9 +72,11 @@ trace). Clears when the humidity drops or the hall warms.
 Every decision and learning sample is appended to a bounded audit log
 (`audit.py`, persisted with the state snapshot): warm-up and cool-off samples
 with their raw inputs and accept/reject outcome (both carry a fan-running
-tally — the 2026-07-11 sealed test measured a fan-mixed hut shedding heat at
-roughly half the stratified gap-normalised rate, so the tally is what any
-future fan-aware split of the heat-loss constant would be judged from),
+tally and average O1 wattage — the 2026-07-11 sealed test measured a fan-mixed
+hut shedding heat at roughly half the stratified gap-normalised rate, so the
+tally is what any future fan-aware split of the heat-loss constant would be
+judged from, and the wattage tells apart the direction-dependent taps that
+mixing runs at, summer forward ~195 W vs winter reverse ~158 W),
 pre-heat window openings with
 the full lead computation (including which learned rate drove the lead and the
 fan tap the fans were last seen at — the winter pre-heat leans on the

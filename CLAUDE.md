@@ -68,13 +68,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    July measurements: hall ~10 %/h, office ~4.5 %/h. Verify autumn/winter
    `cooloff_sample` events (they carry `gap`) confirm season transfer;
    winter wind/infiltration may run k somewhat higher — EWMA absorbs.
-   **Fan-mixed samples**: cool-offs now carry `fan_ticks`/`ticks` (the
-   2026-07-11 sealed test measured mixing at roughly *half* the stratified
-   gap-normalised loss, so the 11–12 Jul overnight hall samples are biased
-   low). Winter recirculation runs the fans through many evening cool-offs;
-   if the samples cluster into distinct fans-on/fans-off rates, split the
-   constant — otherwise the single EWMA stays (a fan-mixed overnight decay
-   may be the *more* honest prediction input on fan-harvesting nights).
+   **Fan-mixed samples**: cool-offs now carry `fan_ticks`/`ticks` and
+   `o1_avg_w` (the 2026-07-11 sealed test measured mixing at roughly *half*
+   the stratified gap-normalised loss, so the 11–12 Jul overnight hall samples
+   are biased low). Winter recirculation runs the fans through many evening
+   cool-offs; if the samples cluster into distinct fans-on/fans-off rates,
+   split the constant — otherwise the single EWMA stays (a fan-mixed overnight
+   decay may be the *more* honest prediction input on fan-harvesting nights).
+   **First winter night (2026-07-13):** the first fully fan-mixed hall
+   cool-offs (`fan_ticks`≈`ticks`) landed at ~11.9 %/h, on top of the same
+   night's fans-off ~11.7 %/h — *no* distinct clustering, so the single EWMA
+   holds for now. The `o1_avg_w` on each sample is what a later split would use
+   to separate winter-reverse recirculation from summer-forward mixing.
 5. **Calendar entity mid-event blips.** 2026-07-11 forensics: the calendar
    entity read not-running mid-event once (fans stopped 08:53 BST during a
    06:00–11:00 booking). Watch for `booking_end` + fresh `booking_start`
@@ -87,10 +92,15 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
 7. **Vent-pass trend test (revoke at mix ≥ best-seen + 0.5).** Calibrated
    from one solar-charge measurement (~+1.8 °C/h with nothing open). Verify
    against real door-open episodes.
-8. **Fan dial stability.** `warmup_sample.o1_avg_w` and `fan_change.o1_w`
-   record the transformer tap (~195 W at the current setting). If rates
-   cluster by wattage band, consider band-aware learning; if the dial never
-   moves, speed-blind stays correct.
+8. **Fan dial stability.** `warmup_sample.o1_avg_w`, `cooloff_sample.o1_avg_w`
+   and `fan_change.o1_w` record the transformer tap. If rates cluster by
+   wattage band, consider band-aware learning; if the dial never moves,
+   speed-blind stays correct. **The tap fingerprint is direction-dependent:**
+   summer forward (down-air) draws ~195 W, but the first winter reverse
+   (up-air) full-speed draw read ~158 W (2026-07-13) — same dial, different
+   motor load. So a wattage band is only comparable *within* a direction;
+   `fan_change.direction` / `fan_mode` disambiguate. Confirm the ~158 W winter
+   baseline holds over more nights before treating it as the reverse norm.
 9. **Sealed-hut fan-clearing test** — **RESOLVED 2026-07-12** (run
    2026-07-11 evening, everything shut, fans forced via calendar event +
    sliders). Gap-normalised bulk (0.75×floor+0.25×ceiling) loss: ~14 %/h
@@ -118,10 +128,14 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     record which rate drove the lead and the tap the fans were last seen at
     (data-only; the prediction is unchanged). **Decision rule:** if winter
     `booking_start.shortfall` is positive on mornings where `fan_w_last` sits
-    in a *lower* band than the ~195 W norm (occupants left the dial down), the
-    optimistic assumption is the cause — flip the pre-heat to predict on the
-    base rate (`zone_a_warmup_rate`, arrive-warm fail-safe). If shortfalls do
-    not track a low `fan_w_last`, the fan-assisted rate stays. The transient
+    in a *lower* band than the **direction-matched** norm (occupants left the
+    dial down), the optimistic assumption is the cause — flip the pre-heat to
+    predict on the base rate (`zone_a_warmup_rate`, arrive-warm fail-safe). If
+    shortfalls do not track a low `fan_w_last`, the fan-assisted rate stays.
+    **Compare against the right norm (see Q8):** the winter pre-heat runs the
+    fans in *reverse*, whose full-speed draw (~158 W first-seen) is below the
+    summer forward ~195 W — so ~158 W is normal here and must not be read as a
+    dialled-down fan. The transient
     case (speed changed *during* the idle gap) is unobservable with no
     HA-commandable fan and stays accepted risk. Pairs with Q8: a persistent
     band-aware rate would let the lead size to the *actual* last-seen tap.

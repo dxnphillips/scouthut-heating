@@ -296,9 +296,11 @@ restarts) of everything it decides and learns:
   or rejected, with the raw inputs (duration, temperature change, the average
   indoor–outdoor gap, fan assistance and wattage, old and new value), so the
   EWMA behaviour can be re-derived. Cool-off samples carry the fan-running
-  tally too: the 2026-07-11 sealed test showed a fan-mixed hut sheds heat at
-  roughly **half** the gap-normalised rate of a stratified one, and winter
-  recirculation runs the fans through the evening cool-off routinely.
+  tally and average wattage too: the 2026-07-11 sealed test showed a fan-mixed
+  hut sheds heat at roughly **half** the gap-normalised rate of a stratified
+  one, and winter recirculation runs the fans through the evening cool-off
+  routinely — the wattage separates the direction-dependent taps (summer
+  forward ~195 W vs winter reverse ~158 W) a future fan-aware split would need.
 - **`preheat_start`** — each time a pre-heat window opens: the lead chosen and
   every input it was computed from (rate, coldest reading, target, outdoor,
   heat-loss rate, gap to the event), plus `rate_key` (which learned rate drove
