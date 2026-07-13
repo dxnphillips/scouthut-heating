@@ -254,6 +254,20 @@ group arrives to a warm hall). Two *adjacent* bookings are handled for free: the
 pause carried through a running session lifts at that booking's end, and the
 next one inherits the still-warm room with its pre-heat naturally shortened.
 
+**Physical button (blueprint).** To drive Boost or Pause from a physical remote
+(e.g. a Shelly BLU RC Button), the repo ships an automation **blueprint**:
+[`blueprints/automation/scout_hut_heating/hall_boost_pause_toggle.yaml`](blueprints/automation/scout_hut_heating/hall_boost_pause_toggle.yaml).
+It turns one button press into a **toggle** — reading the matching status sensor
+and pressing the opposite integration button — so a press flips Boost (or Pause)
+on/off. Import it from *Settings → Automations & scenes → Blueprints → Import
+blueprint* (paste the file's GitHub URL), then create one automation per button:
+point each at that button's `event` entity and pick **Boost** or **Pause**. For a
+two-button remote, import it twice — e.g. button 3 → Boost, button 4 → Pause;
+boost and pause are mutually exclusive in the integration, so the two toggles
+never end up both on. HACS installs the integration but **not** blueprints, so
+this is a one-time manual import (the entity fields default to the standard ids;
+change them only if you renamed the device).
+
 **Optimum start.** The pre-heat lead is not a fixed number: each zone computes
 it as *learned warm-up rate × how far the room is below **that booking's**
 target* — a booking matching an ECO keyword pre-heats only to the eco-low

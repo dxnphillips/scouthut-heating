@@ -1,0 +1,137 @@
+blueprint:
+  name: Scout Hut – Hall boost / pause toggle
+  description: >
+    Turn a single button press into a toggle for the Scout Hut hall heating —
+    either the **boost** or the **pause** cutout. Point it at a button's `event`
+    entity (e.g. a Shelly BLU RC Button surfaced by the Shelly integration),
+    choose which action it toggles, and each press flips that state on/off by
+    reading the matching status sensor and pressing the opposite integration
+    button.
+
+    Import it twice for a two-button remote — once as *Boost* (e.g. button 3),
+    once as *Pause* (e.g. button 4). Boost and pause are mutually exclusive in
+    the integration, so the two toggles never end up both "on".
+
+    The entity fields default to the integration's standard entity ids; only
+    change them if you renamed the device.
+  domain: automation
+  input:
+    button_event:
+      name: Button event entity
+      description: The `event` entity for the physical button (one per button).
+      selector:
+        entity:
+          filter:
+            - domain: event
+    push_type:
+      name: Press type
+      description: Which press fires it (as reported in the event entity's `event_type`).
+      default: single_push
+      selector:
+        text: {}
+    action_mode:
+      name: What this button toggles
+      selector:
+        select:
+          options:
+            - label: Boost hall (toggle on/off)
+              value: boost
+            - label: Pause hall heating (toggle on/off)
+              value: pause
+    boost_active_sensor:
+      name: (advanced) Boost-active sensor
+      default: binary_sensor.zone_a_boost_active
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+    boost_button:
+      name: (advanced) Boost hall button
+      default: button.boost_hall
+      selector:
+        entity:
+          filter:
+            - domain: button
+    boost_cancel_button:
+      name: (advanced) Cancel hall boost button
+      default: button.cancel_hall_boost
+      selector:
+        entity:
+          filter:
+            - domain: button
+    pause_sensor:
+      name: (advanced) Hall-paused sensor
+      default: binary_sensor.hall_heating_paused
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+    pause_button:
+      name: (advanced) Pause hall heating button
+      default: button.pause_hall_heating
+      selector:
+        entity:
+          filter:
+            - domain: button
+    resume_button:
+      name: (advanced) Resume hall heating button
+      default: button.resume_hall_heating
+      selector:
+        entity:
+          filter:
+            - domain: button
+
+mode: single
+
+variables:
+  mode: !input action_mode
+  push_type: !input push_type
+  boost_active_sensor: !input boost_active_sensor
+  pause_sensor: !input pause_sensor
+
+# The event entity's state is the timestamp of the last press, so it changes on
+# EVERY press (even two identical pushes in a row) — triggering on the state and
+# filtering the press type in a condition is more reliable than triggering on
+# the event_type attribute, which would not "change" on a repeat of the same push.
+triggers:
+  - trigger: state
+    entity_id: !input button_event
+
+conditions:
+  - condition: template
+    value_template: >
+      {{ trigger.to_state is not none
+         and trigger.to_state.state not in ['unknown', 'unavailable']
+         and trigger.to_state.attributes.get('event_type') == push_type }}
+
+actions:
+  - choose:
+      # Boost mode, currently boosting -> cancel it.
+      - conditions:
+          - condition: template
+            value_template: "{{ mode == 'boost' and is_state(boost_active_sensor, 'on') }}"
+        sequence:
+          - action: button.press
+            target:
+              entity_id: !input boost_cancel_button
+      # Boost mode, not boosting -> boost.
+      - conditions:
+          - condition: template
+            value_template: "{{ mode == 'boost' }}"
+        sequence:
+          - action: button.press
+            target:
+              entity_id: !input boost_button
+      # Pause mode, currently paused -> resume.
+      - conditions:
+          - condition: template
+            value_template: "{{ mode == 'pause' and is_state(pause_sensor, 'on') }}"
+        sequence:
+          - action: button.press
+            target:
+              entity_id: !input resume_button
+    # Pause mode, not paused -> pause.
+    default:
+      - action: button.press
+        target:
+          entity_id: !input pause_button

@@ -170,6 +170,23 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     booking; if not, the strict gate stays. If deep-winter empty running turns
     out negligible anyway (cold fabric barely stratifies), the gate is
     harmless insurance.
+16. **Seasonal lockout threshold (`seasonal_lockout_temp` = 15).** A textbook
+    default (UK heating-season base ~15.5 °C on the 3-day forecast mean),
+    **not** measured for this building. The July 2026 data cannot validate it:
+    the 3-day avg sat at 20–23 °C throughout (never within 5 °C of 15), the hall
+    never read below 18.5 °C even at outdoor 12 °C (warm summer fabric coasting),
+    and *every* lockout flip was the RealFeel cold-snap release (rf < 13), not
+    the average crossing 15 — so **flapping is a cold-snap-clause artifact, not a
+    threshold-value problem; do not try to fix flapping by moving 15.** Direction
+    of concern is that 15 may be slightly *low* for this leaky, near-zero-gain
+    hall: on a cool-but-not-cold autumn day (avg ~15–17) with *cold* fabric the
+    lockout stays engaged and a booked session could arrive cold (boost
+    overrides, but manually). **Decision rule:** re-judge at the first cool (not
+    cold) *booked* autumn session where the 3-day avg falls toward 15–17 — if the
+    hall is comfortable without heat, 15 is fine or could go lower; if occupants
+    reach for boost / `booking_start.shortfall` is large, raise the slider toward
+    16–17 (then the default). The co-heating/UA test would set it analytically
+    (the balance-point temperature). Until an autumn export exists, leave it.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
