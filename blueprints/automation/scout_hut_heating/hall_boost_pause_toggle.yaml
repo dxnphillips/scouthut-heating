@@ -25,8 +25,12 @@ blueprint:
             - domain: event
     push_type:
       name: Press type
-      description: Which press fires it (as reported in the event entity's `event_type`).
-      default: single_push
+      description: >
+        The exact `event_type` value this press fires — check the button's
+        `event` entity in Developer Tools → States (the `event_types` attribute
+        lists the valid values). Shelly BLU buttons report "Press" and
+        "Long Press"; other devices use e.g. "single_push" / "long_push".
+      default: Press
       selector:
         text: {}
     action_mode:
