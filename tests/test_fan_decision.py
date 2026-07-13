@@ -141,8 +141,53 @@ def test_winter_active_demand_runs_even_if_room_above_cap():
 
 
 def test_winter_runs_regardless_of_occupancy():
-    # Heat leaking into an empty hall still triggers loss-reduction destrat.
+    # Active heat demand runs the fans even with an empty hall.
     assert winter(dt=5.0, occupied=False) == (True, "reverse", "winter")
+
+
+# --- Occupancy gate on the no-demand recirc path -------------------------------
+
+def test_recirc_gate_suppresses_empty_unheated_running():
+    # The measured pointless case: no demand, warm fabric still stratifying, but
+    # nobody in the hall -> with the gate on, do not run on the ambient gradient.
+    assert winter(
+        dt=5.0, demand=False, recirc_ok=True, occupied=False, recirc_needs_occupancy=True
+    ) == (False, None, "off")
+
+
+def test_recirc_gate_stops_a_fan_already_running_empty():
+    # The export scenario: fans running winter, building empties, heat off. The
+    # gate must let them stop (not just refuse to start).
+    assert winter(
+        dt=1.8,
+        currently_winter=True,
+        demand=False,
+        recirc_ok=True,
+        occupied=False,
+        recirc_needs_occupancy=True,
+    ) == (False, None, "off")
+
+
+def test_recirc_gate_allows_harvest_when_occupied():
+    assert winter(
+        dt=5.0, demand=False, recirc_ok=True, occupied=True, recirc_needs_occupancy=True
+    ) == (True, "reverse", "winter")
+
+
+def test_recirc_gate_never_blocks_active_demand():
+    # The savings case (heaters on, incl. pre-heat) runs regardless of occupancy.
+    assert winter(
+        dt=5.0, demand=True, recirc_ok=False, occupied=False, recirc_needs_occupancy=True
+    ) == (True, "reverse", "winter")
+
+
+def test_recirc_gate_default_keeps_legacy_behaviour():
+    # Unset (pure-function default) -> the old run-on-stratification-alone stands.
+    assert winter(dt=5.0, demand=False, recirc_ok=True, occupied=False) == (
+        True,
+        "reverse",
+        "winter",
+    )
 
 
 # --- Sensor loss ---------------------------------------------------------------

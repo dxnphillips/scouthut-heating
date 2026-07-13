@@ -24,6 +24,7 @@ NAMES: dict[str, str] = {
     "summer_mode": "Summer cooling mode",
     "summer_follows_season": "Summer cooling follows season",
     "fans_run_on_sensor_loss": "Fans run when sensor lost",
+    "winter_fans_need_occupancy": "Winter fans need occupancy",
 }
 
 

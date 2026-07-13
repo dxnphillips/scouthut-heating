@@ -56,7 +56,11 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
 1. **Winter fan stop threshold (`fan_dt_off` = 0.5).** If the trace shows
    fans running continuously with ΔT plateaued just above 0.5, raise
    `fan_dt_off` to 1.0 (slider first, then default). If ΔT crosses 0.5 and
-   fans cycle normally, closed.
+   fans cycle normally, closed. **2026-07-13:** the first winter run *did*
+   plateau (ΔT ~1.8, 17/17 ticks fans-on, empty, no demand) — but the cause
+   was warm-fabric ambient stratification in an *empty* hut, not a bad
+   threshold, so the fix was the occupancy gate (Q15) rather than raising
+   `fan_dt_off`. Re-judge this only against *occupied or heated* plateaus.
 2. **Pre-heat cap (default 120 min, slider now to 240).** Judge from
    `booking_start.shortfall` on cold-start mornings: persistent positive
    shortfalls with the lead pinned at cap → raise the slider/default.
@@ -111,8 +115,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    summer fans stay occupied-only. Do not automate it; do not "fix" the
    occupancy gate.
 10. **Winter savings forecast**: 500–800 kWh (~£125–215 net) hall heating
-    saved by destratification, ±50 %. Verify via degree-day-normalised
-    Rointe app statistics vs last winter + duty cycles in the trace.
+    saved by destratification, ±50 %. **The saving is delivery-efficiency, not
+    loss reduction** — do not conflate them. The fans bring made warmth down to
+    head height so occupants reach comfort (and the heaters cut out) *sooner*,
+    for less total input; they do **not** slow how fast heat leaves the box.
+    So the cool-off "fan-mixed ≈ still" result (Q4/Q9) is *consistent* with a
+    real saving, not evidence against it — do not read it as "destrat does
+    nothing" and rip the fans out. **Verify the right signal:** heater
+    duty-cycle / kWh across *comparable heated, occupied* sessions fans-on vs
+    fans-off (degree-day-normalised Rointe stats vs last winter, plus trace
+    duty cycles) — NOT cool-off decay, which by construction can't show a
+    delivery effect. If the duty-cycle comparison shows no saving either, then
+    the destrat thesis genuinely fails and the fans are comfort-only.
 11. **Condensation watch thresholds** (≥80 % RH below 12 °C for 12 h →
     notify): first winter decides if they're right for this fabric.
 12. **Shared-zone spillover**: does hall fan mixing measurably warm the
@@ -140,8 +154,22 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     case (speed changed *during* the idle gap) is unobservable with no
     HA-commandable fan and stays accepted risk. Pairs with Q8: a persistent
     band-aware rate would let the lead size to the *actual* last-seen tap.
-
-## Documented trade-offs (deliberate — re-read the reasoning before "fixing")
+15. **Winter occupancy gate (`winter_fans_need_occupancy` = on).** The
+    no-demand winter recirc path now requires hall occupancy, so an empty,
+    unheated hut no longer runs the fans on ambient (warm-fabric)
+    stratification — the 2026-07-13 export showed that running as ~150 W of
+    continuous cost with, per the cool-off data (fan-mixed loss ≈ still loss),
+    no retention benefit. Active heat demand still runs regardless (the savings
+    case, incl. pre-heat). The trace now carries `occupied` and `fan_mode`
+    alongside `fans`, so empty-building fan-hours are measurable directly.
+    **Decision rule:** over the first real cold, occupied weeks, check the
+    trace for heated/occupied sessions where destrat clearly helped but the
+    gate held the fans off (fans-off while `occupied` false yet a booking was
+    imminent / just ended and ΔT was large). If that costs measurable comfort
+    or savings, widen the gate to also count *recent* occupancy or an imminent
+    booking; if not, the strict gate stays. If deep-winter empty running turns
+    out negligible anyway (cold fabric barely stratifies), the gate is
+    harmless insurance.
 
 - **A breeze-guard stop respects the minimum-run timer.** A 2-second door
   blip grants the vent pass, starts the fans, and its closure leaves up to

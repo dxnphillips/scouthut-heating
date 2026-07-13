@@ -103,6 +103,7 @@ _FAN_CONTROLS = [
     ("summer_mode", "Summer cooling mode (manual force)"),
     ("summer_follows_season", "Summer cooling follows season"),
     ("fans_run_on_sensor_loss", "Run when sensor lost"),
+    ("winter_fans_need_occupancy", "Winter fans need occupancy"),
 ]
 _FAN_TUNING = [
     ("fan_dt_on", "ΔT to start"),

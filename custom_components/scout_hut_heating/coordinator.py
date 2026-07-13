@@ -1837,6 +1837,11 @@ class ScoutController:
             rh=self._ceiling_humidity(),
             o1_w=self._o1_watts(),
             fans=bool(self.fan_on),
+            fan_mode=self.fan_mode,
+            # Hall occupancy alongside fans/mode makes empty-building winter fan
+            # running measurable directly from the trace (the occupancy gate's
+            # effect, and whether it needs revisiting).
+            occupied=self._cooling_occupied(),
             demand=self.heat_demand,
         )
 
@@ -2747,6 +2752,9 @@ class ScoutController:
             dt_off=self.number("fan_dt_off"),
             demand=demand,
             recirc_ok=recirc_ok,
+            recirc_needs_occupancy=self.switch_on(
+                "winter_fans_need_occupancy", default=True
+            ),
             currently_winter=currently_winter,
             run_on_loss=self.switch_on("fans_run_on_sensor_loss", default=True),
         )
