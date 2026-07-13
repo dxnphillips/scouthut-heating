@@ -224,6 +224,13 @@ class ScoutController:
         self.opening_ice: dict[str, bool] = {ZONE_A: False, ZONE_B: False, "shared": False}
         self.manual_hold: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self.boost_until: dict[str, datetime | None] = {ZONE_A: None, ZONE_B: None}
+        # Occupant "too warm, stop" cutout for the hall (radiators are locked,
+        # so this is the only accessible way to kill the heat). Forces the hall
+        # to ice — still frost-protected — above boost and bookings. No timer:
+        # it clears only on a deliberate action (resume/boost) or when a new
+        # session emerges from an idle gap (see _async_refresh_calendars /
+        # _record_booking_edges). Persisted so a restart mid-pause keeps it.
+        self.hall_heating_paused = False
         self.seasonal_lockout = False
         self.expected_preset: dict[str, str | None] = {ZONE_A: None, ZONE_B: None}
         self.applied: dict[str, str | None] = {ZONE_A: None, ZONE_B: None, "shared": None}
@@ -620,6 +627,8 @@ class ScoutController:
                     self.audit.record(
                         "preheat_start", self._now(), zone=zone, reason="unreadable_start"
                     )
+                    if zone == ZONE_A:
+                        self._clear_hall_pause("preheat")
                 self.cal_window[zone] = True
                 continue
             lead = self._zone_preheat_minutes(zone, eco=eco, gap_hours=gap_min / 60)
@@ -631,6 +640,12 @@ class ScoutController:
                     zone=zone,
                     **(self._last_lead_calc.get(zone) or {}),
                 )
+                # A session emerging from an idle gap is the deliberate signal to
+                # lift a hall pause (the too-warm occupants have gone; warm the
+                # incoming group). Mid-booking this edge never fires — the window
+                # is already open — so adjacent bookings clear at booking_end.
+                if zone == ZONE_A:
+                    self._clear_hall_pause("preheat")
             self.cal_window[zone] = window
 
         water = False
@@ -1283,11 +1298,41 @@ class ScoutController:
     # ------------------------------------------------------------------
     async def async_boost(self, zone: str) -> None:
         self.boost_until[zone] = self._now() + timedelta(minutes=self.boost_minutes())
+        # Boost and the hall pause are opposite intents; the newer one wins. A
+        # hall boost is an explicit "I want heat now", so it lifts the pause.
+        if zone == ZONE_A:
+            self._clear_hall_pause("boost")
         await self.async_reconcile()
 
     async def async_cancel_boost(self, zone: str) -> None:
         self.boost_until[zone] = None
         await self.async_reconcile()
+
+    async def async_pause_hall_heating(self) -> None:
+        """Occupant cutout: force the hall to ice until a deliberate resume."""
+        if not self.hall_heating_paused:
+            self.audit.record(
+                "heating_paused",
+                self._now(),
+                zone=ZONE_A,
+                coldest=self._zone_room_temp(ZONE_A, coldest=True),
+                ceiling=self._ceiling_temp(),
+                occupied=self._cooling_occupied(),
+            )
+        self.hall_heating_paused = True
+        # A pause and a boost cannot both hold: stopping the heat cancels a boost.
+        self.boost_until[ZONE_A] = None
+        await self.async_reconcile()
+
+    async def async_resume_hall_heating(self) -> None:
+        self._clear_hall_pause("manual")
+        await self.async_reconcile()
+
+    def _clear_hall_pause(self, reason: str) -> None:
+        """Lift the hall cutout (if set) and audit why."""
+        if self.hall_heating_paused:
+            self.hall_heating_paused = False
+            self.audit.record("heating_resumed", self._now(), zone=ZONE_A, reason=reason)
 
     def boost_active(self, zone: str) -> bool:
         until = self.boost_until.get(zone)
@@ -1319,6 +1364,7 @@ class ScoutController:
                 for zone, until in self.boost_until.items()
             },
             "manual_hold": dict(self.manual_hold),
+            "hall_heating_paused": self.hall_heating_paused,
             # Restart hardening: the anti-short-cycle timers and the seasonal
             # flag survive a reload, so a restart cannot stutter the fans or
             # re-announce the lockout.
@@ -1353,6 +1399,7 @@ class ScoutController:
                 self.boost_until[zone] = until
             if (data.get("manual_hold") or {}).get(zone):
                 self.manual_hold[zone] = True
+        self.hall_heating_paused = bool(data.get("hall_heating_paused", False))
         self.seasonal_lockout = bool(data.get("seasonal_lockout", False))
         self.fan_last_on = _dt(data.get("fan_last_on"))
         self.fan_last_off = _dt(data.get("fan_last_off"))
@@ -1457,6 +1504,7 @@ class ScoutController:
                 "opening_ice": dict(self.opening_ice),
                 "openings": openings,
                 "boost_until": {z: _iso(t) for z, t in self.boost_until.items()},
+                "hall_heating_paused": self.hall_heating_paused,
                 "seasonal_lockout": self.seasonal_lockout,
                 "summer_active": self._summer_active(),
                 "cal_window": dict(self.cal_window),
@@ -1505,9 +1553,9 @@ class ScoutController:
         Called by the "Reset tunables to defaults" button. Resets numbers,
         switches, the boost-duration select and the ECO keyword text, then
         re-evaluates everything that depends on them (seasonal lockout, hall
-        setpoints, and one full reconcile). It does not touch boosts, manual
-        holds or the latched fan fault — resetting sliders must not silently
-        re-arm a faulted fan.
+        setpoints, and one full reconcile). It does not touch boosts, a hall
+        pause, manual holds or the latched fan fault — resetting sliders must not
+        silently re-arm a faulted fan or resume heat someone paused.
         """
         for registry in (self._numbers, self._switches, self._selects, self._texts):
             for entity in registry.values():
@@ -1607,6 +1655,11 @@ class ScoutController:
             return None
         if self.manual_hold[zone]:
             return None
+        # Occupant "too warm" cutout (hall only): beats boost and bookings, but
+        # still lands on ice, so frost protection holds. It only clears on a
+        # deliberate action or a fresh session out of an idle gap.
+        if zone == ZONE_A and self.hall_heating_paused:
+            return self._reason(zone, "heating_paused", PRESET_ICE)
         if self.opening_ice[zone]:
             return self._reason(zone, "opening", PRESET_ICE)
         if self.boost_active(zone):
@@ -1876,6 +1929,12 @@ class ScoutController:
                     outdoor=self._outdoor_temp(),
                     preset=self.applied[zone],
                 )
+                # A hall booking ending is the deliberate boundary that lifts a
+                # pause carried through the session: an adjacent next booking
+                # then starts fresh (inheriting the still-warm room, so its
+                # pre-heat is naturally reduced or skipped).
+                if zone == ZONE_A:
+                    self._clear_hall_pause("booking_end")
                 continue
             eco = self._eco_keyword_active(zone)
             target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
@@ -2638,6 +2697,20 @@ class ScoutController:
             # Reset the condition flags like the disabled branch does, so
             # stale pre-fault values cannot keep feeding fail_safe_off or the
             # diagnostics while the latch holds.
+            self.fan_sensor_stale = False
+            self.fan_dt = None
+            self.fan_overheated = False
+            self.fan_breeze_hot = False
+            self._breeze_latch = False
+            self.fan_mix = None
+            self._fan_occupied = None
+            self._fan_warm = None
+            return False, None, "off"
+        # A hall "too warm" pause holds the WINTER destrat fans off — reversing
+        # roof-space heat down onto the people who just said they are too hot
+        # would make it worse. The summer cooling breeze is left alone (a
+        # forward down-draught cools them, which is what they want).
+        if self.hall_heating_paused and not self._summer_active():
             self.fan_sensor_stale = False
             self.fan_dt = None
             self.fan_overheated = False

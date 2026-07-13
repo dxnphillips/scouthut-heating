@@ -44,8 +44,11 @@ _BOOST = [
     ("cancel_boost_zone_a", "Cancel hall boost"),
     ("cancel_boost_zone_b", "Cancel office boost"),
     ("boost_duration", "Boost duration"),
+    ("pause_hall_heating", "Pause hall heating"),
+    ("resume_hall_heating", "Resume hall heating"),
     ("zone_a_boost_active", "Hall boost active"),
     ("zone_b_boost_active", "Office boost active"),
+    ("hall_heating_paused", "Hall heating paused"),
 ]
 _TEMPERATURES = [
     ("hall_comfort_temp", "Hall comfort"),

@@ -171,6 +171,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     out negligible anyway (cold fabric barely stratifies), the gate is
     harmless insurance.
 
+- **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
+  Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
+  button) is the only occupant-accessible way to stop the heat. It forces the
+  hall to ice above boost/booking but still frost-protects, and holds the
+  *winter* fans off (they'd deliver roof heat onto the too-warm person) while
+  leaving the *summer* breeze running. Deliberately **no timer** (owner
+  preference): it clears only on Resume, a hall boost (the two are mutually
+  exclusive), a hall pre-heat window opening from an idle gap, or a hall
+  `booking_end`. The idle-gap rule rides the `cal_window` false→true edge, which
+  *cannot* fire mid-booking — so **adjacent bookings** don't resume on the
+  current too-warm occupants; the pause lifts at the running booking's end and
+  the next session inherits the warm room with a shortened/absent pre-heat
+  (owner-confirmed as the wanted behaviour). Frost protection means a forgotten
+  pause can't freeze the hut, only leave a later group cool until a button /
+  the next-session clear wakes it.
 - **A breeze-guard stop respects the minimum-run timer.** A 2-second door
   blip grants the vent pass, starts the fans, and its closure leaves up to
   10 minutes of running fans under an active hold (observed in the field,

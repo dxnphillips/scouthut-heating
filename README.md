@@ -84,12 +84,13 @@ entirely, the button fails soft and points at the YAML files:
 - **Switches:** hall/office automation enabled, hall/office occupied override,
   water heater manual override.
 - **Text:** ECO keyword blocklist (comma-separated).
-- **Buttons:** boost hall, boost office, cancel-boost for each, **Create
-  dashboards** (see above), and **Reset tunables to defaults** (restores every
-  number/switch/select/text above to its built-in default; deliberately does
-  not clear boosts, manual holds or a latched fan fault). Restored number
-  values are clamped into the current slider bounds on startup, so an upgrade
-  that tightens a range heals old out-of-range values automatically.
+- **Buttons:** boost hall, boost office, cancel-boost for each, **pause /
+  resume hall heating** (the occupant "too warm, stop" cutout — see below),
+  **Create dashboards** (see above), and **Reset tunables to defaults** (restores
+  every number/switch/select/text above to its built-in default; deliberately
+  does not clear boosts, a hall pause, manual holds or a latched fan fault).
+  Restored number values are clamped into the current slider bounds on startup,
+  so an upgrade that tightens a range heals old out-of-range values automatically.
 - **Diagnostic sensors/binary sensors:** current & expected preset per zone,
   water state, seasonal lockout, opening-ice flags, manual-hold flags, boost
   flags, and the hall temperature spread (max − min across the hall heaters'
@@ -218,23 +219,40 @@ this priority (highest wins):
    heater during a booking — from the reported preset when the Rointe
    integration publishes one, otherwise from the reported setpoint, since
    each Rointe preset pins a known target temperature).
-2. **Door or window held open** past its delay → `ice` (the internal door only
+2. **Hall heating paused** (occupant "too warm, stop" cutout — hall only) →
+   `ice`, above boost and bookings. Still frost-protected, and it holds the
+   winter fans off. See *Pause hall heating* below.
+3. **Door or window held open** past its delay → `ice` (the internal door only
    counts when an exterior opening is also open).
-3. **Boost active** → `comfort` (bypasses the seasonal lockout).
-4. **Seasonal lockout** (3-day *average* forecast temperature at/above the
+4. **Boost active** → `comfort` (bypasses the seasonal lockout).
+5. **Seasonal lockout** (3-day *average* forecast temperature at/above the
    threshold; releases when the average falls half a degree below it, or on a
    **genuine cold snap** — RealFeel more than 2 °C under the threshold. Mild
    summer nights a degree under it neither release the lockout nor flap it)
    → `ice`.
-5. **Alarm set with no booking** → `ice` and clears the occupied override.
-6. **Booking or pre-heat window** (optimum start — see below) → `comfort`.
+6. **Alarm set with no booking** → `ice` and clears the occupied override.
+7. **Booking or pre-heat window** (optimum start — see below) → `comfort`.
    An unoccupied room drops to `eco` only once the event has actually
    started — the pre-heat window always heats at comfort, since its whole
    purpose is reaching the comfort target by event start. Events matching an
    ECO keyword stay on the lower `eco` setpoint throughout.
-7. **Occupied override or recent motion** → `eco`.
-8. **Zone empty** → `eco` while someone is still elsewhere in the building,
+8. **Occupied override or recent motion** → `eco`.
+9. **Zone empty** → `eco` while someone is still elsewhere in the building,
    `ice` once the building is empty.
+
+**Pause hall heating** (occupant cutout). The hall radiators are locked, so if
+someone finds it too warm mid-session they have no way to turn them down. The
+*Pause hall heating* button — ideally wired to a physical remote — forces the
+**hall** to ice (frost protection still holds) above boost and bookings, and
+holds the winter destratification fans off so they don't keep pulling roof-space
+heat down onto them (the summer cooling breeze is left running, since that
+*helps* a hot person). It's **hall only** — the office keeps its own heat — and
+there is **no timer**: it clears only on a deliberate action (*Resume*, or a
+hall **Boost** — the two are mutually exclusive, so boosting cancels a pause and
+vice versa) or when a fresh booked session emerges from an idle gap (so the next
+group arrives to a warm hall). Two *adjacent* bookings are handled for free: the
+pause carried through a running session lifts at that booking's end, and the
+next one inherits the still-warm room with its pre-heat naturally shortened.
 
 **Optimum start.** The pre-heat lead is not a fixed number: each zone computes
 it as *learned warm-up rate × how far the room is below **that booking's**
@@ -328,13 +346,17 @@ restarts) of everything it decides and learns:
   otherwise shows up only indirectly, when it moves a preset or the fans.
 - **`preset` / `fan_change` / `manual_hold` / `seasonal` / `water_hygiene` /
   `water_frost` / `fan_fault` / `overheat_holdoff` / `breeze_holdoff` /
-  `condensation` / `fan_sensor_lost`** — the
-  actuation and safety record around those samples. Fan changes carry the
+  `condensation` / `fan_sensor_lost` / `heating_paused` / `heating_resumed`** —
+  the actuation and safety record around those samples. Fan changes carry the
   decision inputs (`occupied`, `warm`, ΔT, demand, O1 watts), so a stopped
-  fan is never ambiguous between "nobody there" and "not warm enough" — and
+  fan is never ambiguous between "nobody there" and "not warm enough";
   preset changes carry the `reason` (which rung of the priority ladder
   decided them: `booking`, `preheat`, `booking_quiet`, `motion`,
-  `seasonal_lockout`, `alarm`, `opening`, `boost`, `building_empty`, ...).
+  `seasonal_lockout`, `alarm`, `opening`, `boost`, `heating_paused`,
+  `building_empty`, ...); and the hall pause records its temps/occupancy on
+  activation and *what cleared it* (`manual`, `boost`, `preheat`, `booking_end`)
+  — so how often people find the hall too warm, and in which sessions, is
+  visible in the log.
 - **A readings trace** — a week of 15-minute points of the exact computed
   values the decisions used (ceiling, the hall "floor" average and coldest
   reading, office, shared, outdoor, ceiling humidity, fan state, fan mode,
