@@ -137,10 +137,16 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
   difference **decoupled from the heater's on/off cycle**, so it keeps harvesting
   *residual* heat after a heater has reached setpoint and cut out — pushing that
   already-paid-for warmth back down instead of letting it escape through the
-  poorly-insulated roof. It runs for **loss reduction as well as comfort**, so it
-  does **not** require the hall to be occupied. It stops when the ΔT falls to the
+  poorly-insulated roof. That residual-harvest path requires the hall to be
+  **occupied** (switch **Winter fans need occupancy**, default on): an empty,
+  unheated hut still stratifies from warm fabric, but the field cool-off samples
+  measured a fan-mixed overnight decay ≈ the still one — so running on that
+  ambient gradient with nobody there is ~150 W for no measurable retention or
+  comfort. **Active heat demand always runs the fans regardless** (the savings
+  case, including pre-heat). Turn the switch off to restore the legacy
+  run-on-stratification-alone behaviour. It stops when the ΔT falls to the
   stop threshold (default 0.5 °C), or once the heat is no longer worth moving (heater
-  off *and* the floor has reached the cap). The two ΔT thresholds plus minimum
+  off *and* the floor has reached the cap, or the hall is empty with no demand). The two ΔT thresholds plus minimum
   run/off times (default 10 min each) prevent short-cycling. Defaults follow the
   documented practice for destrat fans (a few-degree ΔT band; a ~24 °C / 75 °F
   low-side limit).
@@ -331,8 +337,11 @@ restarts) of everything it decides and learns:
   `seasonal_lockout`, `alarm`, `opening`, `boost`, `building_empty`, ...).
 - **A readings trace** — a week of 15-minute points of the exact computed
   values the decisions used (ceiling, the hall "floor" average and coldest
-  reading, office, shared, outdoor, ceiling humidity, fan state, heat
-  demand, and the O1 wattage). The wattage matters because it encodes the manual transformer
+  reading, office, shared, outdoor, ceiling humidity, fan state, fan mode,
+  hall occupancy, heat
+  demand, and the O1 wattage). Fan mode and occupancy ride alongside fan state
+  so empty-building winter fan-hours — the thing the occupancy gate suppresses —
+  are measurable straight from the trace. The wattage matters because it encodes the manual transformer
   dial's tap — warm-up samples also carry their average O1 watts, so a moved
   dial perturbing the learned rates is visible in the data.
 

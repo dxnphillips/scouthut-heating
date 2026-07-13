@@ -312,6 +312,13 @@ SWITCH_DEFS: dict[str, bool] = {
     # failing to off. Default ON per site preference; turn off to fail-safe
     # to fans-off instead. The Shelly still owns all motor safety either way.
     "fans_run_on_sensor_loss": True,
+    # Require hall occupancy for the no-demand winter recirc path. An empty,
+    # unheated hut still stratifies from warm fabric, but the field cool-off
+    # samples measured fan-mixing as no better than still air for retention — so
+    # running on that ambient gradient with nobody there is ~150 W for nothing.
+    # Default ON to suppress it; active heat demand still runs the fans. Turn OFF
+    # for the legacy "run on stratification alone" destratification behaviour.
+    "winter_fans_need_occupancy": True,
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -324,6 +331,7 @@ SWITCH_ICONS: dict[str, str] = {
     "summer_mode": "mdi:weather-sunny",
     "summer_follows_season": "mdi:calendar-sync",
     "fans_run_on_sensor_loss": "mdi:fan-alert",
+    "winter_fans_need_occupancy": "mdi:account-clock",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"

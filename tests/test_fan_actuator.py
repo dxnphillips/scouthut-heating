@@ -149,6 +149,28 @@ def test_follow_season_can_be_disabled():
     assert ctrl._summer_active() is False
 
 
+def test_winter_occupancy_gate_suppresses_empty_hall_recirc():
+    # Winter, stratified (dt 3), floor below the recirc cap, but no heat demand
+    # and an empty hall — the measured pointless case. The gate (default on)
+    # keeps the fans off; turning it off restores the legacy run-on-strat path.
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = False  # winter regime
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 20.0})  # floor 20 < cap
+    hass.states.set("sensor.ceiling", "23.0")  # dt 3.0 > dt_on
+
+    assert ctrl._fan_target() == (False, None, "off")  # gate on by default
+
+    ctrl._switches["winter_fans_need_occupancy"].is_on = False
+    assert ctrl._fan_target() == (True, "reverse", "winter")  # legacy behaviour
+
+
 # --- Fan awareness in the optimum-start learning --------------------------------
 
 def test_warmup_rate_key_follows_fan_availability():

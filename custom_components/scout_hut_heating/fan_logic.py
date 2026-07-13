@@ -25,6 +25,7 @@ def fan_decision(
     dt_off: float,
     demand: bool,
     recirc_ok: bool,
+    recirc_needs_occupancy: bool = False,
     currently_winter: bool,
     run_on_loss: bool,
 ) -> tuple[bool, str | None, str]:
@@ -39,12 +40,11 @@ def fan_decision(
 
     Arguments:
         summer: the summer-cooling regime is enabled.
-        occupied: someone is there for the breeze to cool — recent hall motion
-            or a hall event actually running (not the pre-heat window: a fan
-            cannot pre-cool a room). Only gates the summer breeze; winter
-            destratification runs regardless of occupancy so it can knock down
-            the hot ceiling layer and cut roof heat-loss even when people are
-            only in the office.
+        occupied: someone is in the hall — recent hall motion or a hall event
+            actually running (not the pre-heat window: a fan cannot pre-cool a
+            room). Gates the summer breeze, and (when recirc_needs_occupancy)
+            the no-demand winter recirc path. Active winter heat demand still
+            runs the fans regardless of occupancy.
         warm: the head-height comfort estimate (a floor/ceiling blend, the air
             an occupant actually feels) is above the cooling threshold; ``None``
             when the floor temperature is unavailable — with no floor the room's
@@ -63,6 +63,14 @@ def fan_decision(
             This is how real destratification controllers run — on the ceiling-floor
             difference, decoupled from the heater's on/off cycle — backing off only
             once the occupied zone is genuinely warm.
+        recirc_needs_occupancy: require hall occupancy for the no-demand recirc
+            path. An empty, unheated hut still stratifies from warm fabric, and
+            the field cool-off samples measured a fan-mixed overnight decay ≈ the
+            still one — so running on that ambient gradient buys no heat retention
+            and, with nobody there, no comfort either, at ~150 W. With this set
+            the recirc path only runs when someone is actually in the hall;
+            active heat demand still runs regardless (the savings case). When
+            clear, the legacy demand-independent behaviour stands.
         currently_winter: the fans are already running in winter mode (so the
             stop thresholds apply instead of the start thresholds).
         run_on_loss: when the ceiling / floor reading is lost, assume
@@ -84,12 +92,16 @@ def fan_decision(
             return True, "forward", "summer"
         return False, None, "off"
 
-    # Winter destratification. Runs for loss reduction as well as comfort, so it is
-    # gated on real stratification plus "the heat is worth moving" — i.e. a heater
-    # is actively producing heat, OR the occupied zone is still below the
-    # recirculation cap (so residual / leaked ceiling heat is worth harvesting). Not
-    # gated on hall occupancy.
-    worth_moving = demand or recirc_ok
+    # Winter destratification. Gated on real stratification plus "the heat is
+    # worth moving" — a heater is actively producing heat (the savings case, run
+    # regardless of occupancy), OR residual / leaked ceiling heat is worth
+    # harvesting: the floor is below the recirculation cap AND — when
+    # recirc_needs_occupancy — someone is actually in the hall to benefit.
+    # Harvesting ambient stratification in an empty, unheated hut was measured to
+    # buy no heat retention (fan-mixed overnight loss ≈ still loss) while costing
+    # ~150 W, so the occupancy gate suppresses that pointless running.
+    recirc = recirc_ok and (occupied or not recirc_needs_occupancy)
+    worth_moving = demand or recirc
     if dt is None:
         # Ceiling / floor lost. Optionally assume stratification and keep running,
         # still gated on heat being produced.
