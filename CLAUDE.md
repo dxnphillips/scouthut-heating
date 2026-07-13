@@ -115,8 +115,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    summer fans stay occupied-only. Do not automate it; do not "fix" the
    occupancy gate.
 10. **Winter savings forecast**: 500–800 kWh (~£125–215 net) hall heating
-    saved by destratification, ±50 %. Verify via degree-day-normalised
-    Rointe app statistics vs last winter + duty cycles in the trace.
+    saved by destratification, ±50 %. **The saving is delivery-efficiency, not
+    loss reduction** — do not conflate them. The fans bring made warmth down to
+    head height so occupants reach comfort (and the heaters cut out) *sooner*,
+    for less total input; they do **not** slow how fast heat leaves the box.
+    So the cool-off "fan-mixed ≈ still" result (Q4/Q9) is *consistent* with a
+    real saving, not evidence against it — do not read it as "destrat does
+    nothing" and rip the fans out. **Verify the right signal:** heater
+    duty-cycle / kWh across *comparable heated, occupied* sessions fans-on vs
+    fans-off (degree-day-normalised Rointe stats vs last winter, plus trace
+    duty cycles) — NOT cool-off decay, which by construction can't show a
+    delivery effect. If the duty-cycle comparison shows no saving either, then
+    the destrat thesis genuinely fails and the fans are comfort-only.
 11. **Condensation watch thresholds** (≥80 % RH below 12 °C for 12 h →
     notify): first winter decides if they're right for this fabric.
 12. **Shared-zone spillover**: does hall fan mixing measurably warm the
