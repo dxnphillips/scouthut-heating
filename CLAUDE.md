@@ -301,7 +301,13 @@ was wrong — it would latch a false stall on any low-dial running; ~20 W clears
 the 40 W forward floor and the lower reverse floor while staying above the
 ~0 W closed-master draw, and matches the HA-side `FAN_RUNNING_MIN_WATTS = 20`
 (kept just below the Shelly threshold). Measure the lowest *reverse* draw to
-pin it exactly. Tag a release after updating;
+pin it exactly. **Also raise `STALL_W` 260 → ~350**: the 260 placeholder sits
+only 5 W above the measured 255 W high-forward tap, inside the Shelly's own
+power-reading noise, so normal high-dial running trips a false stall (a likely
+cause of the 2026-07-14 commissioning fault-latching). ~350 clears 255 W with
+margin yet stays far below a locked-rotor draw; measure a real stall to refine.
+The reference script (`docs/reference/fan_reverse_supervised.js`) already
+carries these corrected values. Tag a release after updating;
 delete the two orphaned "learned heat-loss rate" entities; possible future
 hardware — office split/heat-pump pilot, wall extractor fans, hall window
 contacts (they join the vent override automatically when mapped).

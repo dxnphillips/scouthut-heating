@@ -52,8 +52,13 @@ var BUTTON_ID   = 200;     // virtual button "Reverse fans"
 var FAULT_BOOL_ID = 201;   // virtual boolean "Fan fault" (read in Home Assistant)
 
 // supervision thresholds, WATTS. SET FROM COMMISSIONING MEASUREMENTS.
-var MIN_RUN_W    = 25;     // below this while running = tap too low or fans missing
-var STALL_W      = 260;    // above this while running = stall or fault
+// 2026-07-14 commissioning: lowest forward tap ~40 W, highest forward ~255 W;
+// reverse runs ~0.6-0.8x forward (lowest reverse tap ~25-30 W, not yet pinned).
+var MIN_RUN_W    = 20;     // below this while running = tap too low or fans missing
+                           // (below the ~25-30 W lowest reverse tap; HA mirrors at 20)
+var STALL_W      = 350;    // above this while running = stall or fault
+                           // (clears the 255 W high forward tap with margin; still far
+                           //  below a locked-rotor draw -- measure a real stall to refine)
 var COIL_MIN_W   = 0.5;    // O2 must draw at least this when closed
 var GRACE_MS     = 20000;  // ignore power for this long after O1 closes (inrush, spin up)
 var TRIP_COUNT   = 3;      // consecutive bad polls required to trip
