@@ -126,7 +126,11 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     fans-off (degree-day-normalised Rointe stats vs last winter, plus trace
     duty cycles) — NOT cool-off decay, which by construction can't show a
     delivery effect. If the duty-cycle comparison shows no saving either, then
-    the destrat thesis genuinely fails and the fans are comfort-only.
+    the destrat thesis genuinely fails and the fans are comfort-only. **Q17 is
+    the prior question:** whether there is stratified apex heat to reclaim in the
+    first place (capacity vs stratification vs soak-time) — if the 18 °C cap is
+    capacity or pure soak-time, there is nothing for destrat to deliver and this
+    saving is zero by construction, not by measurement.
 11. **Condensation watch thresholds** (≥80 % RH below 12 °C for 12 h →
     notify): first winter decides if they're right for this fabric.
 12. **Shared-zone spillover**: does hall fan mixing measurably warm the
@@ -187,6 +191,55 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     reach for boost / `booking_start.shortfall` is large, raise the slider toward
     16–17 (then the default). The co-heating/UA test would set it analytically
     (the balance-point temperature). Until an autumn export exists, leave it.
+17. **Why does the hall cap at ~18 °C — capacity, stratification, or soak-time?
+    (The master question under Q10 — is there apex heat to reclaim at all.)**
+    Owner reports the hall maxes near 18 °C when heated, and *outdoor-invariantly*
+    so (feels the same at −5 °C as at +7 °C). That invariance argues against a
+    *steady-state capacity* wall — a loss-vs-capacity balance would sag the max
+    on colder days — but it does **not** by itself imply stratification. An
+    equally good fit is **never reaching equilibrium within a booking**: a
+    cold-fabric *soak-limited* climb whose early rate is ~`Q/C` and so
+    ~outdoor-independent, meaning 18 is just where the clock ran out, not a
+    thermal ceiling. **Live hint it's the latter:** `zone_a_warmup_rate` is still
+    the unlearned 60 min/°C default and **no `warmup_sample` / completed climb to
+    19.5 has ever been observed** — every heated episode in the data started warm
+    (summer) or never finished. **Caveat the premise:** the "18 max" is old-regime
+    memory (setpoint 22, no destrat, pre-integration), not an instrumented
+    measurement, and the control has changed. **Three worlds, different fixes:**
+    capacity → more kW / envelope (fans ≈ 0); stratification → fans reclaim apex
+    heat (the Q10 delivery case, +~1 °C plausible, *not* a qualified figure);
+    soak/time → earlier/longer pre-heat (240-min slider), fans help only by
+    delivering made heat to head height faster. **Decision rule — read three
+    numbers off the first cold, occupied, *heated* export (radiators actually
+    working):** (a) ceiling−floor gap *under load* — big (5–6 °C) with the floor
+    stuck at 18 → stratification, fans win; small → not; (b) is the floor still
+    *rising* at session end or genuinely flat for an hour+ — still rising →
+    soak/time-limited, the fix is pre-heat lead, not fans; (c) is the ceiling
+    still *climbing* while the floor sits at 18 → yes → heat is being made and
+    pooling (stratification). The 15-min trace already carries
+    floor/ceiling/demand/occupied/fans, so (a)–(c) need **no code change** to
+    read. **A sharper discriminator already exists in HA, also code-free** (the
+    Rointe integration is `JYewman/rointe_integration`): each hall heater exposes
+    `heating_status` (`idle` / `heating` / `maintaining`, from `status_warming`
+    0/2/1 cross-checked against its own probe), its own `current_temperature`
+    (the heater's `temp_probe`), and a **real `energy` kWh accumulator**
+    (`TOTAL_INCREASING`, so it lands in HA long-term statistics). The
+    **probe-vs-floor divergence is the direct capacity/stratification test:**
+    heaters pinned at `heating` with their *own* probes still below 19.5 while
+    our floor sits at 18 → they cannot lift even local air to setpoint →
+    **capacity/loss wall** (fans ≈ 0); heaters dropping to `maintaining`/`idle`
+    (probes satisfied at 19.5) while our floor still reads 18 → heat reaches the
+    probes but not the far field/floor → **stratification** (fans win); floor
+    still climbing → **soak** (the fix is pre-heat lead). Q10's delivery signal
+    is the same `energy` kWh, degree-day-normalised, fans-on vs fans-off —
+    readable from HA statistics with no trace change. **Caveat on the power
+    sensor:** "Effective Power" reads 0 whenever the device is idle or at target
+    and is *modelled* at 100/50 % of nominal when the device reports no real
+    `effective_power`, so treat `heating_status` + the `energy` accumulator as
+    the trustworthy duty/saturation signals, not effective-power as a wattmeter.
+    Pairs with Q3 (warm-up learning) and Q10 (this is the prior question Q10's
+    saving depends on). The co-heating/UA test (Q16) would settle capacity
+    analytically.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
