@@ -93,9 +93,12 @@ entirely, the button fails soft and points at the YAML files:
   so an upgrade that tightens a range heals old out-of-range values automatically.
 - **Diagnostic sensors/binary sensors:** current & expected preset per zone,
   water state, seasonal lockout, opening-ice flags, manual-hold flags, boost
-  flags, and the hall temperature spread (max − min across the hall heaters'
+  flags, the hall temperature spread (max − min across the hall heaters'
   readings — shows how patchy the room is side-to-side; expect it to collapse
-  once the destratification fans mix the room).
+  once the destratification fans mix the room), the ceiling-floor ΔT, and the
+  head-height mix temp (0.75 × floor + 0.25 × ceiling — the air an occupant
+  actually feels, and the single number the cooling start/stop and hot-breeze
+  guard all act on).
 - **Fan numbers:** ceiling-floor ΔT to start / stop, minimum run / off times,
   sensor-stale timeout, the summer warm-enough temperature, the heat-demand
   power threshold, and the winter recirculation floor cap.

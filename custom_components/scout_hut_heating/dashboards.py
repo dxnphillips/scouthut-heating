@@ -97,6 +97,7 @@ _FAN_STATUS = [
     ("fan_mode", "Mode"),
     ("fan_direction", "Direction"),
     ("fan_delta_t", "Ceiling-floor ΔT"),
+    ("fan_mix", "Head-height mix temp"),
     ("fan_heat_demand", "Heat demand active"),
     ("fan_fault_effective", "Fault"),
     ("fan_sensor_stale", "Sensor lost"),

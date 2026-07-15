@@ -14,12 +14,16 @@ def test_build_config_resolves_real_entity_ids():
         "hall_comfort_temp": "number.x_hall_comfort",
         "fans_enabled": "switch.x_fans",
         "fan_delta_t": "sensor.x_dt",
+        "fan_mix": "sensor.x_mix",
         "hall_temp_spread": "sensor.x_spread",
     }
     mapped = {"hall_climates": ["climate.a", "climate.b"], "fan_master": "switch.m"}
     config = build_config(emap, mapped)
     heating, fans = config["views"]
     assert {"entity": "sensor.x_hall_preset", "name": "Hall preset"} in heating["cards"][0]["entities"]
+    # The head-height mix temp is surfaced on the fans Status card.
+    status = next(c for c in fans["cards"] if c.get("title") == "Status")
+    assert {"entity": "sensor.x_mix", "name": "Head-height mix temp"} in status["entities"]
     # Radiators card lists the mapped climates verbatim.
     radiators = next(c for c in heating["cards"] if c.get("title") == "Radiators (Rointe)")
     assert radiators["entities"] == ["climate.a", "climate.b"]
