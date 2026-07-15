@@ -5,6 +5,13 @@ docs/fan_dashboard.yaml, but with the REAL entity ids resolved from the
 entity registry (the integration's own helpers) and from the config entry
 (the mapped Rointe / Shelly entities), so nothing needs hand-editing.
 
+The first view is a deliberately simple "Home" tab — status at a glance plus
+the few buttons used day to day (boost, boost duration, pause/resume), no
+tuning sliders — meant to be the default view opened in the HA app. The
+fuller "Heating" and "Fans" tabs carry the operational controls and the
+tuning sliders; purely diagnostic rows (expected-preset, opening-ice flags)
+are intentionally left off to keep them uncluttered.
+
 The Lovelace storage API is semi-internal and has been reshaped across Home
 Assistant releases, so everything HA-facing here is feature-detected and
 fails soft: the caller surfaces any error as a notification pointing at the
@@ -29,6 +36,31 @@ RESTART_REQUIRED = "__restart_required__"
 
 # (helper key, display name) rows per card. A row is silently dropped when the
 # helper is missing from the registry, so the dashboard is always valid.
+
+# The simple "Home" view — the one to open in the HA app. Status at a glance
+# plus the handful of buttons actually used day to day. No tuning sliders, so
+# nothing here can be nudged out of calibration by accident.
+_HOME_STATUS = [
+    ("zone_a_status", "Hall"),
+    ("fan_mix", "Hall feels-like (head height)"),
+    ("fan_running", "Fans"),
+    ("fan_mode", "Fan mode"),
+    ("zone_b_status", "Office"),
+    ("water_status", "Water heater"),
+    ("hall_heating_paused", "Hall heating paused"),
+    ("zone_a_boost_active", "Hall boost active"),
+    ("zone_b_boost_active", "Office boost active"),
+    ("seasonal_lockout_active", "Seasonal lockout"),
+]
+_HOME_ACTIONS = [
+    ("boost_zone_a", "Boost hall heating"),
+    ("boost_zone_b", "Boost office heating"),
+    ("boost_duration", "Boost duration"),
+    ("cancel_boost_zone_a", "Cancel hall boost"),
+    ("cancel_boost_zone_b", "Cancel office boost"),
+    ("pause_hall_heating", "Pause hall heating"),
+    ("resume_hall_heating", "Resume hall heating"),
+]
 _NOW = [
     ("zone_a_status", "Hall preset"),
     ("zone_b_status", "Office preset"),
@@ -78,15 +110,7 @@ _WATER = [
     ("water_preheat_minutes", "Pre-heat lead time"),
     ("water_motion_keepalive_minutes", "Keep on after motion"),
 ]
-_BOOKINGS = [
-    ("zone_a_expected_preset", "Hall expected preset"),
-    ("zone_b_expected_preset", "Office expected preset"),
-    ("eco_keywords", "ECO keyword blocklist"),
-]
 _HOUSEKEEPING = [
-    ("zone_a_opening_ice_active", "Hall opening ice"),
-    ("zone_b_opening_ice_active", "Office opening ice"),
-    ("shared_opening_ice_active", "Shared opening ice"),
     ("door_ice_minutes", "Door ice delay"),
     ("window_ice_minutes", "Window ice delay"),
     ("reset_tunables", "Reset tunables to defaults"),
@@ -97,6 +121,7 @@ _FAN_STATUS = [
     ("fan_mode", "Mode"),
     ("fan_direction", "Direction"),
     ("fan_delta_t", "Ceiling-floor ΔT"),
+    ("fan_mix", "Head-height mix temp"),
     ("fan_heat_demand", "Heat demand active"),
     ("fan_fault_effective", "Fault"),
     ("fan_sensor_stale", "Sensor lost"),
@@ -144,6 +169,15 @@ def build_config(emap: dict[str, str], mapped: dict[str, Any]) -> dict[str, Any]
     emap: integration helper key -> entity_id (from the entity registry).
     mapped: the config entry's entity mappings (Rointe climates, Shelly, ...).
     """
+    home_cards = [
+        c
+        for c in (
+            _card("Right now", _rows(emap, _HOME_STATUS)),
+            _card("Quick actions", _rows(emap, _HOME_ACTIONS)),
+        )
+        if c is not None
+    ]
+
     heating_cards = [
         c
         for c in (
@@ -153,8 +187,7 @@ def build_config(emap: dict[str, str], mapped: dict[str, Any]) -> dict[str, Any]
             _card("Occupancy & overrides", _rows(emap, _OCCUPANCY)),
             _card("Optimum start (learned)", _rows(emap, _OPTIMUM_START)),
             _card("Water heater", _rows(emap, _WATER)),
-            _card("Bookings", _rows(emap, _BOOKINGS)),
-            _card("Openings & housekeeping", _rows(emap, _HOUSEKEEPING)),
+            _card("Housekeeping", _rows(emap, _HOUSEKEEPING)),
         )
         if c is not None
     ]
@@ -173,6 +206,7 @@ def build_config(emap: dict[str, str], mapped: dict[str, Any]) -> dict[str, Any]
         for key, name in (
             ("hall_temp_spread", "Hall spread"),
             ("fan_delta_t", "Ceiling-floor ΔT"),
+            ("fan_mix", "Head-height mix temp"),
         )
         if key in emap
     ]
@@ -205,7 +239,10 @@ def build_config(emap: dict[str, str], mapped: dict[str, Any]) -> dict[str, Any]
             {"type": "entities", "title": "Shelly (manual / diagnostics)", "entities": hardware}
         )
 
-    views = [{"title": "Heating", "path": "heating", "cards": heating_cards}]
+    views: list[dict[str, Any]] = []
+    if home_cards:
+        views.append({"title": "Home", "path": "home", "cards": home_cards})
+    views.append({"title": "Heating", "path": "heating", "cards": heating_cards})
     if fan_cards:
         views.append({"title": "Fans", "path": "fans", "cards": fan_cards})
     return {"views": views}

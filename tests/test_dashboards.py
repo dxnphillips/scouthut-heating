@@ -11,21 +11,31 @@ def _titles(view):
 def test_build_config_resolves_real_entity_ids():
     emap = {
         "zone_a_status": "sensor.x_hall_preset",
+        "boost_zone_a": "button.x_boost_hall",
         "hall_comfort_temp": "number.x_hall_comfort",
         "fans_enabled": "switch.x_fans",
         "fan_delta_t": "sensor.x_dt",
+        "fan_mix": "sensor.x_mix",
         "hall_temp_spread": "sensor.x_spread",
     }
     mapped = {"hall_climates": ["climate.a", "climate.b"], "fan_master": "switch.m"}
     config = build_config(emap, mapped)
-    heating, fans = config["views"]
+    home, heating, fans = config["views"]
+    # The simple Home view leads, carrying status and the day-to-day actions.
+    assert home["title"] == "Home" and home["path"] == "home"
+    home_entities = [e for card in home["cards"] for e in card["entities"]]
+    assert {"entity": "sensor.x_hall_preset", "name": "Hall"} in home_entities
+    assert {"entity": "button.x_boost_hall", "name": "Boost hall heating"} in home_entities
     assert {"entity": "sensor.x_hall_preset", "name": "Hall preset"} in heating["cards"][0]["entities"]
+    # The head-height mix temp is surfaced on the fans Status card.
+    status = next(c for c in fans["cards"] if c.get("title") == "Status")
+    assert {"entity": "sensor.x_mix", "name": "Head-height mix temp"} in status["entities"]
     # Radiators card lists the mapped climates verbatim.
     radiators = next(c for c in heating["cards"] if c.get("title") == "Radiators (Rointe)")
     assert radiators["entities"] == ["climate.a", "climate.b"]
-    # The history graph uses the two mixing instruments.
+    # The history graph trends spread, ΔT and the head-height mix.
     graph = next(c for c in heating["cards"] if c["type"] == "history-graph")
-    assert len(graph["entities"]) == 2
+    assert len(graph["entities"]) == 3
     # Fans view exists (fan helpers + mapped master present).
     assert fans["title"] == "Fans"
 
