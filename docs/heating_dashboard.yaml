@@ -10,6 +10,54 @@
 
 title: Scout Hut heating
 views:
+  # The simple view to open in the HA app: status at a glance plus the buttons
+  # used day to day. No tuning sliders, so nothing here can be nudged out of
+  # calibration by accident. Set it as your default in the app for a clean home.
+  - title: Home
+    path: home
+    cards:
+      - type: entities
+        title: Right now
+        entities:
+          - entity: sensor.scout_hut_heating_hall_preset
+            name: Hall
+          - entity: sensor.scout_hut_heating_head_height_mix_temp
+            name: Hall feels-like (head height)
+          - entity: binary_sensor.scout_hut_heating_ceiling_fan_running
+            name: Fans
+          - entity: sensor.scout_hut_heating_ceiling_fan_mode
+            name: Fan mode
+          - entity: sensor.scout_hut_heating_office_preset
+            name: Office
+          - entity: sensor.scout_hut_heating_water_heater
+            name: Water heater
+          - entity: binary_sensor.scout_hut_heating_hall_heating_paused
+            name: Hall heating paused
+          - entity: binary_sensor.scout_hut_heating_hall_boost_active
+            name: Hall boost active
+          - entity: binary_sensor.scout_hut_heating_office_boost_active
+            name: Office boost active
+          - entity: binary_sensor.scout_hut_heating_seasonal_lockout_active
+            name: Seasonal lockout
+
+      - type: entities
+        title: Quick actions
+        entities:
+          - entity: button.scout_hut_heating_boost_hall
+            name: Boost hall heating
+          - entity: button.scout_hut_heating_boost_office
+            name: Boost office heating
+          - entity: select.scout_hut_heating_boost_duration
+            name: Boost duration
+          - entity: button.scout_hut_heating_cancel_hall_boost
+            name: Cancel hall boost
+          - entity: button.scout_hut_heating_cancel_office_boost
+            name: Cancel office boost
+          - entity: button.scout_hut_heating_pause_hall_heating
+            name: Pause hall heating
+          - entity: button.scout_hut_heating_resume_hall_heating
+            name: Resume hall heating
+
   - title: Heating
     path: heating
     cards:
@@ -106,24 +154,8 @@ views:
             name: Keep on after motion
 
       - type: entities
-        title: Bookings
+        title: Housekeeping
         entities:
-          - entity: sensor.scout_hut_heating_hall_expected_preset
-            name: Hall expected preset
-          - entity: sensor.scout_hut_heating_office_expected_preset
-            name: Office expected preset
-          - entity: text.scout_hut_heating_eco_keyword_blocklist
-            name: ECO keyword blocklist
-
-      - type: entities
-        title: Openings & housekeeping
-        entities:
-          - entity: binary_sensor.scout_hut_heating_hall_opening_ice_active
-            name: Hall opening ice
-          - entity: binary_sensor.scout_hut_heating_office_opening_ice_active
-            name: Office opening ice
-          - entity: binary_sensor.scout_hut_heating_shared_opening_ice_active
-            name: Shared opening ice
           - entity: number.scout_hut_heating_door_drop_to_ice_after
             name: Door ice delay
           - entity: number.scout_hut_heating_window_drop_to_ice_after
@@ -150,3 +182,5 @@ views:
             name: Hall spread
           - entity: sensor.scout_hut_heating_ceiling_floor_t
             name: Ceiling-floor ΔT
+          - entity: sensor.scout_hut_heating_head_height_mix_temp
+            name: Head-height mix temp

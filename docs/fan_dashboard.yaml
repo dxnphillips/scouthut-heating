@@ -24,6 +24,8 @@ views:
             name: Direction
           - entity: sensor.scout_hut_heating_ceiling_floor_t
             name: Ceiling-floor ΔT
+          - entity: sensor.scout_hut_heating_head_height_mix_temp
+            name: Head-height mix temp
           - entity: binary_sensor.scout_hut_heating_heat_demand_active
             name: Heat demand active
           - entity: binary_sensor.scout_hut_heating_ceiling_fan_fault
