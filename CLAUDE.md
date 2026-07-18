@@ -283,6 +283,38 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     Pairs with Q3 (warm-up learning) and Q10 (this is the prior question Q10's
     saving depends on). The co-heating/UA test (Q16) would settle capacity
     analytically.
+    **Does weather compensation ever become useful here? (2026-07-18, from a
+    review of `smartthings54/smart-climate-control`, corrected after owner
+    pushback.)** The setpoint is *ours* — we push `hall_comfort_temp` to the
+    Rointe comfort number — so "we can't modulate" was the wrong reason to
+    dismiss it. The Rointes are **not** pure on/off either: they throttle to
+    `maintaining` (~half power, `status_warming` 1) *below* target to avoid
+    overshoot, vs `heating` (full, status_warming 2). So **raising the setpoint
+    on a cold day can flip a throttled heater back to full power — a real
+    setpoint-based weather compensation.** Whether it *helps* is regime-dependent
+    and answered by the SAME Q17 winter `heating_status` data:
+    (a) heater in `maintaining` while the room is still short → raising the
+    setpoint restores full power → **benefit**; (b) heater pinned at `heating`
+    and *still* short (capacity wall) → **does nothing**, it is already maxed;
+    (c) room reaches 19.5 fine → raising it just **overheats** (wrong tool). Two
+    caveats even in case (a): more input ≠ delivery to the floor (if the limit
+    is stratification, the extra heat pools at the ceiling and the *fans* are the
+    better delivery path — setpoint-raise and fans are complementary, not
+    rivals), and any weather-comp setpoint must be an **offset on top of** the
+    19.5 slider, never an overwrite of the owner's setting. The lower-risk
+    outdoor-driven setpoint move, useful regardless of regime if Q17 is
+    **soak/time-limited**, is **fabric pre-charging** — hold a higher overnight
+    eco floor on a forecast-cold night before a morning booking so the cold-start
+    soak is already underway (this is the same anticipatory-pre-heat idea; the
+    lead is *already* outdoor-sized from `zone_a_heatloss_pct` + Newton cooling
+    and assumes a cold 5 °C when outdoor is unreadable). **Decision rule:** read
+    the first cold, occupied, heated export's per-heater `heating_status`; only if
+    heaters are throttling to `maintaining` while the floor is short is a
+    setpoint weather-comp worth building, and even then weigh it against the fans
+    for stratification. *Classic* modulating weather compensation (continuous
+    output vs outdoor) still only applies to a genuinely modulating device — the
+    office heat-pump/split on the future-hardware list — at which point
+    `smartthings54/smart-climate-control` is worth revisiting for that device.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
@@ -352,8 +384,10 @@ margin yet stays far below a locked-rotor draw; measure a real stall to refine.
 The reference script (`docs/reference/fan_reverse_supervised.js`) already
 carries these corrected values. Tag a release after updating;
 delete the two orphaned "learned heat-loss rate" entities; possible future
-hardware — office split/heat-pump pilot, wall extractor fans, hall window
-contacts (they join the vent override automatically when mapped).
+hardware — office split/heat-pump pilot (a *modulating* device, so classic
+weather compensation would apply to it — see the weather-comp note under Q17),
+wall extractor fans, hall window contacts (they join the vent override
+automatically when mapped).
 
 ## Architecture pointers
 
