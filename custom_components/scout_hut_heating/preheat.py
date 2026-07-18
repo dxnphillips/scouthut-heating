@@ -65,7 +65,15 @@ MIN_COOL_K = 0.005
 MAX_COOL_K = 0.5
 MIN_COOL_SAMPLE_DROP = 1.0
 MIN_COOL_SAMPLE_HOURS = 0.5
-MIN_COOL_SAMPLE_GAP = 3.0
+# Minimum indoor-outdoor gap for a trustworthy sample. Raised 3.0 -> 4.0 on
+# 2026-07-18 field evidence: across 36 accepted hall cool-offs, every
+# rate-spike (10.3 %/h -> 20.5 %/h, 12.9 -> 20.1) came from a short
+# just-vacated-room sample at gap 3.35-3.40 shedding stored heat fast into a
+# cool evening; every *reliable* sample sat at gap >= 4. Below ~4 the k =
+# drop/(hours*gap) normalisation is too noisy to trust. Rejecting these is
+# fail-safe-neutral (it drops noise, it does not clamp a real high-loss
+# reading down, which would shorten the lead and risk a cold arrival).
+MIN_COOL_SAMPLE_GAP = 4.0
 
 # When the weather entity is unreadable, predict idle-gap cooling against a
 # cold-ish outdoor rather than skipping the prediction: err warm, the

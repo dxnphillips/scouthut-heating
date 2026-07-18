@@ -283,6 +283,12 @@ class ScoutController:
         self.cal_window: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self.cal_title: dict[str, str] = {ZONE_A: "", ZONE_B: ""}
         self.water_window = False
+        # The (comfort, eco) setpoint pair last written to the hall heaters, so
+        # the reconciler can re-assert the eco/eco-low value when it changes
+        # WITHOUT a preset transition (an eco-keyword booking inheriting an
+        # already-eco preset would otherwise never get eco-low written). None
+        # until the first push.
+        self._hall_temps_pushed: tuple[float, float] | None = None
 
         # Optimum-start learning: an in-flight warm-up sample per zone
         # (started-at, start temperature, ticks-with-fans-running, total
@@ -794,8 +800,7 @@ class ScoutController:
         how much further the room will cool before the pre-heat begins.
         """
         target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
-        rate = self._prediction_rate(zone)
-        rate_key = self._warmup_rate_key(zone)
+        rate, rate_key = self._prediction_rate(zone)
         # Size the pre-heat for the coldest reading, not the average: the
         # warm end's heater must not cut the lead short for the cold end.
         indoor = self._zone_room_temp(zone, coldest=True)
@@ -832,20 +837,24 @@ class ScoutController:
         }
         return lead
 
-    def _prediction_rate(self, zone: str) -> float:
-        """The learned rate to predict a warm-up with.
+    def _prediction_rate(self, zone: str) -> tuple[float, str]:
+        """The learned rate to predict a warm-up with, and the key it came from.
 
         The fan-assisted hall rate is preferred when the fans are expected to
         help, but only once it has actually been trained: at its untouched
         fail-safe seed (MAX_RATE) it would pin every lead at the cap forever
         while the observations were all landing in the base rate. Until then,
-        fall back to whichever knowledge exists.
+        fall back to whichever knowledge exists. The key returned is the one
+        that ACTUALLY drove the value (so the audit's rate_key matches the
+        rate), not merely the one that was preferred — Q14 reads them paired.
         """
         key = self._warmup_rate_key(zone)
         rate = self.number(key)
         if key == "zone_a_warmup_rate_fans" and rate >= MAX_RATE:
-            rate = min(rate, self.number("zone_a_warmup_rate"))
-        return rate
+            base = self.number("zone_a_warmup_rate")
+            if base < rate:
+                rate, key = base, "zone_a_warmup_rate"
+        return rate, key
 
     def _warmup_rate_key(self, zone: str, assisted: bool | None = None) -> str:
         """Which learned warm-up rate applies to a zone.
@@ -1365,6 +1374,12 @@ class ScoutController:
             },
             "manual_hold": dict(self.manual_hold),
             "hall_heating_paused": self.hall_heating_paused,
+            # Persisted so a restart mid-booking does not read a phantom
+            # idle->session (False->True) edge and clear the hall pause: the
+            # window's pre-restart value is restored, so a running booking
+            # reads True->True (no edge). Mirrors the _cal_running_prev guard
+            # the booking-edge path already uses against the same hazard.
+            "cal_window": dict(self.cal_window),
             # Restart hardening: the anti-short-cycle timers and the seasonal
             # flag survive a reload, so a restart cannot stutter the fans or
             # re-announce the lockout.
@@ -1400,6 +1415,10 @@ class ScoutController:
             if (data.get("manual_hold") or {}).get(zone):
                 self.manual_hold[zone] = True
         self.hall_heating_paused = bool(data.get("hall_heating_paused", False))
+        saved_window = data.get("cal_window") or {}
+        for zone in (ZONE_A, ZONE_B):
+            if zone in saved_window:
+                self.cal_window[zone] = bool(saved_window[zone])
         self.seasonal_lockout = bool(data.get("seasonal_lockout", False))
         self.fan_last_on = _dt(data.get("fan_last_on"))
         self.fan_last_off = _dt(data.get("fan_last_off"))
@@ -1852,6 +1871,7 @@ class ScoutController:
             await self._evaluate_openings()
             self._record_booking_edges()
             await self._reconcile_zones()
+            await self._reconcile_hall_temps()
             self._update_warmup_learning()
             self._update_cooloff_learning()
             await self._reconcile_shared()
@@ -2033,6 +2053,29 @@ class ScoutController:
                 self.expected_preset[zone] = desired
                 continue
             await self._async_set_preset(zone, desired)
+
+    async def _reconcile_hall_temps(self) -> None:
+        """Re-assert the hall comfort/eco setpoints when the intended value
+        changes while the hall is in a heating preset — even without a preset
+        transition.
+
+        The per-preset push in `_async_set_preset` only fires on a preset
+        CHANGE. So an eco-keyword booking that starts while the hall is already
+        `eco` (e.g. early arrivals set motion->eco 16 first, or a prior booking
+        went quiet->eco) never gets eco-low (14) written and heats the whole
+        session at 16. This backstop compares the intended (comfort, eco) pair
+        against what was last pushed and re-pushes only on a genuine change, so
+        it costs nothing per tick when nothing moved.
+        """
+        if self.applied[ZONE_A] not in (PRESET_COMFORT, PRESET_ECO):
+            return
+        eco_low = self._eco_keyword_active(ZONE_A)
+        comfort_temp = self.number("hall_comfort_temp")
+        eco_temp = (
+            self.number("hall_eco_low_temp") if eco_low else self.number("hall_eco_temp")
+        )
+        if self._hall_temps_pushed != (comfort_temp, eco_temp):
+            await self._async_push_hall_temps(eco_low=eco_low)
 
     async def _reconcile_shared(self) -> None:
         desired = self._desired_shared()
@@ -2259,6 +2302,23 @@ class ScoutController:
         comfort_numbers, eco_numbers = self._hall_number_entities()
         comfort_temp = self.number("hall_comfort_temp")
         eco_temp = self.number("hall_eco_low_temp") if eco_low else self.number("hall_eco_temp")
+        # Record the intended pair even if a side is unmappable, so the
+        # reconciler does not retry a push that has nowhere to land every tick.
+        self._hall_temps_pushed = (comfort_temp, eco_temp)
+        if not eco_numbers or not comfort_numbers:
+            # The whole point of eco-low is to write 14 to the device; if the
+            # Rointe comfort/eco number entities cannot be resolved (disabled,
+            # renamed away from the "comfort"/"eco" substring, or on another
+            # device) the write silently vanishes and the heater keeps its own
+            # setpoint. In a project whose instrument is the audit trail, a
+            # swallowed setpoint write must be visible.
+            self.audit.record(
+                "hall_temp_push_skipped",
+                self._now(),
+                comfort_found=bool(comfort_numbers),
+                eco_found=bool(eco_numbers),
+                eco_low=eco_low,
+            )
         if comfort_numbers:
             await self.hass.services.async_call(
                 "number",
