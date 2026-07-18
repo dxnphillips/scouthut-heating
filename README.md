@@ -64,10 +64,15 @@ sidebar dashboard with your *real* entity ids — including the mapped Rointe
 and Shelly entities — and pressing it again regenerates it after new hardware
 is mapped. The first tab is a deliberately simple **Home** view (status at a
 glance plus the day-to-day buttons — boost, boost duration, pause/resume — and
-no tuning sliders, so nothing gets nudged out of calibration by accident); set
-it as the app's default dashboard for a clean home screen. The **Heating** and
-**Fans** tabs carry the operational controls and the tuning sliders; purely
-diagnostic rows are left off to keep them uncluttered. Ready-made YAML equivalents are
+no tuning sliders, so nothing gets nudged out of calibration by accident), plus
+a **Temperatures (24 h)** graph that trends the head-height feels-like against
+the ceiling/roof — the gap between the two lines *is* the stratification the
+fans work on; set it as the app's default dashboard for a clean home screen.
+The **Heating** and **Fans** tabs carry the operational controls and the tuning
+sliders (Heating also splits the trends into a **Temperatures** and a separate
+**Stratification** graph so the °C temperatures and the small ΔT/spread
+differences each get their own scale); purely diagnostic rows are left off to
+keep them uncluttered. Ready-made YAML equivalents are
 in [`docs/heating_dashboard.yaml`](docs/heating_dashboard.yaml) and
 [`docs/fan_dashboard.yaml`](docs/fan_dashboard.yaml) as the manual fallback.
 Dashboard auto-creation touches a semi-internal Home Assistant API: on recent

@@ -18,7 +18,11 @@ def test_build_config_resolves_real_entity_ids():
         "fan_mix": "sensor.x_mix",
         "hall_temp_spread": "sensor.x_spread",
     }
-    mapped = {"hall_climates": ["climate.a", "climate.b"], "fan_master": "switch.m"}
+    mapped = {
+        "hall_climates": ["climate.a", "climate.b"],
+        "fan_master": "switch.m",
+        "ceiling_temp": "sensor.roof",
+    }
     config = build_config(emap, mapped)
     home, heating, fans = config["views"]
     # The simple Home view leads, carrying status and the day-to-day actions.
@@ -26,6 +30,12 @@ def test_build_config_resolves_real_entity_ids():
     home_entities = [e for card in home["cards"] for e in card["entities"]]
     assert {"entity": "sensor.x_hall_preset", "name": "Hall"} in home_entities
     assert {"entity": "button.x_boost_hall", "name": "Boost hall heating"} in home_entities
+    # Home carries the temperature trend (feels-like + ceiling), not the
+    # stratification differences.
+    home_graph = next(c for c in home["cards"] if c["type"] == "history-graph")
+    assert home_graph["title"] == "Temperatures (24 h)"
+    assert {"entity": "sensor.x_mix", "name": "Head-height feels-like"} in home_graph["entities"]
+    assert {"entity": "sensor.roof", "name": "Ceiling (roof)"} in home_graph["entities"]
     assert {"entity": "sensor.x_hall_preset", "name": "Hall preset"} in heating["cards"][0]["entities"]
     # The head-height mix temp is surfaced on the fans Status card.
     status = next(c for c in fans["cards"] if c.get("title") == "Status")
@@ -33,9 +43,11 @@ def test_build_config_resolves_real_entity_ids():
     # Radiators card lists the mapped climates verbatim.
     radiators = next(c for c in heating["cards"] if c.get("title") == "Radiators (Rointe)")
     assert radiators["entities"] == ["climate.a", "climate.b"]
-    # The history graph trends spread, ΔT and the head-height mix.
-    graph = next(c for c in heating["cards"] if c["type"] == "history-graph")
-    assert len(graph["entities"]) == 3
+    # Heating has BOTH graphs: absolute temps and the stratification differences.
+    graphs = {c["title"]: c for c in heating["cards"] if c["type"] == "history-graph"}
+    assert set(graphs) == {"Temperatures (24 h)", "Stratification (24 h)"}
+    assert len(graphs["Temperatures (24 h)"]["entities"]) == 2  # feels-like + ceiling
+    assert len(graphs["Stratification (24 h)"]["entities"]) == 2  # ΔT + spread
     # Fans view exists (fan helpers + mapped master present).
     assert fans["title"] == "Fans"
 

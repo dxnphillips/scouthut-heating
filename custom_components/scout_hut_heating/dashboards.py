@@ -163,16 +163,57 @@ def _card(title: str, rows: list[dict[str, str]]) -> dict[str, Any] | None:
     return {"type": "entities", "title": title, "entities": rows} if rows else None
 
 
+def _graph(title: str, rows: list[dict[str, str]]) -> dict[str, Any] | None:
+    """A 24 h history-graph card, or None if none of its entities resolved."""
+    if not rows:
+        return None
+    return {
+        "type": "history-graph",
+        "title": title,
+        "hours_to_show": 24,
+        "entities": rows,
+    }
+
+
 def build_config(emap: dict[str, str], mapped: dict[str, Any]) -> dict[str, Any]:
     """Build the full dashboard config from resolved entity ids.
 
     emap: integration helper key -> entity_id (from the entity registry).
     mapped: the config entry's entity mappings (Rointe climates, Shelly, ...).
     """
+    # Absolute-temperature trend: what an occupant feels (head-height mix) vs
+    # the apex (ceiling / roof thermometer). Both are °C on the same scale, so
+    # the gap between the lines IS the stratification the fans work on.
+    temps_graph_rows = [
+        {"entity": emap[key], "name": name}
+        for key, name in (("fan_mix", "Head-height feels-like"),)
+        if key in emap
+    ]
+    if mapped.get("ceiling_temp"):
+        temps_graph_rows.append(
+            {"entity": mapped["ceiling_temp"], "name": "Ceiling (roof)"}
+        )
+    temps_graph = _graph("Temperatures (24 h)", temps_graph_rows)
+
+    # The differences (ΔT, spread) live on their own graph so their ~0-8 °C
+    # scale is not squashed under the ~20 °C absolute temperatures above.
+    strat_graph = _graph(
+        "Stratification (24 h)",
+        [
+            {"entity": emap[key], "name": name}
+            for key, name in (
+                ("fan_delta_t", "Ceiling-floor ΔT"),
+                ("hall_temp_spread", "Hall spread"),
+            )
+            if key in emap
+        ],
+    )
+
     home_cards = [
         c
         for c in (
             _card("Right now", _rows(emap, _HOME_STATUS)),
+            temps_graph,
             _card("Quick actions", _rows(emap, _HOME_ACTIONS)),
         )
         if c is not None
@@ -201,24 +242,9 @@ def build_config(emap: dict[str, str], mapped: dict[str, Any]) -> dict[str, Any]
             {"type": "entities", "title": "Radiators (Rointe)", "entities": climates}
         )
 
-    graph = [
-        {"entity": emap[key], "name": name}
-        for key, name in (
-            ("hall_temp_spread", "Hall spread"),
-            ("fan_delta_t", "Ceiling-floor ΔT"),
-            ("fan_mix", "Head-height mix temp"),
-        )
-        if key in emap
-    ]
-    if graph:
-        heating_cards.append(
-            {
-                "type": "history-graph",
-                "title": "Mixing instruments (24 h)",
-                "hours_to_show": 24,
-                "entities": graph,
-            }
-        )
+    for card in (temps_graph, strat_graph):
+        if card is not None:
+            heating_cards.append(card)
 
     fan_cards = [
         c

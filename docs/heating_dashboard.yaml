@@ -40,6 +40,19 @@ views:
           - entity: binary_sensor.scout_hut_heating_seasonal_lockout_active
             name: Seasonal lockout
 
+      # What an occupant feels (head-height mix) vs the apex (ceiling / roof
+      # thermometer). Same °C scale, so the gap between the lines is the
+      # stratification the fans work on. Replace the ceiling entity with your
+      # mapped roof thermometer if its slug differs.
+      - type: history-graph
+        title: Temperatures (24 h)
+        hours_to_show: 24
+        entities:
+          - entity: sensor.scout_hut_heating_head_height_mix_temp
+            name: Head-height feels-like
+          - entity: sensor.ceiling_temp
+            name: Ceiling (roof)
+
       - type: entities
         title: Quick actions
         entities:
@@ -172,15 +185,23 @@ views:
           - climate.hall_front
           - climate.office
 
-      # Long-term instruments: watch the hall spread and ceiling-floor ΔT
-      # collapse once the destratification fans are commissioned.
+      # Absolute temperatures: head-height feels-like vs the apex.
       - type: history-graph
-        title: Mixing instruments (24 h)
+        title: Temperatures (24 h)
         hours_to_show: 24
         entities:
-          - entity: sensor.scout_hut_heating_hall_temperature_spread
-            name: Hall spread
+          - entity: sensor.scout_hut_heating_head_height_mix_temp
+            name: Head-height feels-like
+          - entity: sensor.ceiling_temp
+            name: Ceiling (roof)
+
+      # The differences on their own scale: watch these collapse once the
+      # destratification fans are commissioned.
+      - type: history-graph
+        title: Stratification (24 h)
+        hours_to_show: 24
+        entities:
           - entity: sensor.scout_hut_heating_ceiling_floor_t
             name: Ceiling-floor ΔT
-          - entity: sensor.scout_hut_heating_head_height_mix_temp
-            name: Head-height mix temp
+          - entity: sensor.scout_hut_heating_hall_temperature_spread
+            name: Hall spread
