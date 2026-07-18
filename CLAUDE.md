@@ -85,6 +85,15 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    night's fans-off ~11.7 %/h — *no* distinct clustering, so the single EWMA
    holds for now. The `o1_avg_w` on each sample is what a later split would use
    to separate winter-reverse recirculation from summer-forward mixing.
+   **Cool-off min-gap raised 3.0 → 4.0 (2026-07-18, code review + data).** The
+   spikes the shoulder-season exports kept showing (rate jumping to ~20 %/h then
+   recovering) were traced to short *just-vacated-room* samples at gap 3.35–3.40
+   shedding stored heat fast into a cool evening: across 36 accepted hall
+   cool-offs, every spike came from gap < 4, every *reliable* sample from
+   gap ≥ 4. Below ~4 the `k = drop/(hours·gap)` normalisation is too noisy to
+   trust, so `MIN_COOL_SAMPLE_GAP` now rejects them. Fail-safe-neutral: it drops
+   noise, it does not clamp a genuine high-loss reading *down* (which would
+   shorten the lead and risk a cold arrival), so `MAX_COOL_K` stays 0.5.
 5. **Calendar entity mid-event blips.** 2026-07-11 forensics: the calendar
    entity read not-running mid-event once (fans stopped 08:53 BST during a
    06:00–11:00 booking). Watch for `booking_end` + fresh `booking_start`
@@ -174,6 +183,24 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     booking; if not, the strict gate stays. If deep-winter empty running turns
     out negligible anyway (cold fabric barely stratifies), the gate is
     harmless insurance.
+    **Open sub-question (2026-07-18 code review, no data yet): the gate has a
+    demand-side leak.** `worth_moving = demand or recirc`, but the occupancy
+    gate only guards `recirc`; `demand` (`_heat_demand`) is *building-wide* on
+    purpose (it catches an office/shared heater warming the leaky hall). So an
+    **office-only** heat demand runs the **hall** fans in an *empty* hall,
+    exactly the empty-running Q15 was added to stop, leaking through the demand
+    path. Unobservable so far — there has been *no* heat demand at all this
+    summer (every winter/reverse run in the audit had `demand=False`), so it
+    has never fired. It is also only a *waste* if Q12 (does office/shared heat
+    measurably stratify the hall?) comes back *no*; if office heat does warm the
+    hall, destratifying it is arguably the delivery case even with the hall
+    empty of people (though there is then nobody to deliver comfort to).
+    **Decision rule:** in the first real winter with office-heated / hall-empty
+    sessions, check the trace for reverse fans running while `occupied` false
+    and only an office/shared heater is on. If it is pure cost (Q12 = no
+    spillover), make the hall-fan `demand` hall-specific; if Q12 shows real
+    spillover, leave it. Do not "fix" it blind — it rides intended design and
+    the unverified Q12.
 16. **Seasonal lockout threshold (`seasonal_lockout_temp` = 15).** A textbook
     default (UK heating-season base ~15.5 °C on the 3-day forecast mean),
     **not** measured for this building. The July 2026 data cannot validate it:
@@ -191,6 +218,22 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     reach for boost / `booking_start.shortfall` is large, raise the slider toward
     16–17 (then the default). The co-heating/UA test would set it analytically
     (the balance-point temperature). Until an autumn export exists, leave it.
+    **Open sub-question (2026-07-18 code review, no data yet): does the flapping
+    drive fan-*direction* flapping?** `_summer_active` follows the lockout, so a
+    flip flips the fans' wanted direction (summer forward ↔ winter reverse) —
+    and if the hall is simultaneously warm, occupied and stratified, each flip
+    would command a full ~5-min reversal (and enough of them inside
+    `MAX_REVERSE_ATTEMPTS` could latch a `reverse_failed` fault). There is **no
+    debounce** on the season→direction coupling. But the data does *not* show it
+    happening: across the week only 4 direction changes occurred, each a genuine
+    half-day/full-day seasonal transition (well spaced), never rapid flapping,
+    and never with the warm+occupied+stratified combo. **Decision rule:** watch
+    the first real shoulder-season for *multiple* reversals within a few hours
+    (rapid direction flips in `fan_change.direction`) coincident with lockout
+    flips on an occupied warm day. If seen → debounce the direction change (hold
+    the last direction until the season has been stable for N minutes). If the
+    only direction changes remain genuine day-scale transitions, the coupling is
+    harmless and no debounce is needed.
 17. **Why does the hall cap at ~18 °C — capacity, stratification, or soak-time?
     (The master question under Q10 — is there apex heat to reclaim at all.)**
     Owner reports the hall maxes near 18 °C when heated, and *outdoor-invariantly*
