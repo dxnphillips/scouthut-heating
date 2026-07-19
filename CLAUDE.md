@@ -122,15 +122,30 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    Mixing pulls the hottest air away from the roof (the best exit) and adds
    ~200 W. Verdict: unoccupied evening fan-clearing is counterproductive;
    summer fans stay occupied-only. Do not automate it; do not "fix" the
-   occupancy gate.
+   occupancy gate. **The same 26→14 %/h number is the WINTER retention benefit
+   with its sign flipped** (2026-07-18): in summer, retaining heat by pulling it
+   off the roof is *bad* (you wanted to vent it); in winter, that halved loss
+   rate is exactly the roof-loss reduction destrat is meant to give — see Q10.
 10. **Winter savings forecast**: 500–800 kWh (~£125–215 net) hall heating
-    saved by destratification, ±50 %. **The saving is delivery-efficiency, not
-    loss reduction** — do not conflate them. The fans bring made warmth down to
-    head height so occupants reach comfort (and the heaters cut out) *sooner*,
-    for less total input; they do **not** slow how fast heat leaves the box.
-    So the cool-off "fan-mixed ≈ still" result (Q4/Q9) is *consistent* with a
-    real saving, not evidence against it — do not read it as "destrat does
-    nothing" and rip the fans out. **Verify the right signal:** heater
+    saved by destratification, ±50 %. **The saving has TWO components — delivery
+    efficiency AND loss reduction — both stratification-dependent (2026-07-18
+    correction, owner insight).** (a) *Delivery:* the fans bring made warmth down
+    to head height so occupants reach comfort (and the heaters cut out) *sooner*,
+    for less input. (b) *Retention:* a hot stratified roof is the biggest,
+    leakiest loss surface in this bare hall, so removing that hot layer cuts the
+    loss rate — **Q9's sealed test measured exactly this: ~26 %/h stratified →
+    ~14 %/h fan-mixed, nearly halved, "by pulling the hottest air away from the
+    roof."** Both components reduce heater duty. **Earlier "delivery not loss
+    reduction" wording was wrong** — it over-generalised Q4's *overnight*
+    "fan-mixed ≈ still" cool-offs, which were near-uniform (ΔT 1.5–2, no hot roof
+    to remove) so of course mixing changed nothing there. Retention is nil when
+    the column is uniform (Q4) and substantial when a hot roof exists (Q9) — and
+    a heated, occupied winter hall is the hot-roof case. So do not read the
+    weakly-stratified cool-off "≈ still" as "destrat does nothing"; it only means
+    "nothing to destratify on that night." **Caveat:** Q9's 26→14 is one *summer
+    sealed* test — winter needs confirming, and both components still require the
+    heaters to build a hot roof (Q17 — capacity-limited = no hot roof = neither
+    effect). **Verify the right signal:** heater
     duty-cycle / kWh across *comparable heated, occupied* sessions fans-on vs
     fans-off (degree-day-normalised Rointe stats vs last winter, plus trace
     duty cycles) — NOT cool-off decay, which by construction can't show a
