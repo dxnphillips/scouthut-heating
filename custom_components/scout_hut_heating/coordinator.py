@@ -43,6 +43,7 @@ from homeassistant.util import dt as dt_util
 from .audit import AuditLog, Trace
 from .fan_logic import fan_decision
 from .preheat import (
+    MAX_COOL_TICK_DROP,
     MAX_RATE,
     MIN_COOL_SAMPLE_DROP,
     MIN_COOL_SAMPLE_GAP,
@@ -305,7 +306,9 @@ class ScoutController:
             ZONE_B: None,
         }
         self._cooloff_start: dict[
-            str, tuple[datetime, float, float, int, int, int, float, int] | None
+            str,
+            tuple[datetime, float, float, int, int, int, float, int, float, float]
+            | None,
         ] = {
             ZONE_A: None,
             ZONE_B: None,
@@ -1051,7 +1054,7 @@ class ScoutController:
 
             def _anchor(
                 anchor_temp: float,
-            ) -> tuple[datetime, float, float, int, int, int, float, int]:
+            ) -> tuple[datetime, float, float, int, int, int, float, int, float, float]:
                 w = self._o1_watts() if zone == ZONE_A else None
                 return (
                     now,
@@ -1062,6 +1065,8 @@ class ScoutController:
                     1,
                     w or 0.0,
                     1 if w is not None else 0,
+                    anchor_temp,  # prev_temp: last tick's reading
+                    0.0,  # max_tick_drop: largest single-tick fall so far
                 )
 
             if sample is None:
@@ -1069,7 +1074,10 @@ class ScoutController:
                     self._cooloff_start[zone] = _anchor(temp)
                 continue
 
-            started, start_temp, out_sum, out_n, fan_ticks, ticks, watt_sum, watt_n = sample
+            (
+                started, start_temp, out_sum, out_n, fan_ticks, ticks,
+                watt_sum, watt_n, prev_temp, max_tick_drop,
+            ) = sample
             # Accumulate the outdoor reading every tick: the sample's average
             # gap is what normalises the observed loss into the constant. The
             # fan tally rides along because a fan-mixed cool-off measurably
@@ -1088,6 +1096,17 @@ class ScoutController:
             if w is not None:
                 watt_sum += w
                 watt_n += 1
+            # Track the largest single-tick fall. A genuine fabric cool-off
+            # eases the reading down one 0.5 °C quantum at a time, so a lone
+            # tick shedding >= MAX_COOL_TICK_DROP is a discontinuity — an
+            # unmonitored open door/window (the office has no contact to raise
+            # the opening guard) or the Rointe probe unfreezing — that makes
+            # the sample's rate uninterpretable; _fold_cooloff rejects on it.
+            if temp is not None:
+                tick_drop = prev_temp - temp
+                if tick_drop > max_tick_drop:
+                    max_tick_drop = tick_drop
+                prev_temp = temp
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
                 # drop there was and stop sampling.
@@ -1106,6 +1125,7 @@ class ScoutController:
                         ticks,
                         watt_sum,
                         watt_n,
+                        max_tick_drop,
                     )
                 continue
 
@@ -1113,7 +1133,8 @@ class ScoutController:
                 self._cooloff_start[zone] = _anchor(temp)  # gaining, not losing
                 continue
             self._cooloff_start[zone] = (
-                started, start_temp, out_sum, out_n, fan_ticks, ticks, watt_sum, watt_n
+                started, start_temp, out_sum, out_n, fan_ticks, ticks,
+                watt_sum, watt_n, prev_temp, max_tick_drop,
             )
             drop = start_temp - temp
             hours = (now - started).total_seconds() / 3600
@@ -1124,7 +1145,7 @@ class ScoutController:
             if drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS:
                 self._fold_cooloff(
                     zone, hours, drop, start_temp, temp, out_sum, out_n,
-                    fan_ticks, ticks, watt_sum, watt_n,
+                    fan_ticks, ticks, watt_sum, watt_n, max_tick_drop,
                 )
                 self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
@@ -1141,6 +1162,7 @@ class ScoutController:
         ticks: int,
         watt_sum: float,
         watt_n: int,
+        max_tick_drop: float = 0.0,
     ) -> None:
         key = f"{zone}_heatloss_pct"
         current = self.number(key)
@@ -1164,7 +1186,7 @@ class ScoutController:
             return
         gap = (start_temp + end_temp) / 2 - out_sum / out_n
         k = current / 100
-        new_k = updated_cooling_k(k, hours, drop, gap)
+        new_k = updated_cooling_k(k, hours, drop, gap, max_tick_drop)
         new = current if new_k == k else new_k * 100
         self.audit.record(
             "cooloff_sample",
@@ -1177,11 +1199,13 @@ class ScoutController:
                 drop >= MIN_COOL_SAMPLE_DROP
                 and hours >= MIN_COOL_SAMPLE_HOURS
                 and gap >= MIN_COOL_SAMPLE_GAP
+                and max_tick_drop < MAX_COOL_TICK_DROP
             ),
             old_pct=current,
             new_pct=new,
             fan_ticks=fan_ticks,
             ticks=ticks,
+            max_tick_drop=max_tick_drop,
             o1_avg_w=(watt_sum / watt_n) if watt_n else None,
         )
         entity = self._numbers.get(key)

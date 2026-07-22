@@ -26,6 +26,18 @@ def test_cooloff_rejects_small_gap_below_the_raised_floor():
     assert updated_cooling_k(0.13, 1.5, 1.0, 6.0) != 0.13
 
 
+# --- Fix 6: single-tick step guard (office EWMA corruption, 2026-07-22) -------
+def test_cooloff_single_tick_step_is_rejected():
+    from custom_components.scout_hut_heating.preheat import updated_cooling_k
+
+    # A discontinuity — an open office window (no contact sensor to flag it) or
+    # a frozen Rointe probe catching up — dumps the whole drop into one tick.
+    # Rejected even with a genuine gap and duration (returns k unchanged).
+    assert updated_cooling_k(0.05, 2.0, 1.5, 6.0, 1.5) == 0.05
+    # The same total drop spread across ticks (max single step 0.5 °C) learns.
+    assert updated_cooling_k(0.05, 2.0, 1.5, 6.0, 0.5) != 0.05
+
+
 # --- Fix 3: pre-heat rate_key reports the rate actually used -----------------
 def test_prediction_rate_key_matches_the_value_used():
     ctrl, _ = make_controller(

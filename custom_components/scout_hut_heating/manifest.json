@@ -10,5 +10,5 @@
   "dependencies": ["persistent_notification"],
   "after_dependencies": ["climate", "calendar", "weather"],
   "requirements": [],
-  "version": "1.11.1"
+  "version": "1.11.2"
 }

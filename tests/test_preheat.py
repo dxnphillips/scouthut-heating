@@ -158,11 +158,40 @@ def test_cooloff_learning_is_gap_normalised():
     ctrl.applied[ZA] = PRESET_ICE
     ctrl._update_cooloff_learning()  # sample anchors at 20 °C
     assert ctrl._cooloff_start[ZA] is not None
-    advance(ctrl, 240)  # four hours later...
-    _hall_temp(hass, 16)  # 4 °C lost over an average gap of 8 -> k = 0.125/h
+    # Cool smoothly in 0.6 °C steps: each single tick stays well under the
+    # 1.5 °C step guard, so this reads as fabric loss, not a discontinuity.
+    advance(ctrl, 60)
+    _hall_temp(hass, 19.4)
+    ctrl._update_cooloff_learning()  # 0.6 °C so far: below the fold trigger
+    advance(ctrl, 60)
+    _hall_temp(hass, 18.8)  # 1.2 °C over 2 h at an average gap of 9.4 -> k=0.064/h
     ctrl._update_cooloff_learning()
-    # 20 %/h + 0.3 * (12.5 - 20) = 17.75 %/h
-    assert ctrl.number("zone_a_heatloss_pct") == pytest.approx(17.75, abs=0.01)
+    # 20 %/h + 0.3 * (6.38 - 20) = 15.91 %/h
+    assert ctrl.number("zone_a_heatloss_pct") == pytest.approx(15.91, abs=0.01)
+
+
+def test_cooloff_single_tick_step_is_not_learned():
+    """An open window with no contact sensor (the office has none) or a Rointe
+    probe unfreezing dumps the whole drop into one tick. That discontinuity is
+    rejected rather than learned as fabric loss — 2026-07-22 exactly this
+    corrupted the office EWMA from ~4.7 to ~24 %/h.
+    """
+    from scout_testkit import PRESET_ICE
+
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_heatloss_pct", 10)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 12})
+    _hall_temp(hass, 22)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()  # anchor 22 °C
+    advance(ctrl, 60)
+    _hall_temp(hass, 19)  # 3 °C in a single tick over a real 8.5 °C gap
+    ctrl._update_cooloff_learning()
+    sample = [e for e in ctrl.audit.to_list() if e.get("event") == "cooloff_sample"][-1]
+    # Drop, duration and gap all pass their floors — only the step guard stops it.
+    assert sample["max_tick_drop"] == pytest.approx(3.0)
+    assert sample["accepted"] is False
+    assert ctrl.number("zone_a_heatloss_pct") == 10  # unchanged, not corrupted
 
 
 def test_solar_gain_does_not_teach_insulation():

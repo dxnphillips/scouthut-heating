@@ -202,21 +202,27 @@ def test_cooloff_sample_is_audited_with_its_gap():
     _hall_temp(hass, 20)
     ctrl.applied[ZA] = PRESET_ICE
     ctrl._update_cooloff_learning()
-    advance(ctrl, 240)
-    _hall_temp(hass, 16)  # 4 °C over 4 h at an average gap of 8 -> k = 0.125/h
+    # Cool smoothly in 0.6 °C steps so no single tick trips the step guard.
+    advance(ctrl, 60)
+    _hall_temp(hass, 19.4)
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 60)
+    _hall_temp(hass, 18.8)  # 1.2 °C over 2 h at an average gap of 9.4 -> k = 0.064/h
     ctrl._update_cooloff_learning()
 
     (evt,) = events(ctrl, "cooloff_sample")
     assert evt["zone"] == ZA
     assert evt["accepted"] is True
-    assert evt["hours"] == pytest.approx(4.0, abs=0.01)
-    assert evt["drop"] == pytest.approx(4.0)
-    assert evt["gap"] == pytest.approx(8.0, abs=0.01)
+    assert evt["hours"] == pytest.approx(2.0, abs=0.01)
+    assert evt["drop"] == pytest.approx(1.2)
+    assert evt["gap"] == pytest.approx(9.4, abs=0.01)
     assert evt["old_pct"] == 20.0
-    assert evt["new_pct"] == pytest.approx(17.75, abs=0.01)
+    assert evt["new_pct"] == pytest.approx(15.91, abs=0.01)
+    # No single tick fell more than a 0.6 °C step: a clean fabric cool-off.
+    assert evt["max_tick_drop"] == pytest.approx(0.6)
     # Fans were off throughout: the sample says so.
     assert evt["fan_ticks"] == 0
-    assert evt["ticks"] == 2
+    assert evt["ticks"] == 3
 
 
 def test_cooloff_sample_records_a_fan_mixed_window():
@@ -240,13 +246,16 @@ def test_cooloff_sample_records_a_fan_mixed_window():
     _hall_temp(hass, 20)
     ctrl.applied[ZA] = PRESET_ICE
     ctrl._update_cooloff_learning()  # anchors with fans already running
-    advance(ctrl, 240)
-    _hall_temp(hass, 16)
+    advance(ctrl, 60)
+    _hall_temp(hass, 19.4)
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 60)
+    _hall_temp(hass, 18.8)
     ctrl._update_cooloff_learning()
 
     (evt,) = events(ctrl, "cooloff_sample")
     assert evt["accepted"] is True
-    assert evt["fan_ticks"] == 2 and evt["ticks"] == 2  # mixed the whole way
+    assert evt["fan_ticks"] == 3 and evt["ticks"] == 3  # mixed the whole way
     assert evt["o1_avg_w"] == pytest.approx(195.0)  # the tap it mixed at
 
 
