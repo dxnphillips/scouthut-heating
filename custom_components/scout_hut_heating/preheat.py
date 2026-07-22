@@ -75,6 +75,21 @@ MIN_COOL_SAMPLE_HOURS = 0.5
 # reading down, which would shorten the lead and risk a cold arrival).
 MIN_COOL_SAMPLE_GAP = 4.0
 
+# A single reconcile tick may ease the reading down by at most one 0.5 °C
+# quantum; a lone tick shedding >= 1.5 °C is a discontinuity, not fabric loss
+# — an unmonitored open door/window (the office has no contact to raise the
+# opening guard, so its ventilation drops are learned as insulation) or the
+# Rointe probe unfreezing and dumping an unknown-duration drop into one
+# reading. Either cause makes the sample's per-tick *rate* uninterpretable, so
+# it is rejected. 2026-07-22 field evidence: the office EWMA was yanked
+# 4.7 -> 24 %/h by two single-tick office steps (24.5 -> 21.5 and 20.5 -> 19.0,
+# each in one tick) while a window was open. Set above plausible quantised
+# cooling (one 0.5 °C quantum per tick) to protect genuine fast winter
+# cool-offs. Fail-safe-neutral: it drops noise, it never clamps a real
+# high-loss reading down (which would shorten the lead and risk a cold
+# arrival).
+MAX_COOL_TICK_DROP = 1.5
+
 # When the weather entity is unreadable, predict idle-gap cooling against a
 # cold-ish outdoor rather than skipping the prediction: err warm, the
 # pre-heat cap bounds the damage.
@@ -141,7 +156,11 @@ def updated_rate(rate: float, minutes_elapsed: float, temp_rise: float) -> float
 
 
 def updated_cooling_k(
-    k: float, hours_elapsed: float, temp_drop: float, avg_gap: float
+    k: float,
+    hours_elapsed: float,
+    temp_drop: float,
+    avg_gap: float,
+    max_tick_drop: float = 0.0,
 ) -> float:
     """Fold one observed cool-off into the learned loss constant (EWMA).
 
@@ -150,12 +169,16 @@ def updated_cooling_k(
     indistinguishable from it at the ~1 °C drops the rolling window produces.
     Samples need a real drop, a real duration and a real gap; observations
     and the result are clamped so solar gain, a frozen cloud reading or a
-    near-equilibrium mild day cannot poison the estimate.
+    near-equilibrium mild day cannot poison the estimate. ``max_tick_drop``
+    (the largest single-tick fall seen over the sample) rejects the whole
+    sample when a discontinuity — an unmonitored opening or a probe
+    unfreezing — dumped an uninterpretable step into it.
     """
     if (
         temp_drop < MIN_COOL_SAMPLE_DROP
         or hours_elapsed < MIN_COOL_SAMPLE_HOURS
         or avg_gap < MIN_COOL_SAMPLE_GAP
+        or max_tick_drop >= MAX_COOL_TICK_DROP
     ):
         return k
     observed = temp_drop / (hours_elapsed * avg_gap)

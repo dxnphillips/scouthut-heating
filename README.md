@@ -351,7 +351,10 @@ restarts) of everything it decides and learns:
 
 - **`warmup_sample` / `cooloff_sample`** — every learning observation, accepted
   or rejected, with the raw inputs (duration, temperature change, the average
-  indoor–outdoor gap, fan assistance and wattage, old and new value), so the
+  indoor–outdoor gap, fan assistance and wattage, old and new value, plus
+  `max_tick_drop` — the largest single-tick fall, on which a discontinuity
+  (an unmonitored opening or a probe unfreezing) is rejected rather than
+  learned as fabric loss), so the
   EWMA behaviour can be re-derived. Cool-off samples carry the fan-running
   tally and average wattage too: the 2026-07-11 sealed test showed a fan-mixed
   hut sheds heat at roughly **half** the gap-normalised rate of a stratified

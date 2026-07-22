@@ -94,6 +94,31 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    trust, so `MIN_COOL_SAMPLE_GAP` now rejects them. Fail-safe-neutral: it drops
    noise, it does not clamp a genuine high-loss reading *down* (which would
    shorten the lead and risk a cold arrival), so `MAX_COOL_K` stays 0.5.
+   **Single-tick step guard added (`MAX_COOL_TICK_DROP` = 1.5, 2026-07-22, data
+   + owner insight).** The *office* (zone_b) EWMA was found yanked 4.7 → 24 %/h
+   — physically absurd (higher than the *uninsulated hall's* 8.8), traced to two
+   single-tick reading steps (24.5 → 21.5 and 20.5 → 19.0, each a whole 1.5–3 °C
+   drop in one ~30 s reconcile). Cause: **open office windows/doors** with **no
+   office contact sensor mapped** (only `zone_a_doors` + `shared_windows` exist),
+   so the `opening_ice` guard — which correctly discards the *hall's* open-door
+   cool-offs — is structurally blind to the office; the ventilation drop was
+   learned as fabric loss. These slipped the gap floor (office gap is genuinely
+   ≥ 4) but are noise on the *step* axis. A genuine fabric cool-off eases the
+   reading down one 0.5 °C quantum at a time; a lone tick shedding ≥ 1.5 °C is a
+   discontinuity (opening, or the Rointe probe unfreezing and dumping an
+   unknown-duration drop into one reading) whose per-tick *rate* is
+   uninterpretable, so the whole sample is now rejected. Set above plausible
+   quantised cooling (one 0.5 °C quantum/tick) to protect genuine fast winter
+   cool-offs; fail-safe-neutral (drops noise, never clamps a real reading down).
+   `cooloff_sample.max_tick_drop` now records the largest single-tick fall.
+   **Two real fixes still outstanding for the office:** (a) owner is fitting
+   office door/window contacts — once mapped they feed the opening guard exactly
+   as the hall's do (the proper structural fix); (b) the corrupted
+   `zone_b_heatloss_pct` was manually reset to ~5 %/h (the EWMA does not
+   self-heal fast). **If winter shows the guard starving genuine fast hall
+   cool-offs** (real losses presenting as steps through a coarse-reporting
+   probe), raise the threshold — but each such sample has a meaningless rate
+   anyway, so rejecting is the correct default.
 5. **Calendar entity mid-event blips.** 2026-07-11 forensics: the calendar
    entity read not-running mid-event once (fans stopped 08:53 BST during a
    06:00–11:00 booking). Watch for `booking_end` + fresh `booking_start`
