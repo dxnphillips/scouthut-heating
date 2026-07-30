@@ -64,6 +64,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
 2. **Pre-heat cap (default 120 min, slider now to 240).** Judge from
    `booking_start.shortfall` on cold-start mornings: persistent positive
    shortfalls with the lead pinned at cap → raise the slider/default.
+   **The latent risk is now arming (2026-07-22 → 30, data).** Through summer
+   every booking arrived warm (shortfalls all *negative*, room above target on
+   the warm fabric), so this never fired. But the hall has since been seen
+   genuinely cold-starting — floor to 16.4 °C at outdoor 7.5 °C, and 17.25 °C on
+   the cool 27 Jul morning — the first real deficits. With the warm-up rate
+   still the unlearned 60 min/°C seed (Q3/Q17: no completed climb ever observed)
+   and the cap still live at **120**, a cold-start of ~2.5 °C needs ~150 min and
+   is clamped to 120 → the first cold *booked* morning will likely arrive short.
+   The `OUTDOOR_MARGIN` multiplier scales the *needed* lead up on cold mornings
+   *before* the clamp, so the cap binds harder, not softer. **Pre-emption
+   (fail-safe, no code):** raise the `preheat_minutes` slider toward ~180 before
+   the first cold booking rather than waiting to read the shortfall — earlier
+   start only sits the room at comfort a little early, it cannot overheat past
+   setpoint. Then still watch the first cold booked morning's shortfall to
+   confirm and to size the learned rate.
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the
@@ -258,6 +273,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     reach for boost / `booking_start.shortfall` is large, raise the slider toward
     16–17 (then the default). The co-heating/UA test would set it analytically
     (the balance-point temperature). Until an autumn export exists, leave it.
+    **First field instance of the concern (2026-07-27, not yet a booked
+    session):** a genuinely cool morning — RealFeel 13.8 °C, outdoor 17.6 °C,
+    hall floor ~17.9 °C — but the 3-day average sat at **19.05**, so the lockout
+    stayed *engaged*. Confirms the mechanism the decision rule anticipates: the
+    average lags the felt cold, so a booked session on a day like this gets **no
+    automatic heat** (booking/motion sit below the lockout; only a manual boost
+    pierces it — and boost *does* work here because the hall is genuinely below
+    the 19.5 setpoint). Not yet actionable (no booking coincided, and the summer
+    average genuinely *is* warm, so 15 is not "wrong"), but it is the first real
+    data point — re-judge when this recurs on a cool *booked* autumn morning with
+    boost use / a positive shortfall. **Note the felt-cold here is also part
+    operative-temperature, not just air** — see Q19.
     **Open sub-question (2026-07-18 code review, no data yet): does the flapping
     drive fan-*direction* flapping?** `_summer_active` follows the lockout, so a
     flip flips the fans' wanted direction (summer forward ↔ winter reverse) —
@@ -355,6 +382,54 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     output vs outdoor) still only applies to a genuinely modulating device — the
     office heat-pump/split on the future-hardware list — at which point
     `smartthings54/smart-climate-control` is worth revisiting for that device.
+18. **Surface a sustained heater outage (candidate feature, not yet built —
+    2026-07-30, field incident).** The whole Rointe integration (all four hall
+    heaters + office) went `unavailable` at 29 Jul 07:16 and stayed down ~27 h;
+    a manual integration reload fixed it (a stale cloud session, not lost power —
+    so the devices frost-protected locally throughout). **Nothing surfaced it:**
+    no persistent notification, no HA repair issue, no heater-specific audit
+    event — the only trace was a `fan_sensor_lost` event (a *side effect* of
+    losing the floor probe, which breaks the fan mix). By design the coordinator
+    tolerates offline heaters silently (drift skips them, presets re-apply on
+    reconnect — correct for a brief cloud blip, which this integration does
+    routinely: `fan_sensor_lost` fired 3× in two weeks, 15/28/29 Jul, i.e. a
+    flaky link). But a *sustained* loss of **all** heaters is different in kind:
+    harmless under summer lockout, yet in winter it is a silent blind spot — a
+    cold snap or a booking arriving with no heat and no warning, and no frost
+    protection at all if the devices lost power rather than just cloud. The
+    audit trail is the instrument, and a 27 h total outage left no mark on it.
+    **Decision rule / design:** add a duration-gated alert — if every mapped
+    heater in a zone (or all zones) reads `unavailable`/`unknown` for more than
+    N reconciles (a few minutes, so a normal cloud hiccup does not cry wolf),
+    raise a persistent notification **and** an audit event (`heaters_offline`
+    with zone + duration), dismissed on recovery — mirroring the fan-fault and
+    opening notifications. Gate N above the observed routine-blip length. Low
+    urgency now (summer); do before the first heating season. Pairs with the
+    Rointe staleness checks (`last_reported`) already in place for the
+    freeze-while-alive case — this covers the distinct *unavailable* case.
+19. **Is 19.5 the right comfort target for a low-activity seated group? (No
+    data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
+    = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
+    is *operative* temperature ≈ the average of air and the mean-radiant
+    temperature of the surrounding surfaces. In this bare, uninsulated hall the
+    walls and roof run cold, so operative temperature sits a degree or two
+    *below* the air reading — worst-case for a sedentary meeting (low metabolic
+    heat, long exposure, feet near a cold floor). Two compounding blind spots:
+    (a) the "floor" reading is the Rointe **mid-wall probe**, not seated-height
+    air, so it can *overstate* comfort where people actually sit; (b) we have
+    **no radiant/surface-temperature sensor and no seated-height air sensor**, so
+    "it felt cold at 19.5" is currently unfalsifiable from the trace. **Decision
+    rule:** on cool *booked* sedentary sessions, watch for boost use and
+    `booking_start.shortfall`; if occupants reliably reach for more heat at a
+    satisfied 19.5, the fix is either a higher hall comfort setpoint or an
+    *activity-aware* target (a warmer number for low-activity bookings), **not**
+    a code change to the control law. The measurement gap is the deeper issue:
+    if this recurs, a cheap surface/globe-ish sensor or a seated-height air
+    sensor would turn the felt complaint into data. Reverse (destrat) fans help
+    only once the heaters have built a warm roof to bring down — on an unheated
+    cool day there is nothing to deliver, and forward fans would chill. Pairs
+    with Q16 (the lockout can leave such a session unheated) and Q17 (delivery
+    vs capacity vs soak).
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
@@ -441,7 +516,13 @@ delete the two orphaned "learned heat-loss rate" entities; possible future
 hardware — office split/heat-pump pilot (a *modulating* device, so classic
 weather compensation would apply to it — see the weather-comp note under Q17),
 wall extractor fans, hall window contacts (they join the vent override
-automatically when mapped).
+automatically when mapped). **Fit + map an office door/window contact** —
+the office currently has *none*, so the `opening_ice` guard is blind there and
+open-window ventilation drops get learned as fabric loss (the 2026-07-22
+`zone_b_heatloss_pct` corruption to ~24 %/h; the `MAX_COOL_TICK_DROP` step guard
+now catches the worst of it, but a mapped contact is the proper structural fix,
+exactly as `zone_a_doors` protects the hall). **Reset `zone_b_heatloss_pct` to
+~5 %/h** — the EWMA does not self-heal fast from that corruption.
 
 ## Architecture pointers
 
