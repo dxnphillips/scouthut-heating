@@ -52,6 +52,9 @@ from .const import (
 )
 
 BINARY = ["binary_sensor", "input_boolean"]
+# The alarm fields accept a real alarm_control_panel (so away/night can be told
+# apart) as well as the legacy binary helpers an install may still feed them.
+ALARM = ["alarm_control_panel", "binary_sensor", "input_boolean"]
 
 # Every key shown on each step, used by the options flow to apply a submission:
 # an optional entity field the user CLEARS is simply omitted from user_input
@@ -172,8 +175,8 @@ def _extras_schema(d: dict[str, Any]) -> vol.Schema:
     _add(s, CONF_CALENDAR_OFFICE, True, _sel("calendar"), d)
     _add(s, CONF_WEATHER, False, _sel("weather"), d)
     _add(s, CONF_REALFEEL, False, _sel("sensor"), d)
-    _add(s, CONF_ALARM_MAIN, False, _sel(BINARY), d)
-    _add(s, CONF_ALARM_OFFICE, False, _sel(BINARY), d)
+    _add(s, CONF_ALARM_MAIN, False, _sel(ALARM), d)
+    _add(s, CONF_ALARM_OFFICE, False, _sel(ALARM), d)
     _add(s, CONF_WATER_SWITCH, False, _sel("switch"), d)
     return vol.Schema(s)
 
