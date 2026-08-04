@@ -406,6 +406,20 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   above the recirc cap) just leaves the fans off rather than blowing anything.
 - **Office eco drift is unjudgeable** (the setpoint lives on the device and
   is never pushed); skipped rather than guessed.
+- **Alarm suppression is away-aware (1.12.0).** `_alarm_armed` reads a real
+  `alarm_control_panel` and only an *away*-type arm (`armed_away`/
+  `armed_vacation` = empty building) drops a zone to ice; `armed_night`/
+  `armed_home` (people sleeping/present inside — e.g. a sleepover) keep the heat
+  on, and `triggered`/`arming`/`disarmed` never suppress. A booking still
+  overrides the alarm entirely (`alarm_on and not cal_on`), and shared/water
+  still need *both* panels away. Back-compat: a legacy `binary_sensor`/
+  `input_boolean` mapping's `on` is treated as armed-away, so installs feeding
+  the alarm through a helper keep pre-1.12 behaviour — but a binary cannot tell
+  night from away, so night-awareness needs the real panel mapped. The config
+  flow now accepts an `alarm_control_panel` for `alarm_main`/`alarm_office`; the
+  owner maps which panel to which (main = hall + shared/kitchen/toilets/stores,
+  office = office). The zone→conf-key pairing stays fixed (hall→`alarm_main`,
+  office→`alarm_office`); only the entity is selectable.
 
 **Owner-side outstanding** (not code): set `MIN_RUN_W ≈ 20` in the Shelly
 fan script — the stall threshold must sit *below the lowest running draw*, and

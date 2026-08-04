@@ -190,6 +190,11 @@ SIGNAL_UPDATE = f"{DOMAIN}_update"
 ZONE_CLIMATES = {ZONE_A: CONF_HALL_CLIMATES, ZONE_B: CONF_OFFICE_CLIMATES}
 ZONE_CALENDAR = {ZONE_A: CONF_CALENDAR_HALL, ZONE_B: CONF_CALENDAR_OFFICE}
 ZONE_ALARM = {ZONE_A: CONF_ALARM_MAIN, ZONE_B: CONF_ALARM_OFFICE}
+# Only an *away*-type arm means the building is empty and heating should drop to
+# ice. `armed_night`/`armed_home` mean people are inside (asleep) — heat stays
+# on — and `triggered`/`arming`/`pending`/`disarmed` never suppress. A legacy
+# binary_sensor/input_boolean mapping is handled separately (its "on" = armed).
+ALARM_AWAY_STATES = frozenset({"armed_away", "armed_vacation"})
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
@@ -526,6 +531,24 @@ class ScoutController:
             return False
         state = self.hass.states.get(entity_id)
         return state is not None and state.state == "on"
+
+    def _alarm_armed(self, entity_id: str | None) -> bool:
+        """True when the mapped alarm says the building is EMPTY (away-armed).
+
+        Reads a real ``alarm_control_panel`` so an *away*-type arm suppresses
+        heating while *night*/*home* (people sleeping/present inside) does not —
+        that is what keeps the heat on for a Night-armed sleepover. A legacy
+        ``binary_sensor``/``input_boolean`` mapping still works: its ``on`` is
+        treated as armed-away, preserving pre-1.12 behaviour for installs that
+        feed the alarm through a helper. ``triggered``/``arming``/``pending``/
+        ``disarmed``/unknown never suppress.
+        """
+        if not entity_id:
+            return False
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return False
+        return state.state == "on" or state.state in ALARM_AWAY_STATES
 
     def _any_on(self, entity_ids: list[str]) -> bool:
         return any(self._is_on(e) for e in entity_ids)
@@ -1711,7 +1734,7 @@ class ScoutController:
             return self._reason(zone, "seasonal_lockout", PRESET_ICE)
 
         cal_on = self._cal_active(zone)
-        alarm_on = self._is_on(self.config.get(ZONE_ALARM[zone]))
+        alarm_on = self._alarm_armed(self.config.get(ZONE_ALARM[zone]))
         if alarm_on and not cal_on:
             # Arming the alarm with no booking also cancels a lingering
             # occupied override (original A33/A34), or a switch left on weeks
@@ -1762,7 +1785,7 @@ class ScoutController:
             return self._reason("shared", "opening", PRESET_ICE)
         if self.boost_active(ZONE_A) or self.boost_active(ZONE_B):
             return self._reason("shared", "boost", PRESET_COMFORT)
-        if self._is_on(self.config.get(CONF_ALARM_MAIN)) and self._is_on(
+        if self._alarm_armed(self.config.get(CONF_ALARM_MAIN)) and self._alarm_armed(
             self.config.get(CONF_ALARM_OFFICE)
         ):
             return self._reason("shared", "alarm", PRESET_ICE)
@@ -1872,9 +1895,9 @@ class ScoutController:
         cal = self.water_window
         keepalive = self.number("water_motion_keepalive_minutes")
         motion = any(self._motion_recent(a, keepalive) for a in WATER_MOTION_AREAS)
-        both_alarms = self._is_on(self.config.get(CONF_ALARM_MAIN)) and self._is_on(
-            self.config.get(CONF_ALARM_OFFICE)
-        )
+        both_alarms = self._alarm_armed(
+            self.config.get(CONF_ALARM_MAIN)
+        ) and self._alarm_armed(self.config.get(CONF_ALARM_OFFICE))
         if both_alarms:
             return override or cal
         return override or cal or motion

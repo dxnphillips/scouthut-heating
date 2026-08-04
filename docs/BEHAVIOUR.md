@@ -23,7 +23,7 @@ original YAML is preserved under [`reference/`](reference).
 | A30 Automation re-enabled | Toggling the enable switch requests a reconcile. |
 | A31 Nightly safety net | Implicit: with no booking/motion the reconciler already targets `ice`. |
 | A32 Startup initialise | `async_start` schedules a first reconcile after a 30 s delay. |
-| A33 / A34 Alarm set → cancel manual/motion heat | `_desired_zone` returns `ice` when the zone alarm is on with no booking. |
+| A33 / A34 Alarm set → cancel manual/motion heat | `_desired_zone` returns `ice` when the zone alarm is armed-**away** (`armed_away`/`armed_vacation` — empty building) with no booking, via `_alarm_armed`. An `armed_night`/`armed_home` arm (people sleeping/present inside — e.g. a sleepover) does **not** suppress heat; `triggered`/`arming`/`disarmed` never do. A legacy `binary_sensor`/`input_boolean` mapping still counts its `on` as armed-away (pre-1.12 behaviour). |
 | A35 Alarm cleared → re-evaluate | Alarm state changes are watched and trigger a reconcile. |
 
 ## Water heater package (`scout_hut_water_heater`)
@@ -36,7 +36,7 @@ original YAML is preserved under [`reference/`](reference).
 | W4 / W5 Manual override on/off | `water_manual_override` switch. |
 | W6 Nightly off | Implicit: no calendar/motion/override → off. |
 | W7 Startup init | Covered by the startup reconcile. |
-| W8 / W9 Alarm set/cleared | `both_alarms` branch in `_desired_water`; alarm changes trigger a reconcile. |
+| W8 / W9 Alarm set/cleared | `both_alarms` branch in `_desired_water` (both panels armed-**away**, via `_alarm_armed`) suppresses motion-triggered water; an `armed_night` arm does not. Alarm changes trigger a reconcile. |
 | Frost protection (new) | The Speedflow's own frost stat only works while powered, so `_desired_water` powers the tank while the coldest shared-zone room is ≤3 °C (releasing at 5 °C), overriding the alarms. |
 | Weekly hygiene heat-up (new) | If the tank has gone 7 days without a completed reheat, `_desired_water` runs it for 45 min (a full 15 L reheat is ~30 min at 2 kW) so stored water never sits lukewarm indefinitely; also overrides the alarms. Only a continuous powered stretch ≥45 min resets the clock — brief dabs of use (short keep-alive, quick override) heat 15 L by only a few degrees and do not count. |
 
