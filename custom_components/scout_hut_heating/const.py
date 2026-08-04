@@ -319,6 +319,15 @@ SWITCH_DEFS: dict[str, bool] = {
     # Default ON to suppress it; active heat demand still runs the fans. Turn OFF
     # for the legacy "run on stratification alone" destratification behaviour.
     "winter_fans_need_occupancy": True,
+    # Let a genuinely cold booked session pierce the seasonal lockout. The
+    # summer lockout freezes heating for the season, but a booking (or its
+    # pre-heat window) whose room is actually below the target it is asking for
+    # should still be warmed rather than frozen out on an out-of-season cold
+    # snap. Judged from the room itself (self-calibrating — no weather constant
+    # to guess), so a warm-fabric summer booking already at target stays locked
+    # out. Default ON; turn OFF to restore the strict lockout (a manual Boost
+    # still pierces it either way).
+    "cold_booking_heats": True,
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -332,6 +341,7 @@ SWITCH_ICONS: dict[str, str] = {
     "summer_follows_season": "mdi:calendar-sync",
     "fans_run_on_sensor_loss": "mdi:fan-alert",
     "winter_fans_need_occupancy": "mdi:account-clock",
+    "cold_booking_heats": "mdi:calendar-alert",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"

@@ -479,6 +479,31 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   and accepted. Winter is unchanged (already reverse). The winter run/stop
   rules still apply, so heating a room that's already warm (no demand, floor
   above the recirc cap) just leaves the fans off rather than blowing anything.
+- **A cold booking pierces the seasonal lockout (`cold_booking_heats` = on).**
+  The summer lockout freezes heating, but a booked (or pre-heating) session
+  whose room is genuinely below the target it is asking for still heats — an
+  out-of-season cold snap on a booked day must not be frozen out.
+  `_cold_booking_bypass` gates the `seasonal_lockout` rung in `_desired_zone`:
+  switch on, `_cal_active` (so the pre-heat window is covered — a cold booked
+  morning is warm from minute one), and the room's **coldest** heater probe
+  below the booking target (`_booking_target` — comfort, or eco-low for an
+  ECO-keyword event). **Self-calibrating, no weather constant** (deliberately
+  *not* the outdoor "cold-snap" framing the owner first reached for): a
+  warm-fabric summer booking already at target does not bypass, so this stays a
+  cold-snap escape hatch, not a season-long defeat of the lockout. Release
+  hysteresis (`COLD_BOOKING_RELEASE_BAND` = 0.5, keyed off the applied preset)
+  holds the pierce until half a degree above target so it can't flap. An
+  **unreadable** room does not bypass — under the summer regime the fail-safe is
+  to stay locked (a manual Boost still pierces either way; err-off in summer, per
+  the sensor-loss convention). The pierced booking falls through to the normal
+  booking rungs, so it drives the reverse/destrat fans exactly like the row above
+  (keyed off `applied[ZONE_A]`, no fan-logic change). Shared follows via
+  `_desired_shared` (`_cold_booking_bypass` on either zone → eco). Audit reasons
+  are tagged `lockout_booking` / `lockout_preheat` / `lockout_booking_eco` /
+  `lockout_booking_quiet`. **First-winter watch:** confirm the room-below-target
+  trigger fires only on genuinely cold booked sessions (not warm-fabric summer
+  bookings) and that the 0.5 release band doesn't flap the pierce — the tagged
+  reasons make both greppable in the export.
 - **Office eco drift is unjudgeable** (the setpoint lives on the device and
   is never pushed); skipped rather than guessed.
 - **Alarm suppression is away-aware (1.12.0).** `_alarm_armed` reads a real
@@ -527,8 +552,9 @@ exactly as `zone_a_doors` protects the hall). **Reset `zone_b_heatloss_pct` to
 ## Architecture pointers
 
 - `coordinator.py` — single 30 s reconciler; priority ladder in
-  `_desired_zone` (disabled/hold → opening → boost → seasonal lockout →
-  alarm → booking/pre-heat → override/motion → empty).
+  `_desired_zone` (disabled/hold → heating-paused → opening → boost → seasonal
+  lockout *unless a cold booking pierces it* → alarm → booking/pre-heat →
+  override/motion → empty).
 - `preheat.py` — pure optimum-start maths (learned min/°C rates, Newton
   cooling with gap-normalised k). `fan_logic.py` — pure fan decision.
 - `audit.py` — event log + trace. `diagnostics.py` — the export.

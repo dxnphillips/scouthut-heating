@@ -94,6 +94,7 @@ _OCCUPANCY = [
     ("zone_a_occupied_override", "Hall occupied override"),
     ("zone_b_occupied_override", "Office occupied override"),
     ("motion_timeout_minutes", "No-motion eco timeout"),
+    ("cold_booking_heats", "Cold bookings heat despite lockout"),
     ("zone_a_manual_hold", "Hall manual hold (app change)"),
     ("zone_b_manual_hold", "Office manual hold (app change)"),
 ]

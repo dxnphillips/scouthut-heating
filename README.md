@@ -248,7 +248,16 @@ this priority (highest wins):
    threshold; releases when the average falls half a degree below it, or on a
    **genuine cold snap** — RealFeel more than 2 °C under the threshold. Mild
    summer nights a degree under it neither release the lockout nor flap it)
-   → `ice`.
+   → `ice` — **unless a cold booking pierces it**. A booking (or its pre-heat
+   window) whose room is genuinely below the target it is asking for still
+   heats, so an out-of-season cold snap on a booked day is not frozen out. The
+   test is read from the room itself (its coldest heater probe vs the booking
+   target), so a warm-fabric summer booking already at target stays locked out;
+   once the pierce has warmed the room it holds until half a degree above target
+   (release hysteresis, no flapping). The shared kitchen/toilets/stores follow a
+   piercing hall/office booking to `eco`. Controlled by the **Cold bookings heat
+   despite lockout** switch (default on) — turn it off for the strict lockout (a
+   manual Boost still pierces it either way).
 6. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
@@ -392,7 +401,10 @@ restarts) of everything it decides and learns:
   preset changes carry the `reason` (which rung of the priority ladder
   decided them: `booking`, `preheat`, `booking_quiet`, `motion`,
   `seasonal_lockout`, `alarm`, `opening`, `boost`, `heating_paused`,
-  `building_empty`, ...); and the hall pause records its temps/occupancy on
+  `building_empty`, ...; a cold booking that pierced the seasonal lockout is
+  tagged `lockout_booking` / `lockout_preheat` / `lockout_booking_eco` /
+  `lockout_booking_quiet`, so a lockout-piercing session is greppable in the
+  trail); and the hall pause records its temps/occupancy on
   activation and *what cleared it* (`manual`, `boost`, `preheat`, `booking_end`)
   — so how often people find the hall too warm, and in which sessions, is
   visible in the log.
