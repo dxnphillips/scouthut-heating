@@ -533,15 +533,31 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   rising, the lead grew, the window reopened. This flap is pre-existing (a
   near-target pre-heat window flaps comfort↔ice in an empty winter too); the
   lockout just makes it visible. Cost is a couple of extra Rointe commands, benign
-  and self-resolved. **If it recurs and annoys, the clean fix is pre-heat-window
-  hysteresis** — once the window opens for an event, hold it open until the event
-  starts rather than recomputing the boundary every 5 min — which fixes it under
-  lockout AND in winter, better than a bypass-side deadband. (3) *No warm-up
+  and self-resolved. **Fixed 2026-08-05: the pre-heat window now latches open** —
+  once it opens for an event it holds until the event starts (or leaves the
+  look-ahead), instead of recomputing `gap <= lead` every refresh and re-closing
+  as the warming room shrinks the lead. Fixes the flap under lockout AND in winter
+  (a near-target empty pre-heat flapped comfort↔ice there too), and is preferred
+  over a bypass-side deadband because it addresses the root (the window boundary),
+  not the symptom. See the pre-heat-window latch note below. (3) *No warm-up
   learned still (Q3).* Zero `warmup_sample` events ever — and not the flap's
   fault: learning gates on the *average* floor (19.12, only 0.4 below target,
   under the 0.5 start gate) while the pierce sizes off *coldest* (18.5), so the
   climb was too shallow by the averaged measure to start a sample. Q3 stays open
   until a booking begins meaningfully cold by the averaged floor.
+- **The pre-heat window latches open (2026-08-05).** `_async_refresh_calendars`
+  recomputes the lead every ~5 min, but once `cal_window[zone]` has opened for an
+  event it is held open (`window = gap_min <= lead or self.cal_window[zone]`)
+  until the event starts (`_is_on(cal)` takes over) or leaves the look-ahead (the
+  `if not events` branch clears it). Without the latch, `lead` shrinks as the room
+  warms and a bare `gap <= lead` test re-closes the window the moment the room
+  nears target, flipping the zone out of comfort and back — observed in the first
+  cold-booking pierce (comfort↔ice, 2026-08-05) but a general near-target pre-heat
+  flaw (comfort↔eco/ice in an empty winter too). The `preheat_start` audit + hall
+  pause-clear still fire only on the first open (the false→true edge). Trade-off:
+  the room sits at comfort a little early if it reaches target before the booking
+  — it cannot overheat past setpoint, and it removes the cold-arrival risk of the
+  window closing mid-lead.
 - **Office eco drift is unjudgeable** (the setpoint lives on the device and
   is never pushed); skipped rather than guessed.
 - **Alarm suppression is away-aware (1.12.0).** `_alarm_armed` reads a real

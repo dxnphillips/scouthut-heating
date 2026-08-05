@@ -676,7 +676,17 @@ class ScoutController:
                 self.cal_window[zone] = True
                 continue
             lead = self._zone_preheat_minutes(zone, eco=eco, gap_hours=gap_min / 60)
-            window = gap_min <= lead
+            # Latch the window OPEN once it has opened for this event, rather than
+            # re-deciding the boundary every refresh. `lead` shrinks as the room
+            # warms, so a bare `gap <= lead` test lets the window close again the
+            # moment the room nears target — flipping the zone out of comfort and
+            # back (observed 2026-08-05: comfort->ice->comfort during a near-target
+            # pre-heat, amplified under the seasonal-lockout pierce). Holding it
+            # open commits the pre-heat to the booking; it still releases when the
+            # event ends/cancels (the `if not events` branch above clears it) or
+            # when it starts (`_is_on(cal)` is handled earlier). Cannot overheat —
+            # the room only sits at comfort a little early.
+            window = gap_min <= lead or self.cal_window[zone]
             if window and not self.cal_window[zone]:
                 self.audit.record(
                     "preheat_start",

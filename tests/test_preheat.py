@@ -379,3 +379,51 @@ def test_calendar_blip_keeps_the_previous_window(monkeypatch):
 
     run(ctrl._async_refresh_calendars())
     assert ctrl.cal_window[ZA] is True  # window survives the blip
+
+
+def _events_for(hall_events):
+    """Fake `_async_calendar_events` returning `hall_events` for the hall only."""
+
+    async def fake(cal, minutes):
+        return list(hall_events) if cal == E["cal_hall"] else []
+
+    return fake
+
+
+def test_preheat_window_latches_open_as_the_room_warms(monkeypatch):
+    """Once open, the window holds until the event starts — it must not re-close
+    when the warming room shrinks the recomputed lead below the gap."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+    from scout_testkit import run
+
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 22.0)  # already above target
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)  # no cooling prediction
+    # Event 90 min out — well beyond the ~MIN_LEAD lead a warm room needs.
+    start_iso = (dt_util.now() + timedelta(minutes=90)).isoformat()
+    monkeypatch.setattr(
+        ctrl, "_async_calendar_events", _events_for([{"start": start_iso, "summary": "squirrels"}])
+    )
+
+    # Closed on its own: gap 90 > lead ~15.
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is False
+
+    # Simulate the window having opened earlier (when the room was cold); with the
+    # room now warm the recomputed lead is small, but the latch holds it open.
+    ctrl.cal_window[ZA] = True
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True
+
+
+def test_latched_window_still_releases_when_the_event_goes_away(monkeypatch):
+    """The latch is not a trap: an ended/cancelled event (empty look-ahead)
+    still closes the window."""
+    from scout_testkit import run
+
+    ctrl, _ = make_controller()
+    ctrl.cal_window[ZA] = True  # a window was open
+    monkeypatch.setattr(ctrl, "_async_calendar_events", _events_for([]))  # nothing ahead
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is False
