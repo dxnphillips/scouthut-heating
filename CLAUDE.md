@@ -155,6 +155,16 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    motor load. So a wattage band is only comparable *within* a direction;
    `fan_change.direction` / `fan_mode` disambiguate. Confirm the ~158 W winter
    baseline holds over more nights before treating it as the reverse norm.
+   **First real reverse-run taps (2026-08-05 field data, both from the
+   cold-booking pierce / evening resume — see Q10).** The ~158 W baseline held on
+   the *morning* run (`fan_change.o1_w` 158–170 W, reverse), but the *evening*
+   run read **~58 W** reverse — the same day, a much lower tap. So **the dial
+   demonstrably moves** (158 → 58 W within one day, both reverse), which is the
+   condition that makes speed-blind learning wrong: a wattage band *is* worth
+   tracking here, at least within a direction. Forward the same day sat at its
+   usual ~200–210 W. The 58 W evening tap still moved the ceiling strongly (Q10),
+   so low-tap reverse is not "barely running" — the stall/`MIN_RUN_W` thresholds
+   must sit well below it (owner-side note already flags ~20 W).
 9. **Sealed-hut fan-clearing test** — **RESOLVED 2026-07-12** (run
    2026-07-11 evening, everything shut, fans forced via calendar event +
    sliders). Gap-normalised bulk (0.75×floor+0.25×ceiling) loss: ~14 %/h
@@ -166,6 +176,13 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    with its sign flipped** (2026-07-18): in summer, retaining heat by pulling it
    off the roof is *bad* (you wanted to vent it); in winter, that halved loss
    rate is exactly the roof-loss reduction destrat is meant to give — see Q10.
+   **First *field* (non-sealed) reverse runs, 2026-08-05** (the fans' first
+   winter-mode use in the audit — every prior run since 07-22 was summer/forward).
+   The evening run reproduced the sealed test's mechanism in real winter-ish
+   conditions (dark, 14.9 °C out, occupied): the fans stripped the hot ceiling
+   down ~4× faster than passive cooling, gap 2.58 → 1.68 in 41 min — "pulling the
+   hottest air away from the roof," now measured outside the sealed rig. Full
+   numbers and the morning solar-washout counter-case are under Q10.
 10. **Winter savings forecast**: 500–800 kWh (~£125–215 net) hall heating
     saved by destratification, ±50 %. **The saving has TWO components — delivery
     efficiency AND loss reduction — both stratification-dependent (2026-07-18
@@ -195,6 +212,43 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     first place (capacity vs stratification vs soak-time) — if the 18 °C cap is
     capacity or pure soak-time, there is nothing for destrat to deliver and this
     saving is zero by construction, not by measurement.
+    **First field destrat data (2026-08-05, the two first-ever winter-mode fan
+    runs — both from the cold-booking lockout pierce and the evening resume).
+    Mechanism confirmed; kWh saving still unmeasured.** Two runs, opposite
+    conditions, opposite results — the contrast is the finding:
+    - *Morning (non-diagnostic — solar washout).* Warm sunny morning, weak
+      stratification (gap ~1.8), occupants arriving, reverse tap ~158 W. The gap
+      ended *wider* than it started (1.78 → 2.02) because the sun loaded the
+      uninsulated roof faster than the low tap could mix it down; after the fans
+      stopped it re-stratified hard (gap → 2.6). Confounded by occupancy (kids
+      arrived exactly as the fans started) and heaters barely firing. Reads as
+      "destrat does nothing" but only because there was nothing to reclaim and the
+      roof was being re-charged — exactly the wrong-conditions case Q4/Q9 predict.
+    - *Evening (clean measurement, with a same-evening natural-decay control).*
+      Dark, 14.9 °C out, occupied, **heaters off the whole time** (demand False —
+      pure fan redistribution, no input), reverse tap **~58 W**. A real hot-ceiling
+      reservoir had built naturally after the summer fans stopped (gap 1.9 → 2.58
+      over the evening). Then 41 min of reverse fans: **ceiling 22.7 → 21.8
+      (−0.9 °C), gap 2.58 → 1.68 (nearly halved), floor held flat at 20.12.** The
+      gap closure decelerated (−0.4/−0.3/−0.2 per 15 min) exactly as a mixing rate
+      ∝ gap predicts. **Control:** in the fans-off decay earlier that evening the
+      ceiling cooled ~0.08 °C/15 min; under the fans ~0.3 °C/15 min — **~4× faster**,
+      so it is the fans stripping the roof, not ambient loss. The floor, which had
+      been *falling* ~0.08 °C/15 min in decay, **stopped falling** once the fans ran.
+    **What it settles and what it doesn't.** It splits cleanly along Q10's two
+    components: **retention is now demonstrated** (ceiling pulled down 4× the
+    passive rate — Q9's "hottest air off the roof," measured in winter-ish
+    conditions outside the sealed rig for the first time); **delivery shows only as
+    *arrested cooling*** (floor held rather than rose) — as expected with no heater
+    input, there is no *new* heat to deliver, only redistribution that offsets
+    loss. What it still cannot show is the **kWh / duty-cycle saving** — the
+    heaters never fired, so the Q10 signal (degree-day-normalised heater duty,
+    fans-on vs fans-off in a *heated* session) is untouched; this is the mechanism,
+    not the money. Caveat: one evening, one 41-min window. But it is the first
+    field evidence that destrat works when the roof heat is yours to reclaim and
+    nothing re-charges it (a cold dark evening) and does nothing when the sun is
+    loading the roof faster than the fans clear it (the morning) — a sharp line
+    for when the winter fans earn their ~58–158 W.
 11. **Condensation watch thresholds** (≥80 % RH below 12 °C for 12 h →
     notify): first winter decides if they're right for this fabric.
 12. **Shared-zone spillover**: does hall fan mixing measurably warm the
@@ -522,7 +576,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   readily whenever it drifts even slightly below 19.5 before a booking. A 1
   deficit at booking start is a real (if gentle) shortfall, so this pierce was
   reasonable — first data point for judging whether an engage-side deadband
-  (pierce only when room < target − X) is ever wanted. (2) *One genuine flap,
+  (pierce only when room < target − X) is ever wanted. **Did it need to heat?
+  Arguably no — the trace says the room would have got there anyway.** The
+  Rointes fired only *two brief* demand pulses (07:06, 07:38 — hard-confirmed
+  real, not a modelled flag: the room rose 19.12 → 19.25 between them with nobody
+  in and fans not yet on, so only the radiators could have done it); after 07:38
+  the heaters were **off** (demand False) yet the floor still climbed 19.38 → 20.0
+  on occupancy + the reverse fans, and the occupants Paused at 08:27. So the
+  bypass delivered target with minimal heater input on a mild morning for active
+  kids who then turned it off — the engagement is *correct per spec* but the
+  *value* of a sub-~1 °C pierce is marginal. The eagerness comes partly from the
+  trigger reading the **coldest** probe (18.5) while the room *averaged* 19.12
+  (only 0.4 below target); an engage deadband, or judging the bypass on the
+  *averaged* floor like the warm-up gate does, would spare firings like this while
+  still covering the genuinely-cold case (e.g. 07-31's +3.0 short). Watch a few
+  more before changing anything. (2) *One genuine flap,
   pre-existing, not the release band.* Stripping restart re-applies (the box was
   reloaded ~8× that morning deploying the release — each is a `None→…` re-apply),
   there was one real cycle: 06:55 ice→comfort, **07:10 comfort→ice**, 07:25
