@@ -504,6 +504,44 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   trigger fires only on genuinely cold booked sessions (not warm-fabric summer
   bookings) and that the 0.5 release band doesn't flap the pierce — the tagged
   reasons make both greppable in the export.
+  **First field firing (2026-08-05 export, the day of the release).** The 08:00
+  "1st pelsall squirrels" booking is the first live pierce, and it worked: lockout
+  engaged (3-day avg 20.97 — high summer, so pre-feature this booking arrives
+  frozen at ice), hall coasted to **18.5 coldest** overnight (~1 below the 19.5
+  target), `_cold_booking_bypass` fired at 06:55 (`lockout_preheat`), the room
+  climbed 18.5→19.5 and `booking_start.shortfall` was **0.0** (coldest 19.5 =
+  target). Contrast the pre-feature 2026-07-31 08:45 booking, which arrived
+  **+3.0 short** in similar lockout conditions — the deficit this closes. Shared
+  followed to eco (`lockout_booking`) and correctly re-iced on an open kitchen
+  contact. Occupants pressed Pause at 08:27 (room at 19.5, active young kids —
+  the cutout, not a fault). **Three findings for the decision rules:** (1) *The
+  trigger is eager by design.* This fired on a mild summer morning (outdoor 17.5)
+  where the hall had merely drifted ~1 below target — not an "out-of-season cold
+  snap." That is exactly the self-calibrating room<target behaviour chosen over a
+  weather threshold, so working as specified; but note the hall will pierce
+  readily whenever it drifts even slightly below 19.5 before a booking. A 1
+  deficit at booking start is a real (if gentle) shortfall, so this pierce was
+  reasonable — first data point for judging whether an engage-side deadband
+  (pierce only when room < target − X) is ever wanted. (2) *One genuine flap,
+  pre-existing, not the release band.* Stripping restart re-applies (the box was
+  reloaded ~8× that morning deploying the release — each is a `None→…` re-apply),
+  there was one real cycle: 06:55 ice→comfort, **07:10 comfort→ice**, 07:25
+  ice→comfort. The 07:10 release was NOT the temp release band (room never hit
+  20.0) — it was the **pre-heat window boundary oscillating**: room starting only
+  ~1 below target, the recomputed lead crossed the shrinking gap, the window
+  closed (`_cal_active` false → bypass off → lockout ice), then the room stopped
+  rising, the lead grew, the window reopened. This flap is pre-existing (a
+  near-target pre-heat window flaps comfort↔ice in an empty winter too); the
+  lockout just makes it visible. Cost is a couple of extra Rointe commands, benign
+  and self-resolved. **If it recurs and annoys, the clean fix is pre-heat-window
+  hysteresis** — once the window opens for an event, hold it open until the event
+  starts rather than recomputing the boundary every 5 min — which fixes it under
+  lockout AND in winter, better than a bypass-side deadband. (3) *No warm-up
+  learned still (Q3).* Zero `warmup_sample` events ever — and not the flap's
+  fault: learning gates on the *average* floor (19.12, only 0.4 below target,
+  under the 0.5 start gate) while the pierce sizes off *coldest* (18.5), so the
+  climb was too shallow by the averaged measure to start a sample. Q3 stays open
+  until a booking begins meaningfully cold by the averaged floor.
 - **Office eco drift is unjudgeable** (the setpoint lives on the device and
   is never pushed); skipped rather than guessed.
 - **Alarm suppression is away-aware (1.12.0).** `_alarm_armed` reads a real
