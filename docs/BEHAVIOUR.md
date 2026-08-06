@@ -154,7 +154,13 @@ to the climate entity's own availability when no connectivity sensor exists.
   gain and the predictor cannot feed back on itself or oscillate. Comfort-lean:
   no reading, no measured rate, a sub-threshold climb, or insufficient spare time
   all fall through to heating, and it re-evaluates every tick so a fading climb
-  resumes the pre-heat with the margin still in hand. Hall-only,
-  pre-heat-window-only (a running booking always heats normally). Audited as
-  `coast_decision` (with the prediction inputs) on the engaging edge; diagnostics
-  carry `passive_rise_c_per_min` + `coasting`.
+  resumes the pre-heat with the margin still in hand. Hall-only. **Two scopes:**
+  the pre-heat window (deadline = event start → reason `preheat_coast`), and a
+  **running, occupied booking** (deadline = now, so `_should_coast` is called with
+  `gap_min=0` and the test reduces to "already in the comfort band AND still
+  rising" → reason `booking_coast`) — it holds at eco when free gain is currently
+  sustaining comfort so the radiators don't top it up (the 2026-08-05 heaters-off
+  climb), and the `gap_min=0` reduction guarantees it never withholds heat from an
+  occupied room actually below comfort. An unoccupied running booking stays
+  `booking_quiet`. Audited as `coast_decision` (with the prediction inputs) on the
+  engaging edge; diagnostics carry `passive_rise_c_per_min` + `coasting`.

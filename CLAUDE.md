@@ -771,8 +771,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   when `_heat_demand()` is false, clearing the buffer the instant demand appears)
   — so the signal is genuine free gain, not the radiators' own work, and the
   predictor *cannot oscillate* (applying heat wipes the evidence for withholding
-  it). Re-evaluated every tick, hall-only, pre-heat-window-only (a running booking
-  always heats normally). The `coast_decision` audit event records the prediction
+  it). Re-evaluated every tick, hall-only. **Two scopes** (both under
+  `coast_when_free`): (1) *pre-heat window* — deadline is event start, the room
+  must be climbing fast enough to reach the band in time (`preheat_coast`);
+  (2) *running, occupied booking* — deadline is now, so `_should_coast` is called
+  with `gap_min=0` and the maths reduces to "already in the band AND still
+  measurably rising", holding at eco (`booking_coast`) so free gain that is
+  currently sustaining comfort isn't topped up by the radiators (the 2026-08-05
+  case: an occupied booking whose floor climbed 19.4 → 20.0 with the heaters off).
+  The `gap_min=0` reduction is the safety property — it can *never* withhold heat
+  from an occupied room actually below comfort, only decline to top up one already
+  comfortable and warming. An *unoccupied* running booking still drops to
+  `booking_quiet`, not coast. The `coast_decision` audit event records the prediction
   inputs on the engaging edge (arrival checkable in a later export); diagnostics
   carry the live `passive_rise_c_per_min` + `coasting` flags. **Default OFF** —
   the owner enables it consciously and watches `preheat_coast` / `coast_decision`

@@ -1986,14 +1986,17 @@ class ScoutController:
             )
         self._coasting[zone] = active
 
-    def _preheat_will_coast(self, zone: str, target: float, gap_min: float | None) -> bool:
-        """True when a hall pre-heat can be skipped: free gain will arrive it.
+    def _should_coast(self, zone: str, target: float, gap_min: float | None) -> bool:
+        """True when the hall can be held at eco: free gain covers the comfort.
 
         Gated on the `coast_when_free` switch (default off) and hall-only. Reads
         the measured idle-room rise rate and asks coast.will_coast_to_target
-        whether, at that rate, the room reaches the comfort band before the
-        event with a margin. Comfort-lean throughout: no switch, no rate, or an
-        unknown gap all fall through to heating.
+        whether, at that rate, the room reaches the comfort band by the deadline
+        with a margin. ``gap_min`` is the minutes until the room is needed: the
+        pre-heat lead for an upcoming event, or 0.0 for a running booking (whose
+        deadline is now, reducing the test to "already in the band and rising").
+        Comfort-lean throughout: no switch, no rate, or an unknown gap all fall
+        through to heating.
         """
         if zone != ZONE_A or not self.switch_on("coast_when_free", default=False):
             return False
@@ -2101,31 +2104,35 @@ class ScoutController:
             # optimum-start lead was sized to reach comfort, so hirers would
             # always arrive to a shortfall.
             event_running = self._is_on(self.config.get(ZONE_CALENDAR[zone]))
-            # "Will it get there on its own?" — during the HALL pre-heat window
-            # (event not yet running), if the room is measurably warming on free
-            # gain fast enough to reach the comfort band by event start, hold at
-            # eco instead of firing the radiators. This is the deliberate,
-            # gated exception to the "never demote a pre-heat" rule below: the
-            # comfort guarantee is kept (the room still arrives at comfort), just
-            # delivered by the sun/occupancy rather than the heaters. It is
-            # comfort-lean (only on a measured idle-room climb, only for the
-            # hall) and re-evaluated every tick, so a fading climb resumes the
-            # pre-heat with the time margin still in hand.
-            if base == PRESET_COMFORT and not event_running:
-                if self._preheat_will_coast(zone, self._zone_target(zone), self._preheat_gap_min(zone)):
+            occupied = self._motion_recent(area, timeout)
+            # "Will it get there / stay there on its own?" Hold at eco instead of
+            # firing the radiators when free gain (sun on the roof, occupancy,
+            # warm fabric) is doing the work — comfort kept, delivered free:
+            #  - PRE-HEAT window (event not running): the room is measurably
+            #    climbing and will reach the comfort band by event start with a
+            #    margin (deadline = start). The deliberate exception to the
+            #    "never demote a pre-heat" rule below.
+            #  - RUNNING, OCCUPIED booking: the room is ALREADY in the band and
+            #    still measurably rising, so free gain is holding comfort now
+            #    (deadline = now, so the predictor reduces to in-band + rising —
+            #    it can never withhold heat from an occupied room actually below
+            #    comfort). The 2026-08-05 case: a booking whose floor climbed
+            #    19.4 -> 20.0 with the heaters off, on occupancy + the fans.
+            # Comfort-lean, hall-only, re-evaluated every tick so a fading gain
+            # resumes heat immediately.
+            if base == PRESET_COMFORT and (not event_running or occupied):
+                gap = self._preheat_gap_min(zone) if not event_running else 0.0
+                if self._should_coast(zone, self._zone_target(zone), gap):
                     self._note_coasting(zone, True)
-                    return self._reason(zone, f"{tag}preheat_coast", PRESET_ECO)
+                    reason = "preheat_coast" if not event_running else "booking_coast"
+                    return self._reason(zone, f"{tag}{reason}", PRESET_ECO)
                 self._note_coasting(zone, False)
             else:
-                # Not an eligible pre-heat tick (event running, or an eco-keyword
-                # pre-heat): clear any stale coast latch so the next real pre-heat
-                # audits its engaging edge afresh.
+                # Not a coast-eligible tick (unoccupied running booking, or an
+                # eco-keyword pre-heat): clear any stale latch so the next
+                # eligible session audits its engaging edge afresh.
                 self._note_coasting(zone, False)
-            if (
-                base == PRESET_COMFORT
-                and event_running
-                and not self._motion_recent(area, timeout)
-            ):
+            if base == PRESET_COMFORT and event_running and not occupied:
                 return self._reason(zone, f"{tag}booking_quiet", PRESET_ECO)
             if base == PRESET_ECO:
                 return self._reason(zone, f"{tag}booking_eco", base)

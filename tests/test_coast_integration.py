@@ -127,6 +127,56 @@ def test_running_event_with_motion_heats_comfort_not_coast():
     assert ctrl._preset_reason[ZA] == "booking"
 
 
+def test_running_occupied_booking_coasts_when_warm_and_rising():
+    """The 2026-08-05 case: occupied booking, room in band and climbing -> hold eco."""
+    ctrl, _ = make_controller()
+    _on(ctrl)
+    booking(ctrl, ZA)
+    from scout_testkit import motion
+
+    motion(ctrl, "hall")
+    _hall_temp(ctrl, 19.4)  # target 19.5, band 19.2 -> in band
+    _seed_rise(ctrl, 19.4, 0.05)  # measurably rising on free gain
+    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    assert ctrl._preset_reason[ZA] == "booking_coast"
+
+
+def test_running_booking_below_band_still_heats():
+    """Comfort-lean: an occupied room actually below comfort is never withheld."""
+    ctrl, _ = make_controller()
+    _on(ctrl)
+    booking(ctrl, ZA)
+    from scout_testkit import motion
+
+    motion(ctrl, "hall")
+    _hall_temp(ctrl, 18.0)  # well below the band
+    _seed_rise(ctrl, 18.0, 0.05)  # rising, but not there yet and deadline is now
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "booking"
+
+
+def test_running_booking_in_band_but_flat_heats():
+    ctrl, _ = make_controller()
+    _on(ctrl)
+    booking(ctrl, ZA)
+    from scout_testkit import motion
+
+    motion(ctrl, "hall")
+    _hall_temp(ctrl, 19.4)
+    _seed_rise(ctrl, 19.4, 0.0)  # not rising -> not coasting
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_running_unoccupied_booking_is_quiet_not_coast():
+    ctrl, _ = make_controller()
+    _on(ctrl)
+    booking(ctrl, ZA)  # running, no motion
+    _hall_temp(ctrl, 19.4)
+    _seed_rise(ctrl, 19.4, 0.05)
+    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    assert ctrl._preset_reason[ZA] == "booking_quiet"
+
+
 def test_office_preheat_never_coasts():
     """Coast is hall-only: an office pre-heat always heats."""
     ctrl, _ = make_controller()

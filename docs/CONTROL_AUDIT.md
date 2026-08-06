@@ -275,10 +275,19 @@ control ladder should be changed on a tired night.
   comfort-lean*: it acts (not observe-only) but declines heat only on an
   observed climb, never a guess, and the rate is measured only while heaters are
   idle so it is genuine free gain and cannot oscillate. This is the direct F3
-  fix. Scoped to the pre-heat window (not a running booking) as the lowest-risk
-  first slice; extending suppression into a running, occupied session (the
-  08-05 heaters-off climb) is a later step once the pre-heat coast is validated
-  against real exports. The `coast_decision` audit event + `passive_rise` in
-  diagnostics are the validation instrument.
-- Steps 1 (drive self-validation, Q20), 4 (predicted-gain suppression *inside a
-  running session*) and 5 (fan-regime decoupling) remain as above.
+  fix. Now covers **both** the pre-heat window (deadline = event start,
+  `preheat_coast`) and a **running, occupied booking** (deadline = now →
+  `gap_min=0`, which reduces to "already in the band and still rising",
+  `booking_coast` — the 08-05 heaters-off climb). The `gap_min=0` reduction is
+  the safety property: it can never withhold heat from an occupied room below
+  comfort. The `coast_decision` audit event + `passive_rise` in diagnostics are
+  the validation instrument.
+- **Step 1 (drive self-validation, Q20) — SHIPPED behind `drive_self_check`
+  (default on).** Read-back (reported setpoint vs pushed, after a settle window)
+  and an independent ceiling cross-check (heat requested, floor+ceiling flat →
+  nothing responding). Notification-only. See CLAUDE.md Q20.
+- **Step 4 (predicted-gain suppression inside a running session) — SHIPPED** as
+  the running-booking scope of the coast predictor above (folded into step 2
+  rather than built separately, since the same `will_coast_to_target` with
+  `gap_min=0` expresses it).
+- **Step 5 (decouple the fan-regime label from the season, F6) — see below.**
