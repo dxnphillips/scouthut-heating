@@ -271,6 +271,12 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # which the device otherwise kept to itself.
     "office_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
     "shared_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
+    # Warm-season occupied hall target (the "summer setback"). When
+    # summer_setback_mode is on and the seasonal lockout is engaged, an occupied
+    # hall below this heats toward it (delivered via the eco preset — the Rointe
+    # comfort setpoint floor is 19, this reaches lower); a warm hall gets no heat
+    # and the cooling fans instead. Bounded to the Rointe eco range (<= 18.5).
+    "hall_summer_comfort_temp": (10, 18.5, 0.5, 17.5, "°C"),
 }
 
 NUMBER_ICONS: dict[str, str] = {
@@ -301,6 +307,7 @@ NUMBER_ICONS: dict[str, str] = {
     "drive_max_offset": "mdi:thermometer-chevron-up",
     "office_comfort_temp": "mdi:thermometer-high",
     "shared_comfort_temp": "mdi:thermometer-high",
+    "hall_summer_comfort_temp": "mdi:sun-thermometer",
 }
 
 BOOST_OPTIONS = ["30 min", "60 min", "90 min"]
@@ -351,6 +358,14 @@ SWITCH_DEFS: dict[str, bool] = {
     # out. Default ON; turn OFF to restore the strict lockout (a manual Boost
     # still pierces it either way).
     "cold_booking_heats": True,
+    # State-based summer: instead of the seasonal lockout hard-freezing the hall
+    # to ice, an occupied hall below the summer setback (hall_summer_comfort_temp)
+    # heats toward it, while a warm hall gets no heat + the cooling fans. Keeps
+    # the lockout's cost saving (a summer hall is usually above the setback, so it
+    # rarely fires) without freezing out a genuinely cold occupied session.
+    # Default OFF — a deliberate behaviour change the owner enables when ready to
+    # watch it; OFF is the original lockout-as-block behaviour.
+    "summer_setback_mode": False,
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -366,6 +381,7 @@ SWITCH_ICONS: dict[str, str] = {
     "winter_fans_need_occupancy": "mdi:account-clock",
     "cold_booking_heats": "mdi:calendar-alert",
     "drive_to_target": "mdi:thermometer-auto",
+    "summer_setback_mode": "mdi:sun-snowflake-variant",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"

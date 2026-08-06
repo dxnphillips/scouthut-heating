@@ -155,6 +155,12 @@ SEASONAL_SNAP_BAND = 2.0  # °C
 # around the setpoint.
 COLD_BOOKING_RELEASE_BAND = 0.5  # °C above target before the bypass releases
 
+# The audit reason tag for the state-based summer setback rung. Named as a
+# constant because both the ladder (which sets it) and the eco-value router
+# (which reads it to pick the setback floor over the ordinary eco number) must
+# agree on the string.
+REASON_SUMMER_SETBACK = "summer_setback"
+
 # O1 power above this means the fans are genuinely moving air (a closed master
 # with the transformer dial at zero draws next to nothing). Just below the
 # Shelly script's MIN_RUN_W commissioning placeholder.
@@ -1838,6 +1844,35 @@ class ScoutController:
         )
         return room < self._booking_target(zone) + margin
 
+    def _summer_setback_wants_heat(self) -> bool:
+        """True when the state-based summer setback should warm the hall.
+
+        The seasonal lockout freezes heating for the season, but with summer
+        setback on an *occupied* hall that is genuinely cool is gently warmed
+        to a low setback floor instead of frozen solid — heat follows the
+        building's state, not just a booking. "Occupied" = a booking / pre-heat
+        window, recent hall motion, or the manual occupied override. The
+        temperature test reads the hall's averaged floor (not the coldest end
+        the cold-booking pierce uses): the setback is a low-priority comfort
+        floor, so it should not over-fire on one cool end. An unreadable room
+        does NOT heat (summer fail-safe: err off, the same convention the
+        cold-booking bypass and the summer fans follow). Release hysteresis
+        keyed off the applied preset keeps it from flapping around the floor.
+        """
+        timeout = self.number("motion_timeout_minutes")
+        occupied = (
+            self._cal_active(ZONE_A)
+            or self._motion_recent(ZONE_MOTION_AREA[ZONE_A], timeout)
+            or self.switch_on(f"{ZONE_A}_occupied_override")
+        )
+        if not occupied:
+            return False
+        room = self._zone_room_temp(ZONE_A)
+        if room is None:
+            return False
+        margin = COLD_BOOKING_RELEASE_BAND if self.applied[ZONE_A] == PRESET_ECO else 0.0
+        return room < self.number("hall_summer_comfort_temp") + margin
+
     def _reason(self, zone: str, reason: str, preset: str | None) -> str | None:
         """Stash why a zone's desired preset is what it is (for the audit)."""
         self._preset_reason[zone] = reason
@@ -1865,6 +1900,18 @@ class ScoutController:
         # does not bypass, so this stays a cold-snap escape hatch, not a
         # season-long defeat of the lockout.
         if self.seasonal_lockout and not self._cold_booking_bypass(zone):
+            # State-based summer setback (hall only): rather than freeze an
+            # occupied hall solid for the season, warm it to a low setback floor
+            # (eco carrying the setback number, below) when it is genuinely
+            # cool. An empty or already-warm hall still lands on ice, so the
+            # summer cooling fans keep the room. Off by default — the owner
+            # enables it consciously.
+            if (
+                zone == ZONE_A
+                and self.switch_on("summer_setback_mode", default=False)
+                and self._summer_setback_wants_heat()
+            ):
+                return self._reason(zone, REASON_SUMMER_SETBACK, PRESET_ECO)
             return self._reason(zone, "seasonal_lockout", PRESET_ICE)
 
         cal_on = self._cal_active(zone)
@@ -2250,6 +2297,25 @@ class ScoutController:
                 continue
             await self._async_set_preset(zone, desired)
 
+    def _hall_eco_target(self, eco_low: bool) -> float:
+        """The eco setpoint to push for the hall.
+
+        Eco-keyword bookings get the low setpoint. When the state-based summer
+        setback is the reason the hall is on eco (occupied, cool, under the
+        seasonal lockout), eco carries the setback floor
+        (``hall_summer_comfort_temp``, ~17.5) instead of the ordinary winter
+        eco number, so an occupied summer hall drifts up to the setback rather
+        than the lower eco value. Every other eco path keeps the ordinary eco
+        number. Read off the freshly-computed preset reason: the ladder runs in
+        ``_reconcile_zones`` immediately before every eco push, so the reason
+        reflects the preset being applied this tick.
+        """
+        if eco_low:
+            return self.number("hall_eco_low_temp")
+        if self._preset_reason.get(ZONE_A) == REASON_SUMMER_SETBACK:
+            return self.number("hall_summer_comfort_temp")
+        return self.number("hall_eco_temp")
+
     async def _reconcile_hall_temps(self) -> None:
         """Re-assert the hall comfort/eco setpoints when the intended value
         changes while the hall is in a heating preset — even without a preset
@@ -2267,9 +2333,7 @@ class ScoutController:
             return
         eco_low = self._eco_keyword_active(ZONE_A)
         comfort_temp = self.number("hall_comfort_temp")
-        eco_temp = (
-            self.number("hall_eco_low_temp") if eco_low else self.number("hall_eco_temp")
-        )
+        eco_temp = self._hall_eco_target(eco_low)
         if self._hall_temps_pushed != (comfort_temp, eco_temp):
             await self._async_push_hall_temps(eco_low=eco_low)
 
@@ -2526,7 +2590,7 @@ class ScoutController:
     async def _async_push_hall_temps(self, eco_low: bool) -> None:
         comfort_numbers, eco_numbers = self._hall_number_entities()
         comfort_temp = self.number("hall_comfort_temp")
-        eco_temp = self.number("hall_eco_low_temp") if eco_low else self.number("hall_eco_temp")
+        eco_temp = self._hall_eco_target(eco_low)
         # Record the intended pair even if a side is unmappable, so the
         # reconciler does not retry a push that has nowhere to land every tick.
         self._hall_temps_pushed = (comfort_temp, eco_temp)

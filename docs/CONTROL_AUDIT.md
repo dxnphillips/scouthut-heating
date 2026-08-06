@@ -251,3 +251,25 @@ validated against field exports before the next:
 
 Each step is small, reversible, and evidence-gated — the opposite of how the
 control ladder should be changed on a tired night.
+
+---
+
+## 9. Progress
+
+- **Step 3 (F1/F5/F2) — SHIPPED behind `summer_setback_mode` (default off).**
+  The seasonal lockout is now a *setback* rather than a hard block for the hall:
+  an occupied hall below `hall_summer_comfort_temp` (17.5) heats to that floor
+  via eco instead of icing (`_summer_setback_wants_heat`, `_hall_eco_target`,
+  `reason` = `summer_setback`). This is the F2 fix (occupancy alone now earns
+  heat in summer) and a partial F5 fix (a *lower summer target* rather than a
+  block). Chosen over the deadband-widening framing because the setback floor is
+  the more legible knob for the owner. Hall-only for now; office keeps the block.
+  Owner enables it consciously — OFF is exactly the prior behaviour. First-season
+  watch: whether an occupied cool summer hall actually wants heat or the cooling
+  fans suffice.
+- **Step 2 (passive-arrival learner / coasting) — NEXT**, as an isolated
+  observe-then-act change (owner chose *act immediately, comfort-lean* — so it
+  will suppress heat only when the predicted free gain clearly closes the gap,
+  and default to heating when uncertain).
+- Steps 1 (drive self-validation, Q20), 4 (predicted-gain suppression wiring)
+  and 5 (fan-regime decoupling) remain as above.

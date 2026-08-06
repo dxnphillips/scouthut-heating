@@ -691,6 +691,41 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the room sits at comfort a little early if it reaches target before the booking
   — it cannot overheat past setpoint, and it removes the cold-arrival risk of the
   window closing mid-lead.
+- **State-based summer setback (`summer_setback_mode` = off).** The seasonal
+  lockout's default behaviour is to *block* — it freezes the hall to ice for the
+  warm season and only a booking pierces it (cold-booking, above). This switch
+  changes the lockout from a block into a **setback**: when it is on, an
+  *occupied* hall that is genuinely cool is gently warmed to a low floor
+  (`hall_summer_comfort_temp`, default 17.5) instead of frozen solid — heat then
+  follows the building's **state**, not just the calendar. It answers audit
+  finding F2 (in summer, occupancy alone — motion, override — could not previously
+  get *any* heat; only a booking could). Mechanics, all in `_desired_zone`'s
+  lockout rung (`_summer_setback_wants_heat`, hall/`ZONE_A` only): fires when the
+  switch is on, the hall is occupied (`_cal_active` OR recent hall motion OR the
+  occupied override) **and** the hall's *averaged* floor is below the setback
+  floor. A warm hall (at/above the floor) or an empty hall still lands on ice, so
+  the summer cooling fans keep the room in both those cases; an **unreadable**
+  room does not heat (summer fail-safe: err off, like the cold-booking bypass and
+  the summer fans). Delivered via the **eco** preset because the Rointe comfort
+  setpoint floor is 19 °C and the setback wants ~17.5 — `_hall_eco_target` routes
+  the eco push to the setback number whenever the preset reason is
+  `summer_setback` (every other eco path keeps the ordinary eco number). The
+  averaged floor (not the *coldest* probe the cold-booking pierce uses) is
+  deliberate: a low-priority comfort floor should not over-fire on one cool end,
+  and it sidesteps the cold-booking pierce's known eagerness (Q2 field note).
+  Release hysteresis reuses `COLD_BOOKING_RELEASE_BAND` (0.5, keyed off the applied
+  preset). Because the hall lands on a heating preset, the fans naturally run the
+  **reverse/destrat** regime (keyed off `applied[ZONE_A]`, no fan-logic change) —
+  the right direction for warming a cool room, not the cooling breeze. A
+  genuinely cold *booking* still wins full **comfort** through the cold-booking
+  pierce (checked first). **Default OFF** — a deliberate behaviour change the
+  owner enables consciously; OFF is exactly the original lockout-as-block. Audit
+  reason tagged `summer_setback`. **First-season watch:** confirm it fires only on
+  genuinely cool occupied halls (not on a warm summer hall that merely dipped
+  below 17.5 briefly), that the 0.5 band doesn't flap it, and — the real question —
+  whether an occupied cool summer hall actually *wants* heat or whether the
+  cooling fans alone suffice (the setback is comfort insurance for a cool
+  shoulder-season day, not a heating-season tool).
 - **Office eco drift is unjudgeable** (the setpoint lives on the device and
   is never pushed); skipped rather than guessed.
 - **Alarm suppression is away-aware (1.12.0).** `_alarm_armed` reads a real

@@ -40,6 +40,7 @@ NAMES: dict[str, str] = {
     "drive_max_offset": "Drive-to-target: max setpoint boost",
     "office_comfort_temp": "Office comfort temperature",
     "shared_comfort_temp": "Shared comfort temperature",
+    "hall_summer_comfort_temp": "Hall summer setback temperature",
 }
 
 HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp", "hall_eco_low_temp")

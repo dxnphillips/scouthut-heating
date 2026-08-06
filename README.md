@@ -258,6 +258,20 @@ this priority (highest wins):
    piercing hall/office booking to `eco`. Controlled by the **Cold bookings heat
    despite lockout** switch (default on) — turn it off for the strict lockout (a
    manual Boost still pierces it either way).
+
+   *State-based summer setback (optional).* The **Summer setback (state-based)
+   mode** switch (default **off**) turns the seasonal lockout from a hard block
+   into a gentle floor for the hall: when it is on, an **occupied** hall (a
+   booking/pre-heat, recent hall motion, or the occupied override) that is
+   genuinely cool — below the **Hall summer setback temperature** slider
+   (default 17.5 °C) — is warmed to that floor instead of frozen to `ice`, so
+   heat follows the *building's state*, not just the calendar. A warm hall (at or
+   above the floor) or an empty hall still ices, leaving the summer cooling fans
+   the room. It is delivered through the `eco` preset (the Rointe comfort floor
+   is 19 °C, so a lower target rides eco); a genuinely cold *booking* still gets
+   full `comfort` through the pierce above. Off is exactly the original
+   lockout-as-block behaviour — enable it when you want a cool shoulder-season
+   hall kept comfortable rather than shut off.
 6. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a

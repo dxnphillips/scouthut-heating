@@ -86,6 +86,8 @@ _TEMPERATURES = [
     ("hall_comfort_temp", "Hall comfort"),
     ("hall_eco_temp", "Hall eco"),
     ("hall_eco_low_temp", "Hall eco-low (ECO bookings)"),
+    ("hall_summer_comfort_temp", "Hall summer setback"),
+    ("summer_setback_mode", "Summer setback (state-based) mode"),
     ("office_comfort_temp", "Office comfort"),
     ("shared_comfort_temp", "Shared comfort"),
     ("seasonal_lockout_temp", "Seasonal lockout threshold"),
