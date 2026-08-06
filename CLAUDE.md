@@ -484,6 +484,26 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     cool day there is nothing to deliver, and forward fans would chill. Pairs
     with Q16 (the lockout can leave such a session unheated) and Q17 (delivery
     vs capacity vs soak).
+20. **Drive self-validation — does the loop know its commands are working?
+    (Candidate feature, backlogged 2026-08-06, owner request.)** The drive-to-
+    target loop notices when the *room* doesn't respond (staircase climbs, then
+    the `drive_capped` alert at the cap) — but it does NOT notice when its own
+    *command* isn't landing. The v1.14.0–v1.14.2 phantom-push bug (writing the
+    comfort number without re-applying the preset) was invisible to the loop:
+    "pushed 22.5, probe didn't rise" looked identical to a capacity wall, and it
+    would have blamed capacity. Two validations to add (both use signals the
+    Rointe cloud can't fake): (a) **setpoint read-back** — after pushing X, check
+    the heater's *reported* `setpoint` (now in diagnostics, v1.14.4) matches X
+    within a settle window sized to the real cloud lag; a persistent divergence
+    is "the heater isn't accepting our setpoint," a distinct fault from "can't
+    reach target." (b) **independent ceiling cross-check** — the roof thermometer
+    is an independent witness; if the drive is boosting hard with `demand` on but
+    neither the floor probes NOR the ceiling move over a long window, flag "heat
+    requested, no response anywhere." **Build only after the drive is confirmed
+    to actually move the hardware** and the read-back settle window can be tuned
+    against measured lag (not guessed — guessing it is how a false-alarm bug gets
+    born). Diagnostics now carry each heater's `setpoint` + `action` (v1.14.4) as
+    the foundation.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*

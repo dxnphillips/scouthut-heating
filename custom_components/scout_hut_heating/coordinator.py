@@ -1578,6 +1578,13 @@ class ScoutController:
                     "state": st.state if st else None,
                     "temp": (st.attributes.get("current_temperature") if st else None),
                     "preset": (st.attributes.get("preset_mode") if st else None),
+                    # The device's ACTIVE target setpoint and heating action —
+                    # the ground truth for whether a drive push actually landed
+                    # (drive.pushed is only what we SENT). Without these the
+                    # setpoint-not-landing failure looks identical to a capacity
+                    # wall in the export.
+                    "setpoint": (st.attributes.get("temperature") if st else None),
+                    "action": (st.attributes.get("hvac_action") if st else None),
                     "online": self._climate_online(climate),
                 }
             zones[zone] = {
