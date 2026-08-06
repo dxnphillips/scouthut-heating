@@ -97,6 +97,8 @@ from .const import (
     FAN_COOLING_MAX_TEMP,
     NOTIFY_CONDENSATION,
     NOTIFY_DRIVE_CAPPED,
+    NOTIFY_DRIVE_NO_RESPONSE,
+    NOTIFY_DRIVE_REJECTED,
     NOTIFY_FAN_BREEZE,
     NOTIFY_FAN_DIAL,
     NOTIFY_FAN_FAULT,
@@ -231,6 +233,28 @@ DRIVE_PROBE_SANE_BELOW = 4.0  # °C
 # still a full step short of target for this long — a real capacity wall or a
 # stuck sensor, either of which the owner wants to know about.
 DRIVE_CAP_ALARM_MINUTES = 60.0
+
+# --- Drive self-validation (Q20): does the loop know its commands are working?
+# Two independent checks, both reading signals the Rointe cloud cannot fake.
+#
+# (a) Setpoint read-back. After a push settles, the heater's own REPORTED
+# setpoint should match what we pushed; a persistent divergence is "the heater
+# isn't accepting our setpoint" (the v1.14.2 phantom-push class), a distinct
+# fault from "can't reach target" (the cap alarm above). The settle window is
+# set well above the real Rointe cloud lag (seconds to ~a minute) so ordinary
+# lag can never trip it — the deliberately generous margin the original Q20
+# note asked for, rather than a tight guess that would false-alarm.
+DRIVE_SETTLE_MINUTES = 10.0
+DRIVE_SETPOINT_TOL = 0.3  # °C; our pushes and the Rointe are 0.5-quantised
+# (b) Independent no-response witness. The ceiling thermometer is an independent
+# instrument: if the hall is boosting hard (a heater pushed above its plain
+# target) with heat demand on yet, over this window, NEITHER the floor probes
+# NOR the ceiling move at all, the requested heat is reaching nothing anywhere —
+# a dead chain (phantom push, total outage), which a capacity wall is not (a
+# capacity wall still warms the ceiling — stratification). Long window + a real
+# movement epsilon so a room already holding steady at target never trips it.
+DRIVE_NO_RESPONSE_MINUTES = 45.0
+DRIVE_NO_RESPONSE_EPS = 0.3  # °C of movement that counts as "responding"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -430,6 +454,17 @@ class ScoutController:
         self._drive_number: dict[str, str] = {}  # cached climate -> comfort number
         self._drive_cap_since: dict[str, datetime | None] = {}  # cap-pinned clock
         self._drive_notified = False  # cap-pinned alert raised
+        # Drive self-validation (Q20). When each heater was last pushed a NEW
+        # setpoint (to time the read-back settle window), and which heaters are
+        # currently failing the read-back. `_drive_response_ref` anchors the
+        # hall's independent no-response witness: (captured-at, floor, ceiling)
+        # while boosting hard, reset whenever either moves. Notification latches
+        # so the alerts raise/clear once, not every tick.
+        self._drive_pushed_at: dict[str, datetime] = {}
+        self._drive_rejected: set[str] = set()
+        self._drive_reject_notified = False
+        self._drive_response_ref: tuple[datetime, float | None, float | None] | None = None
+        self._drive_noresp_notified = False
 
         # Durable state (safety latches and long clocks survive a restart).
         self._store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}")
@@ -1692,6 +1727,10 @@ class ScoutController:
                     "pushed": dict(self._drive_pushed),
                     "stair": dict(self._drive_stair),
                     "capped_alert": self._drive_notified,
+                    "self_check": self.switch_on("drive_self_check", default=True),
+                    "setpoint_rejected": sorted(self._drive_rejected),
+                    "rejected_alert": self._drive_reject_notified,
+                    "no_response_alert": self._drive_noresp_notified,
                 },
                 "coast": {
                     "enabled": self.switch_on("coast_when_free", default=False),
@@ -2856,6 +2895,9 @@ class ScoutController:
         if self._drive_pushed.get(climate) == value:
             return
         self._drive_pushed[climate] = value
+        # Stamp the push so the read-back self-check waits a full settle window
+        # before judging whether the device adopted this new value (Q20).
+        self._drive_pushed_at[climate] = self._now()
         await self.hass.services.async_call(
             "number",
             "set_value",
@@ -2891,6 +2933,7 @@ class ScoutController:
         now = self._now()
         outdoor = self._outdoor_temp()
         offset = self.number("drive_max_offset")
+        self_check = self.switch_on("drive_self_check", default=True)
         any_capped_short = False
         for zone, cfg_key in DRIVE_ZONE_CLIMATES.items():
             climates = self._as_list(self.config.get(cfg_key))
@@ -2925,6 +2968,7 @@ class ScoutController:
                     # boosted on a reading we cannot trust.
                     self._drive_stair[climate] = 0.0
                     self._drive_cap_since[climate] = None
+                    self._drive_rejected.discard(climate)
                     await self._drive_push(climate, number, target)
                     continue
                 since = self._drive_minutes_since_step(climate, now)
@@ -2936,6 +2980,7 @@ class ScoutController:
                 if evaluated:
                     self._drive_step_at[climate] = now
                 await self._drive_push(climate, number, pushed, reassert=True)
+                self._check_setpoint_readback(climate, pushed, now, self_check)
                 # Cap-pinned watch: at the cap AND still a full step short.
                 if pushed >= cap - 1e-9 and (target - probe) >= DRIVE_STEP:
                     if self._drive_cap_since.get(climate) is None:
@@ -2947,6 +2992,7 @@ class ScoutController:
                 else:
                     self._drive_cap_since[climate] = None
         self._update_drive_alarm(any_capped_short)
+        self._update_drive_self_check(now, self_check)
 
     def _drive_minutes_since_step(self, climate: str, now: datetime) -> float:
         at = self._drive_step_at.get(climate)
@@ -2974,6 +3020,153 @@ class ScoutController:
             self._drive_notified = False
             persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_CAPPED)
 
+    def _heater_setpoint(self, climate: str) -> float | None:
+        """The heater's OWN reported active setpoint (its `temperature` attr).
+
+        This is what the device says its target is — an independent read of
+        whether our pushed setpoint was actually adopted. Unreadable → None
+        (the read-back check then abstains rather than false-flag).
+        """
+        st = self.hass.states.get(climate)
+        if st is None or st.state in ("unavailable", "unknown"):
+            return None
+        temp = st.attributes.get("temperature")
+        try:
+            return float(temp) if temp is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _check_setpoint_readback(
+        self, climate: str, pushed: float, now: datetime, self_check: bool
+    ) -> None:
+        """Track whether a driven heater has adopted the setpoint we pushed (Q20a).
+
+        Judged only after the push has had a full settle window to round-trip
+        through the Rointe cloud; before that, or when the setpoint is
+        unreadable, the check abstains (drops the heater from the rejected set)
+        so ordinary lag never false-flags. A divergence beyond tolerance once
+        settled is "the heater isn't accepting our setpoint" — the phantom-push
+        failure, invisible to the cap alarm.
+        """
+        if not self_check:
+            self._drive_rejected.discard(climate)
+            return
+        at = self._drive_pushed_at.get(climate)
+        if at is None or (now - at).total_seconds() < DRIVE_SETTLE_MINUTES * 60:
+            self._drive_rejected.discard(climate)
+            return
+        reported = self._heater_setpoint(climate)
+        if reported is None:
+            self._drive_rejected.discard(climate)
+            return
+        if abs(reported - pushed) > DRIVE_SETPOINT_TOL:
+            self._drive_rejected.add(climate)
+        else:
+            self._drive_rejected.discard(climate)
+
+    def _update_drive_self_check(self, now: datetime, self_check: bool) -> None:
+        """Raise/clear the two Q20 self-validation alerts (notification-only)."""
+        if not self_check:
+            self._drive_rejected.clear()
+            self._drive_response_ref = None
+            if self._drive_reject_notified:
+                self._drive_reject_notified = False
+                persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_REJECTED)
+            if self._drive_noresp_notified:
+                self._drive_noresp_notified = False
+                persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_NO_RESPONSE)
+            return
+        self._update_drive_reject_alarm()
+        self._update_drive_no_response(now)
+
+    def _update_drive_reject_alarm(self) -> None:
+        rejected = bool(self._drive_rejected)
+        if rejected and not self._drive_reject_notified:
+            self._drive_reject_notified = True
+            self.audit.record(
+                "drive_setpoint_rejected", self._now(), heaters=sorted(self._drive_rejected)
+            )
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    "The heating is driving a heater but the heater's own "
+                    "reported setpoint is not matching the value being sent, "
+                    f"even after {DRIVE_SETTLE_MINUTES:.0f} minutes. The command "
+                    "may not be reaching the radiator (a cloud/integration "
+                    "issue) — the room could stay cold while the app looks "
+                    "correct. A reload of the Rointe integration often clears it."
+                ),
+                title="🏕 Scout Hut – Heater not accepting its setpoint",
+                notification_id=NOTIFY_DRIVE_REJECTED,
+            )
+        elif not rejected and self._drive_reject_notified:
+            self._drive_reject_notified = False
+            persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_REJECTED)
+
+    def _update_drive_no_response(self, now: datetime) -> None:
+        """Independent ceiling witness (Q20b): heat requested, nothing responds.
+
+        While the hall is in comfort and its coldest probe is still short of
+        target, the room SHOULD be warming somewhere. The ceiling thermometer is
+        an independent instrument: if, over a long window, NEITHER the floor NOR
+        the ceiling rises, the requested heat is reaching nothing anywhere — a
+        dead chain (phantom push, total outage), which a capacity wall is not (a
+        capacity wall still warms the ceiling via stratification). Needs both the
+        floor and the ceiling readable, or the witness is not independent and it
+        abstains.
+        """
+        hall_comfort = self.applied.get(ZONE_A) == PRESET_COMFORT
+        floor = self._zone_room_temp(ZONE_A, coldest=True)
+        ceiling = self._ceiling_temp()
+        target = self._drive_comfort_target(ZONE_A)
+        short = floor is not None and floor < target - DRIVE_STEP
+        if not (hall_comfort and short) or floor is None or ceiling is None:
+            self._drive_response_ref = None
+            if self._drive_noresp_notified:
+                self._drive_noresp_notified = False
+                persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_NO_RESPONSE)
+            return
+        ref = self._drive_response_ref
+        if ref is None:
+            self._drive_response_ref = (now, floor, ceiling)
+            return
+        ref_at, ref_floor, ref_ceiling = ref
+        moved = (floor - ref_floor) >= DRIVE_NO_RESPONSE_EPS or (
+            ceiling - ref_ceiling
+        ) >= DRIVE_NO_RESPONSE_EPS
+        if moved:
+            # Something is responding — reset the window from here.
+            self._drive_response_ref = (now, floor, ceiling)
+            if self._drive_noresp_notified:
+                self._drive_noresp_notified = False
+                persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_NO_RESPONSE)
+            return
+        if (now - ref_at) >= timedelta(minutes=DRIVE_NO_RESPONSE_MINUTES) and not (
+            self._drive_noresp_notified
+        ):
+            self._drive_noresp_notified = True
+            self.audit.record(
+                "drive_no_response",
+                self._now(),
+                floor=floor,
+                ceiling=ceiling,
+                target=target,
+                minutes=DRIVE_NO_RESPONSE_MINUTES,
+            )
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    "The hall is calling for heat and short of target, but over "
+                    f"the last {DRIVE_NO_RESPONSE_MINUTES:.0f} minutes neither the "
+                    "floor nor the ceiling has warmed at all. The heaters may not "
+                    "be producing heat (a cloud dropout, lost power, or a command "
+                    "not landing) — the hut is not warming. Worth checking the "
+                    "Rointe integration and the heaters."
+                ),
+                title="🏕 Scout Hut – Heat requested but nothing is warming",
+                notification_id=NOTIFY_DRIVE_NO_RESPONSE,
+            )
+
     async def async_drive_reset(self) -> None:
         """Last will & testament: push every heater we may have overdriven back
         to its plain target, so a shutdown, reload or disable never leaves a
@@ -2996,10 +3189,19 @@ class ScoutController:
         self._drive_stair.clear()
         self._drive_step_at.clear()
         self._drive_pushed.clear()
+        self._drive_pushed_at.clear()
         self._drive_cap_since.clear()
+        self._drive_rejected.clear()
+        self._drive_response_ref = None
         if self._drive_notified:
             self._drive_notified = False
             persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_CAPPED)
+        if self._drive_reject_notified:
+            self._drive_reject_notified = False
+            persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_REJECTED)
+        if self._drive_noresp_notified:
+            self._drive_noresp_notified = False
+            persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_NO_RESPONSE)
 
     # ------------------------------------------------------------------
     # Destratification / cooling fans

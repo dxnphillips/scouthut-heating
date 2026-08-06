@@ -376,6 +376,14 @@ SWITCH_DEFS: dict[str, bool] = {
     # inverse of a comfort guarantee, so the owner enables it consciously and
     # watches the `preheat_coast` audit reason before trusting it.
     "coast_when_free": False,
+    # Drive self-validation (Q20): watch whether the drive-to-target loop's
+    # commands are actually landing — the heater's REPORTED setpoint matching
+    # what we pushed (catches the phantom-push class), and an independent
+    # ceiling cross-check that flags "heat requested, nothing responding
+    # anywhere" (a dead chain, distinct from a capacity wall which still warms
+    # the ceiling). Notification-only, never changes control; the windows are
+    # generous so ordinary cloud lag cannot false-alarm. Default ON.
+    "drive_self_check": True,
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -393,6 +401,7 @@ SWITCH_ICONS: dict[str, str] = {
     "drive_to_target": "mdi:thermometer-auto",
     "summer_setback_mode": "mdi:sun-snowflake-variant",
     "coast_when_free": "mdi:weather-sunny-alert",
+    "drive_self_check": "mdi:check-decagram",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"
@@ -420,4 +429,6 @@ NOTIFY_FAN_TOO_HOT = "scout_fan_too_hot"
 NOTIFY_FAN_BREEZE = "scout_fan_breeze_hot"
 NOTIFY_CONDENSATION = "scout_condensation"
 NOTIFY_DRIVE_CAPPED = "scout_drive_capped"
+NOTIFY_DRIVE_REJECTED = "scout_drive_setpoint_rejected"
+NOTIFY_DRIVE_NO_RESPONSE = "scout_drive_no_response"
 NOTIFY_DASHBOARDS = "scout_dashboards"

@@ -504,6 +504,30 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     against measured lag (not guessed — guessing it is how a false-alarm bug gets
     born). Diagnostics now carry each heater's `setpoint` + `action` (v1.14.4) as
     the foundation.
+    **BUILT 2026-08-06 (`drive_self_check`, default ON, notification-only).** Both
+    checks shipped in `_reconcile_drive`. (a) *Setpoint read-back*
+    (`_check_setpoint_readback`): after a push has had `DRIVE_SETTLE_MINUTES` (10)
+    to round-trip, the heater's reported `temperature` must be within
+    `DRIVE_SETPOINT_TOL` (0.3) of what we pushed; a settled divergence adds the
+    heater to `_drive_rejected` → `drive_setpoint_rejected` audit + persistent
+    notification (`NOTIFY_DRIVE_REJECTED`). The settle window is deliberately
+    generous (≫ the real seconds-to-a-minute cloud lag) so ordinary lag cannot
+    false-alarm — the "not guessed" mitigation the caution asked for, achieved by
+    over-sizing rather than by measuring. Abstains (drops the heater) before the
+    window elapses or when the setpoint is unreadable. (b) *Independent ceiling
+    cross-check* (`_update_drive_no_response`): while the hall is in comfort and
+    its coldest probe is short of target, if over `DRIVE_NO_RESPONSE_MINUTES` (45)
+    NEITHER the floor NOR the ceiling rises by `DRIVE_NO_RESPONSE_EPS` (0.3), raise
+    `drive_no_response` + `NOTIFY_DRIVE_NO_RESPONSE`. Deliberately NOT gated on
+    `demand` (a dead chain reads 0 W, so demand-on would miss it); the ceiling is
+    the discriminator from a capacity wall, which still warms the ceiling by
+    stratification (so a rising ceiling resets the window). Needs both floor and
+    ceiling readable or it abstains (no independent witness). Diagnostics gained
+    `drive.self_check` / `setpoint_rejected` / `rejected_alert` / `no_response_alert`.
+    **First-winter watch:** confirm neither alert false-fires on a normal cold
+    climb (the settle/window sizes are still first guesses — over-generous on
+    purpose); if the read-back ever flags on genuine slow adoption, widen
+    `DRIVE_SETTLE_MINUTES` rather than tightening the tolerance.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
