@@ -1749,6 +1749,7 @@ class ScoutController:
                     "overheated": self.fan_overheated,
                     "breeze_hot": self.fan_breeze_hot,
                     "mix": self.fan_mix,
+                    "follows_state": self.switch_on("fans_follow_state", default=False),
                     "last_on": _iso(self.fan_last_on),
                     "last_off": _iso(self.fan_last_off),
                 },
@@ -3610,6 +3611,28 @@ class ScoutController:
             return True
         return self.switch_on("summer_follows_season", default=True) and self.seasonal_lockout
 
+    def _fan_cooling_regime(self, warm: bool | None, heating: bool) -> bool:
+        """Whether the fans should run the COOLING (forward) regime this tick.
+
+        F6 — decouple the cooling-vs-destratify direction from the season label.
+        By default this is `_summer_active()` (season-derived: manual force, or
+        the seasonal lockout via `summer_follows_season`). With
+        `fans_follow_state` on, the direction instead follows the hall's actual
+        thermal STATE: cool only when the head-height air is genuinely warm
+        (`warm`) and the hall is not being heated, and destratify otherwise — so
+        the direction tracks the thermometer, not a 3-day-average outdoor
+        crossing (which also removes the Q16 risk of a lockout flip flapping the
+        fan direction). Manual `summer_mode` still forces cooling; active heating
+        still forces reverse (the caller passes `heating` straight through). A
+        warm reading is required, so no floor / unknown warmth never blows a
+        cooling draught on assumption — the same fail-safe the summer branch keeps.
+        """
+        if self.switch_on("fans_follow_state", default=False):
+            return self.switch_on("summer_mode", default=False) or (
+                bool(warm) and not heating
+            )
+        return self._summer_active()
+
     def _fan_target(self) -> tuple[bool, str | None, str]:
         """Resolve the desired fan state with fail-safe precedence on top."""
         if not self.switch_on("fans_enabled", default=True):
@@ -3748,7 +3771,7 @@ class ScoutController:
         heating = self.applied[ZONE_A] in (PRESET_COMFORT, PRESET_ECO)
 
         return fan_decision(
-            summer=self._summer_active(),
+            summer=self._fan_cooling_regime(warm, heating),
             occupied=occupied,
             warm=warm,
             # The breeze guard holds the summer fans exactly like the hard

@@ -290,4 +290,20 @@ control ladder should be changed on a tired night.
   the running-booking scope of the coast predictor above (folded into step 2
   rather than built separately, since the same `will_coast_to_target` with
   `gap_min=0` expresses it).
-- **Step 5 (decouple the fan-regime label from the season, F6) — see below.**
+- **Step 5 (decouple the fan-regime label from the season, F6) — SHIPPED behind
+  `fans_follow_state` (default off).** `_fan_cooling_regime(warm, heating)` sets
+  the cooling-vs-destratify direction from the hall's thermal state (cool only
+  when the head-height air is genuinely warm AND the hall is not being heated;
+  destratify otherwise) instead of `_summer_active()`'s 3-day-average seasonal
+  crossing. Manual `summer_mode` still forces cooling; active heating still
+  forces reverse. This also removes the Q16 sub-concern (a lockout flip flapping
+  the fan direction), because the direction now tracks the thermometer, which
+  does not flip on an average crossing. Default off — the season-labelled default
+  stands until the owner opts in.
+
+**All six audit findings (F1–F6) are now addressed** — the season still sets
+*thresholds* and the seasonal-lockout *intent* (don't run expensive heat in
+summer for marginal comfort) is preserved, but direction, heating-permission and
+the "will it get there alone" question are all state-driven, each behind a switch
+defaulting to the prior behaviour. What remains is field validation against the
+first cold, occupied, heated winter export (the instrument), not more building.

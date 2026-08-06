@@ -138,6 +138,7 @@ _FAN_CONTROLS = [
     ("fans_enabled", "Ceiling fans enabled"),
     ("summer_mode", "Summer cooling mode (manual force)"),
     ("summer_follows_season", "Summer cooling follows season"),
+    ("fans_follow_state", "Direction follows room state (not season)"),
     ("fans_run_on_sensor_loss", "Run when sensor lost"),
     ("winter_fans_need_occupancy", "Winter fans need occupancy"),
 ]

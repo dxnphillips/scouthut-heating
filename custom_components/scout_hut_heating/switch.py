@@ -30,6 +30,7 @@ NAMES: dict[str, str] = {
     "summer_setback_mode": "Summer setback (state-based) mode",
     "coast_when_free": "Coast on free heat (skip pre-heat)",
     "drive_self_check": "Drive self-validation (command checks)",
+    "fans_follow_state": "Fan direction follows room state (not season)",
 }
 
 

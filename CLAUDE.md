@@ -355,6 +355,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     the last direction until the season has been stable for N minutes). If the
     only direction changes remain genuine day-scale transitions, the coupling is
     harmless and no debounce is needed.
+    **Superseded for anyone running `fans_follow_state` (F6, 2026-08-06):** with
+    that switch on the fan direction no longer follows the season at all — it
+    follows the hall's thermal state (`_fan_cooling_regime`), so a lockout flip
+    cannot flap the direction and this sub-question is moot. It remains live only
+    for the default (season-derived) mode; a debounce would only ever be needed
+    there.
 17. **Why does the hall cap at ~18 °C — capacity, stratification, or soak-time?
     (The master question under Q10 — is there apex heat to reclaim at all.)**
     Owner reports the hall maxes near 18 °C when heated, and *outdoor-invariantly*
@@ -577,6 +583,30 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   and accepted. Winter is unchanged (already reverse). The winter run/stop
   rules still apply, so heating a room that's already warm (no demand, floor
   above the recirc cap) just leaves the fans off rather than blowing anything.
+- **Fan direction can follow room state instead of the season
+  (`fans_follow_state` = off, F6).** By default the cooling-vs-destrat *default*
+  direction is season-derived (`_summer_active`: manual force, or the seasonal
+  lockout via `summer_follows_season`) — a 3-day-average outdoor crossing flips
+  it. With this switch on, `_fan_cooling_regime(warm, heating)` sets the direction
+  from the hall's *thermal state*: cool (forward) only when the head-height air is
+  genuinely warm (`warm`, i.e. above `cooling_temp_high`) **and** the hall is not
+  being heated; destratify (reverse) otherwise. So the direction tracks the
+  thermometer, not the calendar — a warm hall gets a breeze even in "winter"
+  season, a cool hall destratifies even in "summer" season, and a lockout flip
+  can no longer flap the direction (the Q16 sub-concern, mooted by this). Manual
+  `summer_mode` still forces cooling; active heating still forces reverse (the
+  `heating` gate above is unchanged and wins). A warm reading is *required*, so no
+  floor / unknown warmth never blows a cooling draught on assumption — the same
+  fail-safe the summer branch keeps. Only the `summer` argument into
+  `fan_decision` changes; the run/stop thresholds, the overheat/breeze guards and
+  the hall-pause early-out are untouched (the pause early-out still reads
+  `_summer_active`, so a paused-and-warm hall in *winter season* under state-mode
+  is the one unhandled corner — negligible, noted not fixed). Default OFF — the
+  season-labelled default stands until the owner opts in. **First-shoulder-season
+  watch:** confirm the direction now only changes on real warm↔cool state
+  transitions (in `fan_change.direction`), not on lockout flips, and that a warm
+  winter hall getting a forward breeze is actually wanted (if not, the fix is a
+  higher `cooling_temp_high`, not re-coupling to the season).
 - **The heaters are driven to target, not trusted (`drive_to_target` = on).**
   The Rointes settle a fraction *below* the setpoint we give them (field
   2026-08-06: a hall probe held ~0.5 below a 19.5 comfort setpoint on a cold

@@ -384,6 +384,14 @@ SWITCH_DEFS: dict[str, bool] = {
     # the ceiling). Notification-only, never changes control; the windows are
     # generous so ordinary cloud lag cannot false-alarm. Default ON.
     "drive_self_check": True,
+    # F6: let the fans' cooling-vs-destratify DIRECTION follow the hall's actual
+    # thermal state (cool when the head-height air is genuinely warm and the hall
+    # is not being heated; destratify otherwise) instead of the season label
+    # (`summer_follows_season`, which flips the default direction on a 3-day-
+    # average outdoor crossing). Manual `summer_mode` still forces cooling, and
+    # active heating still forces reverse. Default OFF — the season-labelled
+    # default is unchanged until the owner opts in.
+    "fans_follow_state": False,
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -402,6 +410,7 @@ SWITCH_ICONS: dict[str, str] = {
     "summer_setback_mode": "mdi:sun-snowflake-variant",
     "coast_when_free": "mdi:weather-sunny-alert",
     "drive_self_check": "mdi:check-decagram",
+    "fans_follow_state": "mdi:thermometer-lines",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"

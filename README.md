@@ -139,7 +139,17 @@ follows season** on, the cooling regime is active while the seasonal heating
 lockout is engaged and drops back to winter destratification when it releases
 in autumn — nobody has to remember to flip anything, and direction reversals
 stay seasonal-rare (best practice for these motors). The **Summer cooling
-mode** switch remains as a manual force-on for out-of-season heatwaves:
+mode** switch remains as a manual force-on for out-of-season heatwaves.
+
+Optionally the direction can follow the *room*, not the calendar: turn on
+**Fan direction follows room state (not season)** (default off) and the
+cooling-vs-destratify choice is made from the hall's own temperature — cool
+(forward) only when the head-height air is genuinely warm *and* the hall is not
+being heated, destratify (reverse) otherwise. A warm hall then gets a breeze
+even on a cold-classified day, a cool hall destratifies even on a warm-classified
+one, and the direction can never flip on a rolling-average weather crossing —
+only on a real change in how warm the room actually is. (Manual cooling mode
+still forces the breeze, and active heating still forces reverse.)
 
 - **Winter destratification** (default) → fans **reverse (up air)** when the
   ceiling-minus-floor ΔT is above the start threshold (default 2 °C, tuned
