@@ -86,7 +86,11 @@ _TEMPERATURES = [
     ("hall_comfort_temp", "Hall comfort"),
     ("hall_eco_temp", "Hall eco"),
     ("hall_eco_low_temp", "Hall eco-low (ECO bookings)"),
+    ("office_comfort_temp", "Office comfort"),
+    ("shared_comfort_temp", "Shared comfort"),
     ("seasonal_lockout_temp", "Seasonal lockout threshold"),
+    ("drive_to_target", "Drive heaters to target"),
+    ("drive_max_offset", "Drive: max setpoint boost"),
 ]
 _OCCUPANCY = [
     ("zone_a_automation_enabled", "Hall automation"),

@@ -43,6 +43,9 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .audit import AuditLog, Trace
+from .drive import STEP as DRIVE_STEP
+from .drive import STEP_INTERVAL_MIN as DRIVE_STEP_INTERVAL_MIN
+from .drive import update_drive
 from .fan_logic import fan_decision
 from .preheat import (
     MAX_COOL_TICK_DROP,
@@ -91,6 +94,7 @@ from .const import (
     DOMAIN,
     FAN_COOLING_MAX_TEMP,
     NOTIFY_CONDENSATION,
+    NOTIFY_DRIVE_CAPPED,
     NOTIFY_FAN_BREEZE,
     NOTIFY_FAN_DIAL,
     NOTIFY_FAN_FAULT,
@@ -193,6 +197,23 @@ DRIFT_SETTLE_SECONDS = 180
 # adjustment is still detected while float noise is not.
 SETPOINT_TOLERANCE = 0.3  # °C
 ROINTE_ANTIFROST = 7.0  # °C
+# The Rointe comfort number entities accept up to 30 °C; the drive cap is
+# clamped here so a large offset slider can never ask for an out-of-range value.
+ROINTE_COMFORT_MAX = 30.0
+
+# Drive-to-target safety net.
+# A heater's probe is "lost" for driving if it has not reported within this
+# window — the Rointe cloud can freeze while looking alive, so a stale reading
+# must not keep driving. A lost probe withdraws that heater to its plain target.
+DRIVE_PROBE_STALE_MINUTES = 30.0
+# Cross-probe sanity: a probe reading more than this far BELOW its zone's median
+# is treated as a glitch and not driven on, so one shorted/stuck sensor cannot
+# force a heater to the cap.
+DRIVE_PROBE_SANE_BELOW = 4.0  # °C
+# Surface a persistent alert once a heater has sat pinned at the drive cap while
+# still a full step short of target for this long — a real capacity wall or a
+# stuck sensor, either of which the owner wants to know about.
+DRIVE_CAP_ALARM_MINUTES = 60.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -207,6 +228,19 @@ ZONE_ALARM = {ZONE_A: CONF_ALARM_MAIN, ZONE_B: CONF_ALARM_OFFICE}
 # on — and `triggered`/`arming`/`pending`/`disarmed` never suppress. A legacy
 # binary_sensor/input_boolean mapping is handled separately (its "on" = armed).
 ALARM_AWAY_STATES = frozenset({"armed_away", "armed_vacation"})
+# Zones whose heaters the drive-to-target loop controls, and where their
+# climate entities are mapped. The shared zone is included so every heated room
+# is driven to its comfort target, not just the hall.
+DRIVE_ZONE_CLIMATES = {
+    ZONE_A: CONF_HALL_CLIMATES,
+    ZONE_B: CONF_OFFICE_CLIMATES,
+    "shared": CONF_SHARED_CLIMATES,
+}
+DRIVE_COMFORT_TARGET_KEY = {
+    ZONE_A: "hall_comfort_temp",
+    ZONE_B: "office_comfort_temp",
+    "shared": "shared_comfort_temp",
+}
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
@@ -357,6 +391,17 @@ class ScoutController:
         # so preset audit events can say WHY, not just what.
         self._preset_reason: dict[str, str] = {}
 
+        # Drive-to-target (outer per-heater trim loop). Keyed by climate
+        # entity_id. The staircase term is deliberately NOT persisted across a
+        # restart: startup resets the device setpoints to their plain targets
+        # first, so a crash can never leave a wound-up overdrive behind.
+        self._drive_stair: dict[str, float] = {}
+        self._drive_step_at: dict[str, datetime] = {}
+        self._drive_pushed: dict[str, float] = {}  # last setpoint pushed per heater
+        self._drive_number: dict[str, str] = {}  # cached climate -> comfort number
+        self._drive_cap_since: dict[str, datetime | None] = {}  # cap-pinned clock
+        self._drive_notified = False  # cap-pinned alert raised
+
         # Durable state (safety latches and long clocks survive a restart).
         self._store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}")
 
@@ -482,6 +527,11 @@ class ScoutController:
             # from empty calendar data (briefly icing a zone mid-booking).
             await self._async_refresh_calendars()
             await self._async_seasonal_check()
+            # Undo any drive overdrive a crash may have left on the heaters
+            # BEFORE the first reconcile: reset every driven setpoint to its
+            # plain target, then the loop re-drives from zero on live readings.
+            if self.switch_on("drive_to_target", default=True):
+                await self.async_drive_reset()
             self._started = True
             await self.async_reconcile()
 
@@ -826,13 +876,16 @@ class ScoutController:
         """The comfort temperature a pre-heat is aiming for.
 
         The hall target is the integration's own slider (it is pushed onto the
-        heaters). The office comfort setpoint lives on the Rointe itself, so
-        the last target seen while the office was actually in comfort is
-        cached and used; until one has been seen, the hall slider is the
-        best available proxy.
+        heaters). For the office: once the drive-to-target loop owns and pushes
+        the office comfort setpoint, its slider IS the target; otherwise the
+        setpoint lives on the Rointe, so the last target seen while the office
+        was actually in comfort is cached and used (falling back to the hall
+        slider until one has been seen).
         """
         if zone == ZONE_A:
             return self.number("hall_comfort_temp")
+        if zone == ZONE_B and self.switch_on("drive_to_target", default=True):
+            return self.number("office_comfort_temp")
         cached = self._zone_comfort_target.get(zone)
         return cached if cached is not None else self.number("hall_comfort_temp")
 
@@ -1597,6 +1650,12 @@ class ScoutController:
                 "summer_active": self._summer_active(),
                 "cal_window": dict(self.cal_window),
                 "cal_title": dict(self.cal_title),
+                "drive": {
+                    "enabled": self.switch_on("drive_to_target", default=True),
+                    "pushed": dict(self._drive_pushed),
+                    "stair": dict(self._drive_stair),
+                    "capped_alert": self._drive_notified,
+                },
                 "fan": {
                     "on": self.fan_on,
                     "mode": self.fan_mode,
@@ -2004,6 +2063,7 @@ class ScoutController:
             self._update_warmup_learning()
             self._update_cooloff_learning()
             await self._reconcile_shared()
+            await self._reconcile_drive()
             await self._reconcile_water()
             await self._reconcile_fans()
             self._note_fan_speed()
@@ -2312,7 +2372,7 @@ class ScoutController:
                 # but reports preset_mode as null, so judge drift from the
                 # reported SETPOINT instead: each preset implies a known
                 # target temperature on a Rointe (anti-frost is fixed at 7).
-                matches = self._setpoint_matches(zone, state, expected)
+                matches = self._setpoint_matches(zone, state, expected, climates[0])
                 detail = f"target is {state.attributes.get('temperature')}°C"
             if matches is None:
                 continue
@@ -2332,7 +2392,9 @@ class ScoutController:
                 self.manual_hold[zone] = False
                 persistent_notification.async_dismiss(self.hass, NOTIFY_ZONE_HOLD[zone])
 
-    def _setpoint_matches(self, zone: str, state: Any, expected: str) -> bool | None:
+    def _setpoint_matches(
+        self, zone: str, state: Any, expected: str, climate: str | None = None
+    ) -> bool | None:
         """Does the heater's reported setpoint agree with the expected preset?
 
         Returns None when it cannot be judged (no readable setpoint, or the
@@ -2347,6 +2409,13 @@ class ScoutController:
         if expected == PRESET_ICE:
             return abs(setpoint - ROINTE_ANTIFROST) <= tol
         if expected == PRESET_COMFORT:
+            # When the drive loop is overdriving this heater, the setpoint we
+            # expect on the device is the DRIVEN value, not the nominal target —
+            # otherwise every trim step would look like a manual change.
+            if climate is not None and self.switch_on("drive_to_target", default=True):
+                driven = self._drive_pushed.get(climate)
+                if driven is not None:
+                    return abs(setpoint - driven) <= tol
             if zone == ZONE_A:
                 return abs(setpoint - self.number("hall_comfort_temp")) <= tol
             cached = self._zone_comfort_target.get(zone)
@@ -2448,6 +2517,11 @@ class ScoutController:
                 eco_found=bool(eco_numbers),
                 eco_low=eco_low,
             )
+        # This sets the BASE comfort setpoint. When the drive-to-target loop is
+        # on it then refines each heater's number to target + trim on top (the
+        # trim starts at zero on entry, so there is no dip); this base push
+        # still runs so the comfort setpoint is always placed even if the drive
+        # cannot resolve a per-heater number.
         if comfort_numbers:
             await self.hass.services.async_call(
                 "number",
@@ -2473,6 +2547,208 @@ class ScoutController:
             {"entity_id": climates, "preset_mode": preset},
             blocking=False,
         )
+
+    # ------------------------------------------------------------------
+    # Drive to target (outer per-heater setpoint trim loop)
+    #
+    # The Rointe firmware drives its element to whatever setpoint we give it, on
+    # its OWN probe, but settles a fraction under (and reports a modelled "full"
+    # power the radiators do not match). Because the integration owns the
+    # setpoint it pushes, it closes an outer loop on each heater's probe and
+    # overdrives the setpoint until the probe actually reaches target — the pure
+    # controller lives in drive.py; the safety policy lives here.
+    # ------------------------------------------------------------------
+    def _drive_comfort_target(self, zone: str) -> float:
+        return self.number(DRIVE_COMFORT_TARGET_KEY[zone])
+
+    def _drive_heatloss_frac(self, zone: str) -> float:
+        # The shared zone has no learned heat-loss of its own; borrow the hall's
+        # (the same leaky main-building fabric) so the feedforward still helps.
+        key = "zone_a_heatloss_pct" if zone == "shared" else f"{zone}_heatloss_pct"
+        return max(0.0, self.number(key) / 100.0)
+
+    def _heater_comfort_number(self, climate: str) -> str | None:
+        """The Rointe comfort-temperature number on this heater's own device.
+
+        Discovered per device (so each heater is driven independently) and
+        cached; an empty string is cached for a heater with no such entity so we
+        do not re-scan the registry every tick.
+        """
+        if climate in self._drive_number:
+            return self._drive_number[climate] or None
+        found = ""
+        registry = er.async_get(self.hass)
+        entry = registry.async_get(climate)
+        if entry is not None and entry.device_id is not None:
+            for member in er.async_entries_for_device(
+                registry, entry.device_id, include_disabled_entities=False
+            ):
+                if member.domain == "number" and "comfort" in member.entity_id.lower():
+                    found = member.entity_id
+                    break
+        self._drive_number[climate] = found
+        return found or None
+
+    def _heater_probe(self, climate: str) -> float | None:
+        """This heater's own current temperature, or None if unavailable/stale.
+
+        Freshness matters: a frozen Rointe reading looks alive but must not keep
+        driving, so a report older than DRIVE_PROBE_STALE_MINUTES counts as lost.
+        """
+        st = self.hass.states.get(climate)
+        if st is None or st.state in ("unavailable", "unknown"):
+            return None
+        ts = getattr(st, "last_reported", None) or st.last_updated
+        if (dt_util.utcnow() - ts).total_seconds() > DRIVE_PROBE_STALE_MINUTES * 60:
+            return None
+        temp = st.attributes.get("current_temperature")
+        try:
+            return float(temp) if temp is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    async def _drive_push(self, climate: str, number: str, value: float) -> None:
+        """Write a heater's comfort setpoint, only when it actually changes."""
+        if self._drive_pushed.get(climate) == value:
+            return
+        self._drive_pushed[climate] = value
+        await self.hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": number, "value": value},
+            blocking=False,
+        )
+
+    async def _reconcile_drive(self) -> None:
+        """Drive each comfort heater's setpoint until its own probe reaches target.
+
+        Runs after the presets are applied. For every zone currently in the
+        COMFORT preset each heater gets a per-heater staircase trim on top of the
+        zone's comfort target (pure maths in drive.py); the loop only ever drives
+        HARDER than the owner's setpoint. Everything else is withdrawn to the
+        plain target so nothing is left overdriven. Safety net: a stale or insane
+        probe withdraws that heater; the per-heater cap bounds the worst case;
+        sustained cap-pinning is surfaced.
+        """
+        if not self.switch_on("drive_to_target", default=True):
+            # Disabled: withdraw once (restore plain targets), then hands off so
+            # office/shared setpoints go back to being device-managed.
+            if self._drive_pushed:
+                await self.async_drive_reset()
+            return
+
+        now = self._now()
+        outdoor = self._outdoor_temp()
+        offset = self.number("drive_max_offset")
+        any_capped_short = False
+        for zone, cfg_key in DRIVE_ZONE_CLIMATES.items():
+            climates = self._as_list(self.config.get(cfg_key))
+            if not climates:
+                continue
+            # Hands off a zone the user has taken manual control of, or whose
+            # automation is disabled: driving (or withdrawing) its setpoint
+            # would fight a deliberate manual change. Leave whatever is there.
+            if zone in (ZONE_A, ZONE_B) and (
+                not self.switch_on(f"{zone}_automation_enabled", default=True)
+                or self.manual_hold.get(zone)
+            ):
+                continue
+            comfort = self.applied.get(zone) == PRESET_COMFORT
+            target = self._drive_comfort_target(zone)
+            cap = min(target + offset, ROINTE_COMFORT_MAX)
+            loss = self._drive_heatloss_frac(zone)
+            probes = {c: self._heater_probe(c) for c in climates}
+            readable = sorted(v for v in probes.values() if v is not None)
+            median = readable[len(readable) // 2] if readable else None
+            for climate in climates:
+                number = self._heater_comfort_number(climate)
+                if number is None:
+                    continue
+                probe = probes[climate]
+                sane = probe is not None and (
+                    median is None or probe >= median - DRIVE_PROBE_SANE_BELOW
+                )
+                if not comfort or not sane:
+                    # Fail-safe withdrawal: not being heated, or the probe is
+                    # lost/glitched — restore the plain target, never leave it
+                    # boosted on a reading we cannot trust.
+                    self._drive_stair[climate] = 0.0
+                    self._drive_cap_since[climate] = None
+                    await self._drive_push(climate, number, target)
+                    continue
+                since = self._drive_minutes_since_step(climate, now)
+                pushed, stair, evaluated = update_drive(
+                    target, probe, outdoor, loss, cap,
+                    self._drive_stair.get(climate, 0.0), since,
+                )
+                self._drive_stair[climate] = stair
+                if evaluated:
+                    self._drive_step_at[climate] = now
+                await self._drive_push(climate, number, pushed)
+                # Cap-pinned watch: at the cap AND still a full step short.
+                if pushed >= cap - 1e-9 and (target - probe) >= DRIVE_STEP:
+                    if self._drive_cap_since.get(climate) is None:
+                        self._drive_cap_since[climate] = now
+                    elif now - self._drive_cap_since[climate] >= timedelta(
+                        minutes=DRIVE_CAP_ALARM_MINUTES
+                    ):
+                        any_capped_short = True
+                else:
+                    self._drive_cap_since[climate] = None
+        self._update_drive_alarm(any_capped_short)
+
+    def _drive_minutes_since_step(self, climate: str, now: datetime) -> float:
+        at = self._drive_step_at.get(climate)
+        if at is None:
+            return DRIVE_STEP_INTERVAL_MIN  # allow the first step immediately
+        return (now - at).total_seconds() / 60
+
+    def _update_drive_alarm(self, capped_short: bool) -> None:
+        if capped_short and not self._drive_notified:
+            self._drive_notified = True
+            self.audit.record("drive_capped", self._now())
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    "A heater has been driven to its maximum setpoint for over "
+                    f"{DRIVE_CAP_ALARM_MINUTES:.0f} minutes and still has not "
+                    "reached target. That is either a genuine capacity limit "
+                    "(the room needs more heat than the radiators can give) or a "
+                    "stuck temperature sensor — worth a look."
+                ),
+                title="🏕 Scout Hut – Heater can't reach target",
+                notification_id=NOTIFY_DRIVE_CAPPED,
+            )
+        elif not capped_short and self._drive_notified:
+            self._drive_notified = False
+            persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_CAPPED)
+
+    async def async_drive_reset(self) -> None:
+        """Last will & testament: push every heater we may have overdriven back
+        to its plain target, so a shutdown, reload or disable never leaves a
+        setpoint sitting boosted (an unwanted warm hut with nothing to pull it
+        back). Called on unload, and on startup before the first reconcile so a
+        crash-left overdrive is undone within seconds of the next boot.
+        """
+        for zone, cfg_key in DRIVE_ZONE_CLIMATES.items():
+            target = self._drive_comfort_target(zone)
+            for climate in self._as_list(self.config.get(cfg_key)):
+                number = self._heater_comfort_number(climate)
+                if number is None:
+                    continue
+                await self.hass.services.async_call(
+                    "number",
+                    "set_value",
+                    {"entity_id": number, "value": target},
+                    blocking=True,
+                )
+        self._drive_stair.clear()
+        self._drive_step_at.clear()
+        self._drive_pushed.clear()
+        self._drive_cap_since.clear()
+        if self._drive_notified:
+            self._drive_notified = False
+            persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_CAPPED)
 
     # ------------------------------------------------------------------
     # Destratification / cooling fans

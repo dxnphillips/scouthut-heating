@@ -533,6 +533,39 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   and accepted. Winter is unchanged (already reverse). The winter run/stop
   rules still apply, so heating a room that's already warm (no demand, floor
   above the recirc cap) just leaves the fans off rather than blowing anything.
+- **The heaters are driven to target, not trusted (`drive_to_target` = on).**
+  The Rointes settle a fraction *below* the setpoint we give them (field
+  2026-08-06: a hall probe held ~0.5 below a 19.5 comfort setpoint on a cold
+  night while reporting a *modelled* "full" 1800 W the radiators didn't match —
+  effective-power is not a wattmeter, per Q17). Since the integration owns the
+  setpoint it pushes, `_reconcile_drive` closes an outer loop on each heater's
+  **own probe** and overdrives the setpoint until the probe actually reaches
+  target. **Per-heater** (each of the 20 m hall's ends independently), across
+  **all three zones** (hall/office/shared — office & shared setpoints are now
+  *owned* by the integration via `office_comfort_temp` / `shared_comfort_temp`
+  sliders, a deliberate reversal of the old device-managed design; it also gives
+  the office the setpoint sliders it never had). The controller (`drive.py`) is a
+  **staircase integral** — nudge one 0.5 step, wait `STEP_INTERVAL_MIN` (15) for
+  the slow building to respond, re-check — *not* a PID: the feedback is 0.5-
+  quantised (no derivative) and the plant is slow and model-free (a continuous
+  integral winds up and overshoots). The wait between steps IS the anti-windup.
+  A heat-loss **feedforward** gives a cold-night head-start, capped at one step so
+  it can't overshoot a non-drooping heater. It only ever drives *harder* than the
+  owner's setpoint; clamped to `[target, target + drive_max_offset]` (default
+  offset 4.5 → hall cap 24) and the 30 Rointe max. **Safety net:** stale/glitched
+  probe withdraws that heater to the plain target (fail-safe); cross-probe sanity
+  (a probe > 4 below the zone median is distrusted); **last-will reset** on
+  unload AND on startup (a crash can't leave an overdrive — the staircase is not
+  persisted); a `drive_capped` audit + persistent alert if a heater sits pinned
+  at the cap while still short for `DRIVE_CAP_ALARM_MINUTES` (60) — a real
+  capacity wall (Q17) or a stuck sensor. Hands off a zone under manual-hold /
+  automation-off. Drift detection compares the driven value, not the nominal, so
+  trims aren't read as manual changes. **This also settles Q17 by experiment:**
+  if driving to the cap reaches target it was throttling (fixed); if it pins at
+  the cap still short, that's the definitive capacity wall (fans ≈ 0, needs kW).
+  **First-winter watch:** confirm it lands *on* target without hover/overshoot on
+  the slow fabric, and read `drive_capped` / the `drive.pushed` trace for which
+  heaters need the most boost.
 - **A cold booking pierces the seasonal lockout (`cold_booking_heats` = on).**
   The summer lockout freezes heating, but a booked (or pre-heating) session
   whose room is genuinely below the target it is asking for still heats — an
@@ -679,6 +712,9 @@ exactly as `zone_a_doors` protects the hall). **Reset `zone_b_heatloss_pct` to
   override/motion → empty).
 - `preheat.py` — pure optimum-start maths (learned min/°C rates, Newton
   cooling with gap-normalised k). `fan_logic.py` — pure fan decision.
+  `drive.py` — pure per-heater drive-to-target controller (staircase integral +
+  heat-loss feedforward); `_reconcile_drive` in `coordinator.py` wires it in
+  with the safety net.
 - `audit.py` — event log + trace. `diagnostics.py` — the export.
 - `docs/BEHAVIOUR.md` — original-automation → reconciler mapping and all
   behavioural fine print. Keep it and the README in sync with every change.

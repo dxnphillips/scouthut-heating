@@ -48,6 +48,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # otherwise live entities would be left driving a stopped controller.
         controller: ScoutController | None = hass.data[DOMAIN].pop(entry.entry_id, None)
         if controller is not None:
+            # Last will: hand the heaters back at their plain targets before we
+            # stop, so a reload/shutdown never leaves a setpoint overdriven with
+            # no controller left to pull it back down.
+            await controller.async_drive_reset()
             controller.async_stop()
     return unload_ok
 

@@ -271,6 +271,27 @@ this priority (highest wins):
 9. **Zone empty** → `eco` while someone is still elsewhere in the building,
    `ice` once the building is empty.
 
+**Drive to target** (the heaters actually reach the temperature). The Rointe
+heaters settle a little *below* the setpoint they are given — they ease off near
+target and report a modelled "full power" the radiators don't match — so a cold
+hall can sit a degree under target with the heaters apparently maxed. Because the
+integration owns the setpoint it pushes, the **Drive heaters to target
+temperature** switch (default on) closes a loop on each heater's *own*
+temperature: while a zone is in comfort it nudges that heater's setpoint up (0.5
+at a time, waiting for the slow building to respond between nudges) until the
+probe actually reaches target, then holds — never overshooting, never hovering
+under. It runs **per heater** (so the cold end of the long hall reaches target
+without the warm end overshooting) across **all three zones** — which is why the
+office and shared rooms now have their own **comfort temperature** sliders
+(previously the office setpoint was only settable on the device). It only ever
+drives *harder* than your setpoint, and is bounded by **Drive-to-target: max
+setpoint boost** (default 4.5 °C, so the hall can be driven to at most 24). Safety
+net: a lost or glitchy sensor drops that heater back to the plain target, the
+setpoints are reset to target on restart/shutdown so nothing is ever left
+overdriven, and you get a notification if a heater is stuck at its cap and still
+can't reach target (a real capacity limit, or a stuck sensor). Turn the switch
+off to go back to "set the target and trust the heater".
+
 **Pause hall heating** (occupant cutout). The hall radiators are locked, so if
 someone finds it too warm mid-session they have no way to turn them down. The
 *Pause hall heating* button — ideally wired to a physical remote — forces the

@@ -26,6 +26,7 @@ NAMES: dict[str, str] = {
     "fans_run_on_sensor_loss": "Fans run when sensor lost",
     "winter_fans_need_occupancy": "Winter fans need occupancy",
     "cold_booking_heats": "Cold bookings heat despite lockout",
+    "drive_to_target": "Drive heaters to target temperature",
 }
 
 

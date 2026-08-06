@@ -258,6 +258,19 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # occupied zone is warm enough that there is nothing to gain. 24 °C mirrors the
     # 75 °F top of the documented HVLS winter-mode band.
     "fan_recirc_max_floor_temp": (18, 28, 0.5, 24, "°C"),
+    # --- Drive-to-target (outer setpoint trim loop) ---
+    # Max °C the loop may push a heater's setpoint ABOVE its target to force the
+    # Rointe (which settles a fraction under) to actually reach target. The room
+    # does NOT reach this — the loop backs off at target — so it only bites if a
+    # probe reads falsely low: the safety envelope. 4.5 puts the hall cap at its
+    # existing comfort ceiling (19.5 + 4.5 = 24).
+    "drive_max_offset": (0, 6, 0.5, 4.5, "°C"),
+    # Comfort setpoints the integration drives the OFFICE and SHARED heaters to
+    # (the hall uses hall_comfort_temp). Owning these is what lets the loop drive
+    # those zones — and finally gives office/shared their own setpoint sliders,
+    # which the device otherwise kept to itself.
+    "office_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
+    "shared_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
 }
 
 NUMBER_ICONS: dict[str, str] = {
@@ -285,6 +298,9 @@ NUMBER_ICONS: dict[str, str] = {
     "cooling_mix_max_temp": "mdi:weather-windy-variant",
     "heat_demand_watts": "mdi:flash",
     "fan_recirc_max_floor_temp": "mdi:thermometer-chevron-up",
+    "drive_max_offset": "mdi:thermometer-chevron-up",
+    "office_comfort_temp": "mdi:thermometer-high",
+    "shared_comfort_temp": "mdi:thermometer-high",
 }
 
 BOOST_OPTIONS = ["30 min", "60 min", "90 min"]
@@ -319,6 +335,13 @@ SWITCH_DEFS: dict[str, bool] = {
     # Default ON to suppress it; active heat demand still runs the fans. Turn OFF
     # for the legacy "run on stratification alone" destratification behaviour.
     "winter_fans_need_occupancy": True,
+    # Actively drive each heater's setpoint UP until its OWN probe reaches
+    # target, instead of trusting the Rointe (which settles a fraction under and
+    # reports a modelled "full" power that the radiators do not match). A
+    # per-heater staircase loop with a heat-loss feedforward and a full safety
+    # net (freshness gate, cross-probe sanity, cap, cap-pinned alert, last-will
+    # reset). Default ON; OFF restores plain "push the target and trust it".
+    "drive_to_target": True,
     # Let a genuinely cold booked session pierce the seasonal lockout. The
     # summer lockout freezes heating for the season, but a booking (or its
     # pre-heat window) whose room is actually below the target it is asking for
@@ -342,6 +365,7 @@ SWITCH_ICONS: dict[str, str] = {
     "fans_run_on_sensor_loss": "mdi:fan-alert",
     "winter_fans_need_occupancy": "mdi:account-clock",
     "cold_booking_heats": "mdi:calendar-alert",
+    "drive_to_target": "mdi:thermometer-auto",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"
@@ -368,4 +392,5 @@ NOTIFY_FAN_SENSOR_LOST = "scout_fan_sensor_lost"
 NOTIFY_FAN_TOO_HOT = "scout_fan_too_hot"
 NOTIFY_FAN_BREEZE = "scout_fan_breeze_hot"
 NOTIFY_CONDENSATION = "scout_condensation"
+NOTIFY_DRIVE_CAPPED = "scout_drive_capped"
 NOTIFY_DASHBOARDS = "scout_dashboards"

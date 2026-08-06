@@ -211,11 +211,24 @@ def test_solar_gain_does_not_teach_insulation():
 
 
 def test_office_comfort_target_is_cached_from_its_heater():
+    # With driving OFF the office setpoint is device-managed, so the target is
+    # the last value cached from the heater while it was in comfort.
     ctrl, hass = make_controller()
+    ctrl._switches["drive_to_target"].is_on = False
     hass.states.set(E["office"][0], "heat", {"current_temperature": 20, "temperature": 21})
     ctrl.applied[ZB] = PRESET_COMFORT
     ctrl._update_warmup_learning()
     assert ctrl._zone_target(ZB) == 21
+
+
+def test_office_target_is_the_slider_when_driving():
+    # With driving ON the integration owns the office comfort setpoint, so the
+    # target is the office_comfort_temp slider regardless of the cached value.
+    ctrl, hass = make_controller()
+    hass.states.set(E["office"][0], "heat", {"current_temperature": 20, "temperature": 21})
+    ctrl.applied[ZB] = PRESET_COMFORT
+    ctrl._update_warmup_learning()
+    assert ctrl._zone_target(ZB) == ctrl.number("office_comfort_temp")
 
 
 def test_office_target_defaults_to_hall_slider_until_seen():

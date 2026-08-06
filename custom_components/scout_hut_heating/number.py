@@ -37,6 +37,9 @@ NAMES: dict[str, str] = {
     "cooling_mix_max_temp": "Cooling: max useful breeze temperature",
     "heat_demand_watts": "Fan: heat-demand power threshold",
     "fan_recirc_max_floor_temp": "Fan: recirculate until floor reaches",
+    "drive_max_offset": "Drive-to-target: max setpoint boost",
+    "office_comfort_temp": "Office comfort temperature",
+    "shared_comfort_temp": "Shared comfort temperature",
 }
 
 HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp", "hall_eco_low_temp")
