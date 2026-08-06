@@ -174,6 +174,22 @@ def test_driving_does_not_false_flag_manual_control():
     assert ctrl.manual_hold[ZA] is False  # no false drift, and the stale hold cleared
 
 
+# --- Deadlocked stale hold clears (v1.14.2 regression) ------------------------
+def test_stale_hold_with_no_expected_clears_when_driving():
+    # Reproduces the v1.14.0->v1.14.1 deadlock: a persisted manual_hold with
+    # expected_preset None (the hold blocked the apply that would set it) and a
+    # live booking. With driving on it must clear rather than stick forever.
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    booking(ctrl, ZA)
+    ctrl.manual_hold[ZA] = True
+    ctrl.expected_preset[ZA] = None
+    for climate in ("climate.hall_back", "climate.hall_front"):
+        hass.states.set(climate, "heat", {"current_temperature": 19.0})
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZA] is False
+
+
 # --- Office driven to its own new slider --------------------------------------
 def test_office_driven_to_office_comfort_slider():
     _wire_numbers()

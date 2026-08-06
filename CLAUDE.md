@@ -562,8 +562,10 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   automation-off. While driving a comfort zone, drift detection **skips the
   setpoint comparison** (the setpoint is ours and the Rointe cloud lags our
   pushes, so comparing it false-flagged a manual hold on the v1.14.0 startup —
-  fixed in v1.14.1); a manual *preset* change is still caught, and disabling
-  automation is the way to take manual control. **This also settles Q17 by experiment:**
+  fixed in v1.14.1; and a persisted such hold, which deadlocked because it kept
+  `expected_preset` at None and so never reached the clear path, now clears on
+  the next tick when driving is on — v1.14.2); a manual *preset* change is still
+  caught, and disabling automation is the way to take manual control. **This also settles Q17 by experiment:**
   if driving to the cap reaches target it was throttling (fixed); if it pins at
   the cap still short, that's the definitive capacity wall (fans ≈ 0, needs kW).
   **First-winter watch:** confirm it lands *on* target without hover/overshoot on

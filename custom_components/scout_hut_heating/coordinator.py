@@ -2347,6 +2347,21 @@ class ScoutController:
                 continue
             expected = self.expected_preset[zone]
             if expected is None:
+                # A held zone never gets a fresh apply, so its expected stays
+                # None and the normal (matches) clear path below is unreachable
+                # — a hold left by the old setpoint-drift bug would deadlock
+                # here forever (it did: v1.14.0 set a hold, the v1.14.1 restart
+                # persisted it, expected reset to None, and it could not clear).
+                # With driving on a setpoint-based hold is no longer a valid
+                # signal, so clear it; the next reconcile then applies the real
+                # preset and normal (preset-based) drift resumes.
+                if self.manual_hold[zone] and self.switch_on(
+                    "drive_to_target", default=True
+                ):
+                    self.manual_hold[zone] = False
+                    persistent_notification.async_dismiss(
+                        self.hass, NOTIFY_ZONE_HOLD[zone]
+                    )
                 continue
             # Ignore drift within the settle window of our own change — the
             # Rointe cloud can take a couple of minutes to reflect it.
