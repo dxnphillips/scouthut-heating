@@ -71,6 +71,23 @@ def test_drives_setpoint_above_target_when_room_is_short():
     assert _pushed(hass, _comfort_number("climate.hall_back")) > target
 
 
+def test_drive_reasserts_the_comfort_preset_so_the_setpoint_lands():
+    # A Rointe only adopts a changed comfort number when comfort is re-applied,
+    # so a drive push must be followed by a set_preset_mode on that heater —
+    # otherwise the boost never reaches the radiator (v1.14.3 fix).
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 18.0})
+    run(ctrl.async_reconcile())
+    reasserts = [
+        c for c in hass.services.calls
+        if c["domain"] == "climate" and c["service"] == "set_preset_mode"
+        and "climate.hall_back" in (c["data"].get("entity_id") if isinstance(c["data"].get("entity_id"), list) else [c["data"].get("entity_id")])
+        and c["data"].get("preset_mode") == PRESET_COMFORT
+    ]
+    assert reasserts  # the driven heater had comfort re-applied after the push
+
+
 def test_per_heater_independent_drive():
     # One end cold, the other on target: only the cold one is driven up.
     _wire_numbers()

@@ -550,7 +550,14 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   quantised (no derivative) and the plant is slow and model-free (a continuous
   integral winds up and overshoots). The wait between steps IS the anti-windup.
   A heat-loss **feedforward** gives a cold-night head-start, capped at one step so
-  it can't overshoot a non-drooping heater. It only ever drives *harder* than the
+  it can't overshoot a non-drooping heater. **A Rointe only adopts a changed
+  comfort *number* when the comfort *preset* is re-applied, so each drive push is
+  followed by a per-heater `set_preset_mode` re-assert** — without it the boost
+  writes the number but never reaches the radiator (v1.14.2 shipped that no-op;
+  v1.14.3 fixed it: the heaters sat at the last-applied setpoint while the drive
+  logged phantom pushes). The existing slider-change path
+  (`async_hall_temps_changed`) always did push-number-then-re-apply for the same
+  reason. It only ever drives *harder* than the
   owner's setpoint; clamped to `[target, target + drive_max_offset]` (default
   offset 4.5 → hall cap 24) and the 30 Rointe max. **Safety net:** stale/glitched
   probe withdraws that heater to the plain target (fail-safe); cross-probe sanity

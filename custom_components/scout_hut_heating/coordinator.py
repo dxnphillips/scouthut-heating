@@ -2627,8 +2627,19 @@ class ScoutController:
         except (TypeError, ValueError):
             return None
 
-    async def _drive_push(self, climate: str, number: str, value: float) -> None:
-        """Write a heater's comfort setpoint, only when it actually changes."""
+    async def _drive_push(
+        self, climate: str, number: str, value: float, reassert: bool = False
+    ) -> None:
+        """Write a heater's comfort setpoint, only when it actually changes.
+
+        ``reassert``: after writing the number, re-apply the comfort preset to
+        the heater. A Rointe only adopts a changed comfort setpoint when the
+        comfort preset is (re-)selected — writing the number alone leaves the
+        live target unchanged (the existing slider-change path does both, see
+        ``async_hall_temps_changed``). The drive must do the same or its boost
+        never reaches the radiator. Only used on the driving (comfort) path; the
+        withdrawal path just stores the plain target for the next real apply.
+        """
         if self._drive_pushed.get(climate) == value:
             return
         self._drive_pushed[climate] = value
@@ -2636,8 +2647,15 @@ class ScoutController:
             "number",
             "set_value",
             {"entity_id": number, "value": value},
-            blocking=False,
+            blocking=True,
         )
+        if reassert:
+            await self.hass.services.async_call(
+                "climate",
+                "set_preset_mode",
+                {"entity_id": climate, "preset_mode": PRESET_COMFORT},
+                blocking=False,
+            )
 
     async def _reconcile_drive(self) -> None:
         """Drive each comfort heater's setpoint until its own probe reaches target.
@@ -2704,7 +2722,7 @@ class ScoutController:
                 self._drive_stair[climate] = stair
                 if evaluated:
                     self._drive_step_at[climate] = now
-                await self._drive_push(climate, number, pushed)
+                await self._drive_push(climate, number, pushed, reassert=True)
                 # Cap-pinned watch: at the cap AND still a full step short.
                 if pushed >= cap - 1e-9 and (target - probe) >= DRIVE_STEP:
                     if self._drive_cap_since.get(climate) is None:
