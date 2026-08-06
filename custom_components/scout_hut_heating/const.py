@@ -271,6 +271,12 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # which the device otherwise kept to itself.
     "office_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
     "shared_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
+    # Warm-season occupied hall target (the "summer setback"). When
+    # summer_setback_mode is on and the seasonal lockout is engaged, an occupied
+    # hall below this heats toward it (delivered via the eco preset — the Rointe
+    # comfort setpoint floor is 19, this reaches lower); a warm hall gets no heat
+    # and the cooling fans instead. Bounded to the Rointe eco range (<= 18.5).
+    "hall_summer_comfort_temp": (10, 18.5, 0.5, 17.5, "°C"),
 }
 
 NUMBER_ICONS: dict[str, str] = {
@@ -301,10 +307,36 @@ NUMBER_ICONS: dict[str, str] = {
     "drive_max_offset": "mdi:thermometer-chevron-up",
     "office_comfort_temp": "mdi:thermometer-high",
     "shared_comfort_temp": "mdi:thermometer-high",
+    "hall_summer_comfort_temp": "mdi:sun-thermometer",
 }
 
 BOOST_OPTIONS = ["30 min", "60 min", "90 min"]
 BOOST_DEFAULT = "60 min"
+
+# Cooling changeover: one select replacing the old summer_mode /
+# summer_follows_season / fans_follow_state switch tangle. It answers the single
+# question "which way do the fans blow, and when do they cool?":
+#   Never cool      — winter destratification only, never a cooling breeze.
+#   Follow season   — cool while the seasonal lockout is engaged (the default;
+#                     the old summer_follows_season=on behaviour).
+#   Follow room state — cool only when the head-height air is genuinely warm and
+#                     the hall is not being heated; destratify otherwise (the old
+#                     fans_follow_state=on behaviour — direction tracks the
+#                     thermometer, not a 3-day-average outdoor crossing).
+#   Always cool     — force the cooling regime (the old summer_mode=on manual
+#                     force, e.g. an out-of-season heatwave).
+# Active hall heating still forces reverse in every mode (handled downstream).
+COOLING_NEVER = "Never cool"
+COOLING_FOLLOW_SEASON = "Follow season"
+COOLING_FOLLOW_STATE = "Follow room state"
+COOLING_ALWAYS = "Always cool"
+COOLING_OPTIONS = [
+    COOLING_NEVER,
+    COOLING_FOLLOW_SEASON,
+    COOLING_FOLLOW_STATE,
+    COOLING_ALWAYS,
+]
+COOLING_DEFAULT = COOLING_FOLLOW_SEASON
 
 # User-facing switches: key -> default state (True = on)
 SWITCH_DEFS: dict[str, bool] = {
@@ -315,26 +347,13 @@ SWITCH_DEFS: dict[str, bool] = {
     "water_manual_override": False,
     # Master enable for the destratification fans (winter). Default on.
     "fans_enabled": True,
-    # Manual force-on for the summer cooling regime, regardless of season.
-    # Default OFF; normally the season switch below drives the changeover.
-    "summer_mode": False,
-    # Follow the season automatically: while the seasonal heating lockout is
-    # engaged the fans run the summer cooling regime, and they drop back to
-    # winter destratification when the lockout releases in autumn. Default ON
-    # so nobody has to remember the changeover.
-    "summer_follows_season": True,
+    # The old summer_mode / summer_follows_season / fans_follow_state switches are
+    # replaced by the single `cooling_changeover` select (see COOLING_OPTIONS).
     # When the ceiling/floor sensor is lost, assume stratification is present and
     # keep running the winter fans (still gated by heat demand) rather than
     # failing to off. Default ON per site preference; turn off to fail-safe
     # to fans-off instead. The Shelly still owns all motor safety either way.
     "fans_run_on_sensor_loss": True,
-    # Require hall occupancy for the no-demand winter recirc path. An empty,
-    # unheated hut still stratifies from warm fabric, but the field cool-off
-    # samples measured fan-mixing as no better than still air for retention — so
-    # running on that ambient gradient with nobody there is ~150 W for nothing.
-    # Default ON to suppress it; active heat demand still runs the fans. Turn OFF
-    # for the legacy "run on stratification alone" destratification behaviour.
-    "winter_fans_need_occupancy": True,
     # Actively drive each heater's setpoint UP until its OWN probe reaches
     # target, instead of trusting the Rointe (which settles a fraction under and
     # reports a modelled "full" power that the radiators do not match). A
@@ -342,15 +361,27 @@ SWITCH_DEFS: dict[str, bool] = {
     # net (freshness gate, cross-probe sanity, cap, cap-pinned alert, last-will
     # reset). Default ON; OFF restores plain "push the target and trust it".
     "drive_to_target": True,
-    # Let a genuinely cold booked session pierce the seasonal lockout. The
-    # summer lockout freezes heating for the season, but a booking (or its
-    # pre-heat window) whose room is actually below the target it is asking for
-    # should still be warmed rather than frozen out on an out-of-season cold
-    # snap. Judged from the room itself (self-calibrating — no weather constant
-    # to guess), so a warm-fabric summer booking already at target stays locked
-    # out. Default ON; turn OFF to restore the strict lockout (a manual Boost
-    # still pierces it either way).
-    "cold_booking_heats": True,
+    # State-based summer setback: instead of the seasonal lockout hard-freezing
+    # the hall to ice, an occupied hall below the summer setback
+    # (hall_summer_comfort_temp) heats toward it, while a warm hall gets no heat
+    # + the cooling fans. Keeps the lockout's cost saving (a summer hall is
+    # usually above the setback, so it rarely fires) without freezing out a
+    # genuinely cold occupied session. Default OFF — a deliberate behaviour
+    # change; one of the two features awaiting first-winter field validation.
+    "summer_setback_mode": False,
+    # "Will it get there on its own?" During a hall pre-heat window or a running
+    # occupied booking, if the room is *measurably* warming on free gain (sun,
+    # occupancy, warm fabric) fast enough to reach the comfort band with a margin,
+    # hold at eco instead of firing the radiators. Comfort-lean (only on an
+    # OBSERVED idle-room climb, never a guess), re-evaluated every tick. Default
+    # OFF — the one feature that can WITHHOLD heat (a wrong call = a cold
+    # arrival), so it stays opt-in until validated against a real winter export.
+    "coast_when_free": False,
+    # NOTE: cold_booking_heats, drive_self_check and winter_fans_need_occupancy
+    # were switches; they are now permanent behaviour (always on) — each was a
+    # near-universal "on" with no realistic reason to disable, so the toggle was
+    # UI clutter. The cooling-direction switches (summer_mode / summer_follows_
+    # season / fans_follow_state) became the `cooling_changeover` select above.
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -360,12 +391,27 @@ SWITCH_ICONS: dict[str, str] = {
     "zone_b_occupied_override": "mdi:account-check",
     "water_manual_override": "mdi:water-boiler-alert",
     "fans_enabled": "mdi:ceiling-fan",
-    "summer_mode": "mdi:weather-sunny",
-    "summer_follows_season": "mdi:calendar-sync",
     "fans_run_on_sensor_loss": "mdi:fan-alert",
-    "winter_fans_need_occupancy": "mdi:account-clock",
-    "cold_booking_heats": "mdi:calendar-alert",
     "drive_to_target": "mdi:thermometer-auto",
+    "summer_setback_mode": "mdi:sun-snowflake-variant",
+    "coast_when_free": "mdi:weather-sunny-alert",
+}
+
+# Selects: key -> (options, default). The boost duration and the cooling
+# changeover (which replaced three fan-direction switches).
+SELECT_DEFS: dict[str, tuple[list[str], str]] = {
+    "boost_duration": (BOOST_OPTIONS, BOOST_DEFAULT),
+    "cooling_changeover": (COOLING_OPTIONS, COOLING_DEFAULT),
+}
+
+SELECT_ICONS: dict[str, str] = {
+    "boost_duration": "mdi:fire",
+    "cooling_changeover": "mdi:sun-snowflake-variant",
+}
+
+SELECT_NAMES: dict[str, str] = {
+    "boost_duration": "Boost duration",
+    "cooling_changeover": "Cooling changeover",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"
@@ -393,4 +439,6 @@ NOTIFY_FAN_TOO_HOT = "scout_fan_too_hot"
 NOTIFY_FAN_BREEZE = "scout_fan_breeze_hot"
 NOTIFY_CONDENSATION = "scout_condensation"
 NOTIFY_DRIVE_CAPPED = "scout_drive_capped"
+NOTIFY_DRIVE_REJECTED = "scout_drive_setpoint_rejected"
+NOTIFY_DRIVE_NO_RESPONSE = "scout_drive_no_response"
 NOTIFY_DASHBOARDS = "scout_dashboards"

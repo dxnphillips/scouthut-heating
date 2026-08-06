@@ -134,12 +134,25 @@ Direction (Shelly O2 relay): **open = forward = down air = summer**;
 through the Shelly **reverse button** (id 200); Home Assistant only writes the
 direction relay directly while the master is off, and never while it is running.
 
-Three regimes. The changeover is automatic by default: with **Summer cooling
-follows season** on, the cooling regime is active while the seasonal heating
-lockout is engaged and drops back to winter destratification when it releases
-in autumn — nobody has to remember to flip anything, and direction reversals
-stay seasonal-rare (best practice for these motors). The **Summer cooling
-mode** switch remains as a manual force-on for out-of-season heatwaves:
+Three regimes. Which one is active is set by a single **Cooling changeover**
+control with four options:
+
+- **Follow season** (default) — cool while the seasonal heating lockout is
+  engaged, destratify once it releases in autumn. Nobody has to remember to flip
+  anything, and direction reversals stay seasonal-rare (best practice for these
+  motors).
+- **Follow room state** — the cooling-vs-destratify choice is made from the
+  hall's own temperature: cool (forward) only when the head-height air is
+  genuinely warm *and* the hall is not being heated, destratify (reverse)
+  otherwise. A warm hall then gets a breeze even on a cold-classified day, a cool
+  hall destratifies even on a warm-classified one, and the direction can never
+  flip on a rolling-average weather crossing — only on a real change in how warm
+  the room actually is.
+- **Always cool** — force the cooling regime (an out-of-season heatwave).
+- **Never cool** — winter destratification only, never a cooling breeze.
+
+Active heating always forces reverse regardless of the option (a cooling
+draught is never blown on people being warmed).
 
 - **Winter destratification** (default) → fans **reverse (up air)** when the
   ceiling-minus-floor ΔT is above the start threshold (default 2 °C, tuned
@@ -152,13 +165,12 @@ mode** switch remains as a manual force-on for out-of-season heatwaves:
   *residual* heat after a heater has reached setpoint and cut out — pushing that
   already-paid-for warmth back down instead of letting it escape through the
   poorly-insulated roof. That residual-harvest path requires the hall to be
-  **occupied** (switch **Winter fans need occupancy**, default on): an empty,
+  **occupied**: an empty,
   unheated hut still stratifies from warm fabric, but the field cool-off samples
   measured a fan-mixed overnight decay ≈ the still one — so running on that
   ambient gradient with nobody there is ~150 W for no measurable retention or
   comfort. **Active heat demand always runs the fans regardless** (the savings
-  case, including pre-heat). Turn the switch off to restore the legacy
-  run-on-stratification-alone behaviour. It stops when the ΔT falls to the
+  case, including pre-heat). It stops when the ΔT falls to the
   stop threshold (default 0.5 °C), or once the heat is no longer worth moving (heater
   off *and* the floor has reached the cap, or the hall is empty with no demand). The two ΔT thresholds plus minimum
   run/off times (default 10 min each) prevent short-cycling. Defaults follow the
@@ -255,9 +267,23 @@ this priority (highest wins):
    target), so a warm-fabric summer booking already at target stays locked out;
    once the pierce has warmed the room it holds until half a degree above target
    (release hysteresis, no flapping). The shared kitchen/toilets/stores follow a
-   piercing hall/office booking to `eco`. Controlled by the **Cold bookings heat
-   despite lockout** switch (default on) — turn it off for the strict lockout (a
-   manual Boost still pierces it either way).
+   piercing hall/office booking to `eco`. This is always-on behaviour — freezing
+   a genuinely cold booked room is never wanted (a manual Boost pierces the
+   lockout the same way if ever needed).
+
+   *State-based summer setback (optional).* The **Summer setback (state-based)
+   mode** switch (default **off**) turns the seasonal lockout from a hard block
+   into a gentle floor for the hall: when it is on, an **occupied** hall (a
+   booking/pre-heat, recent hall motion, or the occupied override) that is
+   genuinely cool — below the **Hall summer setback temperature** slider
+   (default 17.5 °C) — is warmed to that floor instead of frozen to `ice`, so
+   heat follows the *building's state*, not just the calendar. A warm hall (at or
+   above the floor) or an empty hall still ices, leaving the summer cooling fans
+   the room. It is delivered through the `eco` preset (the Rointe comfort floor
+   is 19 °C, so a lower target rides eco); a genuinely cold *booking* still gets
+   full `comfort` through the pierce above. Off is exactly the original
+   lockout-as-block behaviour — enable it when you want a cool shoulder-season
+   hall kept comfortable rather than shut off.
 6. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
@@ -340,6 +366,20 @@ snap of autumn is predicted correctly instead of waiting for the model to
 re-learn winter (measured here in July 2026: hall ~10 %/h, insulated office
 ~4.5 %/h; when the weather entity is unreadable the prediction assumes a
 cold 5 °C outside and errs warm).
+
+*Coast on free heat (optional, hall only).* The **Coast on free heat (skip
+pre-heat)** switch (default **off**) is the mirror of optimum start: during the
+hall's pre-heat window, if the room is *measurably* warming on its own — the sun
+loading the big uninsulated roof, a room filling with people, warm fabric giving
+heat back — fast enough to reach comfort by the booking with time to spare, it
+holds at `eco` instead of running the radiators. The comfort target is still
+met, just paid for by the free heat rather than electricity. It is deliberately
+cautious: it only declines heat on a warming trend it can actually *measure*
+(taken while the heaters are off, so it is real free gain and not the radiators'
+own work), and it re-checks every cycle, so the moment the climb fades — a cloud
+crosses the sun — the pre-heat resumes with its safety margin intact. Off by
+default; turn it on once you want to watch it save the morning's heat on a bright
+day.
 
 All the learned numbers are **fail-safe by construction**: the warm-up rates
 are seeded at the slowest plausible value, so an unlearned zone uses

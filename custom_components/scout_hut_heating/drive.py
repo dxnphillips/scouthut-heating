@@ -122,5 +122,8 @@ def update_drive(
     # Anti-windup / never below target: keep ff + stair inside [0, headroom].
     stair = max(-ff, min(headroom - ff, stair))
     trim = ff + stair
-    pushed = _quantise(min(target + trim, cap))
+    # Clamp AFTER quantising, so rounding can never nudge the pushed value back
+    # above the safety cap (harmless while every input sits on the 0.5 grid, but
+    # this keeps the cap a hard bound even if a slider is ever off-grid).
+    pushed = min(_quantise(target + trim), cap)
     return pushed, stair, evaluated

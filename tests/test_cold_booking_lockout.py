@@ -130,15 +130,6 @@ def test_bypass_releases_above_the_band():
     assert ctrl._desired_zone(ZA) == PRESET_ICE
 
 
-# --- The off switch --------------------------------------------------------
-def test_switch_off_restores_strict_lockout():
-    ctrl = _cold_booking()
-    motion(ctrl, "hall")
-    ctrl._switches["cold_booking_heats"].is_on = False
-    assert ctrl._desired_zone(ZA) == PRESET_ICE
-    assert ctrl._preset_reason[ZA] == "seasonal_lockout"
-
-
 # --- Office ----------------------------------------------------------------
 def test_cold_office_booking_pierces_lockout():
     ctrl, _ = make_controller()

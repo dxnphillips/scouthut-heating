@@ -137,22 +137,26 @@ def test_summer_follows_seasonal_lockout():
 
 
 def test_manual_summer_mode_forces_cooling_regardless_of_season():
+    from scout_testkit import COOLING_ALWAYS, set_cooling
+
     ctrl, _ = fan_controller()
-    ctrl._switches["summer_mode"].is_on = True
+    set_cooling(ctrl, COOLING_ALWAYS)
     assert ctrl._summer_active() is True
 
 
-def test_follow_season_can_be_disabled():
+def test_never_cool_disables_the_cooling_regime():
+    from scout_testkit import COOLING_NEVER, set_cooling
+
     ctrl, _ = fan_controller()
-    ctrl._switches["summer_follows_season"].is_on = False
-    ctrl.seasonal_lockout = True
+    set_cooling(ctrl, COOLING_NEVER)
+    ctrl.seasonal_lockout = True  # summer season, but never-cool wins
     assert ctrl._summer_active() is False
 
 
 def test_winter_occupancy_gate_suppresses_empty_hall_recirc():
     # Winter, stratified (dt 3), floor below the recirc cap, but no heat demand
-    # and an empty hall — the measured pointless case. The gate (default on)
-    # keeps the fans off; turning it off restores the legacy run-on-strat path.
+    # and an empty hall — the measured pointless case. The occupancy gate (now
+    # permanent behaviour) keeps the fans off; active heat demand would still run.
     from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
     from scout_testkit import E, make_controller
 
@@ -165,10 +169,7 @@ def test_winter_occupancy_gate_suppresses_empty_hall_recirc():
         hass.states.set(eid, "heat", {"current_temperature": 20.0})  # floor 20 < cap
     hass.states.set("sensor.ceiling", "23.0")  # dt 3.0 > dt_on
 
-    assert ctrl._fan_target() == (False, None, "off")  # gate on by default
-
-    ctrl._switches["winter_fans_need_occupancy"].is_on = False
-    assert ctrl._fan_target() == (True, "reverse", "winter")  # legacy behaviour
+    assert ctrl._fan_target() == (False, None, "off")  # empty hall, no demand -> off
 
 
 def test_boost_during_summer_lockout_reverses_the_fans_not_forward():

@@ -32,6 +32,7 @@ from custom_components.scout_hut_heating.const import (
     CONF_ZONE_B_WINDOWS,
     DEFAULT_ECO_KEYWORDS,
     NUMBER_DEFS,
+    SELECT_DEFS,
     SWITCH_DEFS,
     ZONE_A,
     ZONE_B,
@@ -43,6 +44,18 @@ PRESET_ECO = C.PRESET_ECO
 PRESET_COMFORT = C.PRESET_COMFORT
 ZA = ZONE_A
 ZB = ZONE_B
+from custom_components.scout_hut_heating.const import (  # noqa: E402
+    COOLING_ALWAYS,
+    COOLING_DEFAULT,
+    COOLING_FOLLOW_SEASON,
+    COOLING_FOLLOW_STATE,
+    COOLING_NEVER,
+)
+
+
+def set_cooling(ctrl, mode):
+    """Set the cooling-changeover select option in a test."""
+    ctrl._selects["cooling_changeover"].current_option = mode
 
 # Stable entity ids wired into the default (fully configured) controller.
 E = {
@@ -200,7 +213,8 @@ def make_controller(config_overrides=None, started=True):
     for key, state in SWITCH_DEFS.items():
         ctrl.register_switch(key, FakeSwitch(state))
     ctrl.register_text("eco_keywords", FakeText(DEFAULT_ECO_KEYWORDS))
-    ctrl.register_select("boost_duration", FakeSelect("60 min"))
+    for key, (_options, default) in SELECT_DEFS.items():
+        ctrl.register_select(key, FakeSelect(default))
 
     # Everything closed / off by default.
     for eid in (

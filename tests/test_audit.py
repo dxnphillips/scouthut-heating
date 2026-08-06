@@ -614,7 +614,7 @@ def test_diagnostics_data_is_json_serialisable_and_complete():
     json.dumps(data)  # the diagnostics download must serialise cleanly
 
     assert data["tunables"]["numbers"]["preheat_minutes"]["default"] == 120.0
-    assert data["tunables"]["switches"]["summer_mode"]["default"] is False
+    assert data["tunables"]["switches"]["fans_enabled"]["default"] is True
     assert data["readings"]["zones"][ZA]["coldest"] == 20.0
     assert data["readings"]["outdoor"] == 15.0
     assert data["events"][-1]["event"] == "marker"
