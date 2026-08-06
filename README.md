@@ -355,6 +355,20 @@ re-learn winter (measured here in July 2026: hall ~10 %/h, insulated office
 ~4.5 %/h; when the weather entity is unreadable the prediction assumes a
 cold 5 °C outside and errs warm).
 
+*Coast on free heat (optional, hall only).* The **Coast on free heat (skip
+pre-heat)** switch (default **off**) is the mirror of optimum start: during the
+hall's pre-heat window, if the room is *measurably* warming on its own — the sun
+loading the big uninsulated roof, a room filling with people, warm fabric giving
+heat back — fast enough to reach comfort by the booking with time to spare, it
+holds at `eco` instead of running the radiators. The comfort target is still
+met, just paid for by the free heat rather than electricity. It is deliberately
+cautious: it only declines heat on a warming trend it can actually *measure*
+(taken while the heaters are off, so it is real free gain and not the radiators'
+own work), and it re-checks every cycle, so the moment the climb fades — a cloud
+crosses the sun — the pre-heat resumes with its safety margin intact. Off by
+default; turn it on once you want to watch it save the morning's heat on a bright
+day.
+
 All the learned numbers are **fail-safe by construction**: the warm-up rates
 are seeded at the slowest plausible value, so an unlearned zone uses
 (effectively) the full cap — the old fixed behaviour — until real warm-ups

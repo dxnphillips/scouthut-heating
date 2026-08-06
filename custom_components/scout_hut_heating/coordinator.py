@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -43,6 +44,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .audit import AuditLog, Trace
+from .coast import will_coast_to_target
 from .drive import STEP as DRIVE_STEP
 from .drive import STEP_INTERVAL_MIN as DRIVE_STEP_INTERVAL_MIN
 from .drive import update_drive
@@ -160,6 +162,15 @@ COLD_BOOKING_RELEASE_BAND = 0.5  # °C above target before the bypass releases
 # (which reads it to pick the setback floor over the ordinary eco number) must
 # agree on the string.
 REASON_SUMMER_SETBACK = "summer_setback"
+
+# Coast predictor (coast.py) measurement window. The rolling idle-room samples
+# span at most PASSIVE_RISE_WINDOW_MIN and a rate is only computed once at least
+# PASSIVE_RISE_MIN_SPAN_MIN of idle history exists — long enough for a genuine
+# solar/occupancy climb to show through the 0.5 °C reading quanta, short enough
+# to still be "current". Below the min span the predictor returns no rate, so
+# the pre-heat heats (comfort-lean: no data → heat).
+PASSIVE_RISE_WINDOW_MIN = 20.0
+PASSIVE_RISE_MIN_SPAN_MIN = 12.0
 
 # O1 power above this means the fans are genuinely moving air (a closed master
 # with the transformer dial at zero draws next to nothing). Just below the
@@ -371,6 +382,18 @@ class ScoutController:
             ZONE_B: None,
         }
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
+
+        # Rolling (timestamp, coldest-hall-reading) samples for the "will it get
+        # there on its own?" coast predictor (coast.py). Only accumulated while
+        # the heaters are IDLE (no heat demand) so the measured rise is genuine
+        # free gain (sun / occupancy / fabric), never the radiators' own work —
+        # cleared the moment demand appears, which also stops the predictor
+        # chattering the heat on and off. Not persisted: a fresh idle window
+        # rebuilds in minutes and a stale cross-restart slope would be
+        # meaningless. `_coasting` latches the per-zone decision so the audit
+        # event fires once on entry, not every tick.
+        self._passive_rise: deque[tuple[datetime, float]] = deque()
+        self._coasting: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
 
         # Rolling audit trail of decisions, learning samples and outcomes,
         # persisted with the snapshot and exported via the diagnostics
@@ -709,6 +732,7 @@ class ScoutController:
             if not events:
                 self.cal_window[zone] = False
                 self.cal_title[zone] = ""
+                self._coasting[zone] = False
                 continue
             first = events[0]
             start = self._parse_event_start(first.get("start"))
@@ -1669,6 +1693,14 @@ class ScoutController:
                     "stair": dict(self._drive_stair),
                     "capped_alert": self._drive_notified,
                 },
+                "coast": {
+                    "enabled": self.switch_on("coast_when_free", default=False),
+                    # Measured idle-room warming (°C/min); None while heaters
+                    # are driving or too little idle history exists.
+                    "passive_rise_c_per_min": self._passive_rise_rate(),
+                    "samples": len(self._passive_rise),
+                    "coasting": dict(self._coasting),
+                },
                 "fan": {
                     "on": self.fan_on,
                     "mode": self.fan_mode,
@@ -1844,6 +1876,95 @@ class ScoutController:
         )
         return room < self._booking_target(zone) + margin
 
+    def _update_passive_rise(self) -> None:
+        """Accumulate idle-room readings for the coast predictor.
+
+        Runs at the top of every reconcile, before the ladder reads the rate.
+        The sample is the hall's coldest heater reading — the same far-end
+        measure the pre-heat sizes its deficit against. It is recorded ONLY
+        while the heaters are idle (`_heat_demand()` false): a rise measured
+        while the radiators drive is their work, not free gain, and feeding
+        that back into a heat-suppression decision is the exact trap to avoid.
+        Any active demand, or a lost reading, clears the buffer — so the
+        measured slope is always a clean idle-room climb, and the predictor
+        cannot oscillate (applying heat wipes the evidence for withholding it).
+        """
+        now = self._now()
+        room = self._zone_room_temp(ZONE_A, coldest=True)
+        if room is None or self._heat_demand():
+            self._passive_rise.clear()
+            return
+        self._passive_rise.append((now, room))
+        cutoff = now - timedelta(minutes=PASSIVE_RISE_WINDOW_MIN)
+        while self._passive_rise and self._passive_rise[0][0] < cutoff:
+            self._passive_rise.popleft()
+
+    def _passive_rise_rate(self) -> float | None:
+        """The hall's measured idle-room warming in °C/min, or None.
+
+        None until the buffer spans at least PASSIVE_RISE_MIN_SPAN_MIN of idle
+        history (comfort-lean: too little data → no rate → the pre-heat heats).
+        A simple first-to-last slope over the window; the readings are coarse
+        and the window long, so a least-squares fit would add nothing.
+        """
+        if len(self._passive_rise) < 2:
+            return None
+        (t0, temp0), (t1, temp1) = self._passive_rise[0], self._passive_rise[-1]
+        span_min = (t1 - t0).total_seconds() / 60
+        if span_min < PASSIVE_RISE_MIN_SPAN_MIN:
+            return None
+        return (temp1 - temp0) / span_min
+
+    def _preheat_gap_min(self, zone: str) -> float | None:
+        """Minutes until the pre-heating event starts, from the last look-ahead.
+
+        `_zone_preheat_minutes` stashes the gap each ~5-min calendar refresh
+        while the event is upcoming (not yet running). Up to a few minutes
+        stale, which is immaterial against a lead of an hour or more.
+        """
+        calc = self._last_lead_calc.get(zone)
+        return calc.get("gap_min") if calc else None
+
+    def _note_coasting(self, zone: str, active: bool) -> None:
+        """Latch the coast decision and audit the moment it engages.
+
+        The preset transition itself is already audited (comfort→eco, reason
+        `preheat_coast`); this adds a `coast_decision` event carrying the
+        prediction inputs on the engaging edge, so a later export can check
+        whether the room actually arrived — the same tune-from-evidence pattern
+        as `preheat_start`. Only the False→True edge is recorded; the resume is
+        visible as the preset change back to comfort.
+        """
+        if active and not self._coasting[zone]:
+            self.audit.record(
+                "coast_decision",
+                self._now(),
+                zone=zone,
+                indoor_coldest=self._zone_room_temp(zone, coldest=True),
+                target=self._zone_target(zone),
+                rise_rate_c_per_min=self._passive_rise_rate(),
+                gap_min=self._preheat_gap_min(zone),
+            )
+        self._coasting[zone] = active
+
+    def _preheat_will_coast(self, zone: str, target: float, gap_min: float | None) -> bool:
+        """True when a hall pre-heat can be skipped: free gain will arrive it.
+
+        Gated on the `coast_when_free` switch (default off) and hall-only. Reads
+        the measured idle-room rise rate and asks coast.will_coast_to_target
+        whether, at that rate, the room reaches the comfort band before the
+        event with a margin. Comfort-lean throughout: no switch, no rate, or an
+        unknown gap all fall through to heating.
+        """
+        if zone != ZONE_A or not self.switch_on("coast_when_free", default=False):
+            return False
+        return will_coast_to_target(
+            indoor=self._zone_room_temp(ZONE_A, coldest=True),
+            target=target,
+            rise_rate=self._passive_rise_rate(),
+            gap_min=gap_min,
+        )
+
     def _summer_setback_wants_heat(self) -> bool:
         """True when the state-based summer setback should warm the hall.
 
@@ -1941,6 +2062,26 @@ class ScoutController:
             # optimum-start lead was sized to reach comfort, so hirers would
             # always arrive to a shortfall.
             event_running = self._is_on(self.config.get(ZONE_CALENDAR[zone]))
+            # "Will it get there on its own?" — during the HALL pre-heat window
+            # (event not yet running), if the room is measurably warming on free
+            # gain fast enough to reach the comfort band by event start, hold at
+            # eco instead of firing the radiators. This is the deliberate,
+            # gated exception to the "never demote a pre-heat" rule below: the
+            # comfort guarantee is kept (the room still arrives at comfort), just
+            # delivered by the sun/occupancy rather than the heaters. It is
+            # comfort-lean (only on a measured idle-room climb, only for the
+            # hall) and re-evaluated every tick, so a fading climb resumes the
+            # pre-heat with the time margin still in hand.
+            if base == PRESET_COMFORT and not event_running:
+                if self._preheat_will_coast(zone, self._zone_target(zone), self._preheat_gap_min(zone)):
+                    self._note_coasting(zone, True)
+                    return self._reason(zone, f"{tag}preheat_coast", PRESET_ECO)
+                self._note_coasting(zone, False)
+            else:
+                # Not an eligible pre-heat tick (event running, or an eco-keyword
+                # pre-heat): clear any stale coast latch so the next real pre-heat
+                # audits its engaging edge afresh.
+                self._note_coasting(zone, False)
             if (
                 base == PRESET_COMFORT
                 and event_running
@@ -2112,6 +2253,7 @@ class ScoutController:
             self._refresh_motion_from_states()
             await self._evaluate_openings()
             self._record_booking_edges()
+            self._update_passive_rise()
             await self._reconcile_zones()
             await self._reconcile_hall_temps()
             self._update_warmup_learning()

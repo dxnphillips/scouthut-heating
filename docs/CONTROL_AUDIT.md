@@ -267,9 +267,18 @@ control ladder should be changed on a tired night.
   Owner enables it consciously — OFF is exactly the prior behaviour. First-season
   watch: whether an occupied cool summer hall actually wants heat or the cooling
   fans suffice.
-- **Step 2 (passive-arrival learner / coasting) — NEXT**, as an isolated
-  observe-then-act change (owner chose *act immediately, comfort-lean* — so it
-  will suppress heat only when the predicted free gain clearly closes the gap,
-  and default to heating when uncertain).
-- Steps 1 (drive self-validation, Q20), 4 (predicted-gain suppression wiring)
-  and 5 (fan-regime decoupling) remain as above.
+- **Step 2 (passive-arrival / coasting, F3) — SHIPPED behind `coast_when_free`
+  (default off).** During the hall pre-heat window, a *measured* idle-room climb
+  that reaches the comfort band by event start with a time margin holds the zone
+  at eco instead of firing the radiators (`coast.py::will_coast_to_target`,
+  `_update_passive_rise`, reason `preheat_coast`). Owner chose *act immediately,
+  comfort-lean*: it acts (not observe-only) but declines heat only on an
+  observed climb, never a guess, and the rate is measured only while heaters are
+  idle so it is genuine free gain and cannot oscillate. This is the direct F3
+  fix. Scoped to the pre-heat window (not a running booking) as the lowest-risk
+  first slice; extending suppression into a running, occupied session (the
+  08-05 heaters-off climb) is a later step once the pre-heat coast is validated
+  against real exports. The `coast_decision` audit event + `passive_rise` in
+  diagnostics are the validation instrument.
+- Steps 1 (drive self-validation, Q20), 4 (predicted-gain suppression *inside a
+  running session*) and 5 (fan-regime decoupling) remain as above.

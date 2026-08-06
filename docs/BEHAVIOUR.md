@@ -140,3 +140,21 @@ to the climate entity's own availability when no connectivity sensor exists.
   fixed 120 minutes; the slider is now the maximum. Fall-back behaviour when
   the room temperature is unreadable is the cap, i.e. exactly the original
   fixed-lead behaviour.
+- **Coast on free heat** (the `coast_when_free` switch, default **off**;
+  [`coast.py`](../custom_components/scout_hut_heating/coast.py)). The inverse of
+  optimum start: during the **hall** pre-heat window (event not yet running), if
+  the room is *measurably* warming on free gain (solar on the roof, occupancy,
+  warm fabric) fast enough to reach the comfort band (`target - DEADBAND`) by
+  event start with a time margin, the zone holds at `eco` (reason
+  `preheat_coast`) instead of firing the radiators — the comfort guarantee kept,
+  delivered by the free gain rather than the heaters (audit finding F3). The rise
+  rate is measured only while the heaters are IDLE (`_update_passive_rise`
+  samples the coldest hall reading only when `_heat_demand()` is false, and
+  clears the buffer the moment demand appears), so the signal is genuine free
+  gain and the predictor cannot feed back on itself or oscillate. Comfort-lean:
+  no reading, no measured rate, a sub-threshold climb, or insufficient spare time
+  all fall through to heating, and it re-evaluates every tick so a fading climb
+  resumes the pre-heat with the margin still in hand. Hall-only,
+  pre-heat-window-only (a running booking always heats normally). Audited as
+  `coast_decision` (with the prediction inputs) on the engaging edge; diagnostics
+  carry `passive_rise_c_per_min` + `coasting`.

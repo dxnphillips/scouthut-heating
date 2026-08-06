@@ -366,6 +366,16 @@ SWITCH_DEFS: dict[str, bool] = {
     # Default OFF — a deliberate behaviour change the owner enables when ready to
     # watch it; OFF is the original lockout-as-block behaviour.
     "summer_setback_mode": False,
+    # "Will it get there on its own?" During the HALL pre-heat window, if the
+    # room is *measurably* warming on free gain (sun on the roof, occupancy,
+    # warm fabric) fast enough to reach the comfort band by event start with a
+    # margin, hold at eco instead of firing the radiators — don't spend heat the
+    # building is about to supply for free. Comfort-lean: it only declines heat
+    # on an OBSERVED idle-room climb, never on a guess, and re-evaluates every
+    # tick so a fading climb resumes heating immediately. Default OFF — the
+    # inverse of a comfort guarantee, so the owner enables it consciously and
+    # watches the `preheat_coast` audit reason before trusting it.
+    "coast_when_free": False,
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -382,6 +392,7 @@ SWITCH_ICONS: dict[str, str] = {
     "cold_booking_heats": "mdi:calendar-alert",
     "drive_to_target": "mdi:thermometer-auto",
     "summer_setback_mode": "mdi:sun-snowflake-variant",
+    "coast_when_free": "mdi:weather-sunny-alert",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"

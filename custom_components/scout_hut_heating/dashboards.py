@@ -106,6 +106,7 @@ _OCCUPANCY = [
 ]
 _OPTIMUM_START = [
     ("preheat_minutes", "Pre-heat lead time (max / cap)"),
+    ("coast_when_free", "Coast on free heat (skip pre-heat)"),
     ("zone_a_warmup_rate", "Hall warm-up rate"),
     ("zone_a_warmup_rate_fans", "Hall warm-up rate (fans running)"),
     ("zone_b_warmup_rate", "Office warm-up rate"),

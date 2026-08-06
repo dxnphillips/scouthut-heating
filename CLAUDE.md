@@ -726,6 +726,37 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   whether an occupied cool summer hall actually *wants* heat or whether the
   cooling fans alone suffice (the setback is comfort insurance for a cool
   shoulder-season day, not a heating-season tool).
+- **"Will it get there on its own?" — the coast predictor (`coast_when_free` =
+  off).** Audit finding F3: nothing suppressed heating the building would deliver
+  for free (solar onto the big uninsulated roof, occupancy load, warm-fabric
+  release) — the 2026-08-05 pierced booking spent two Rointe pulses then climbed
+  19.38 → 20.0 with the *heaters off*. This switch adds the inverse of
+  `preheat.required_lead_minutes`: during the **hall pre-heat window** (event not
+  yet running), if the room is *measurably* warming fast enough to reach the
+  comfort band by event start with a margin, it holds at **eco** (reason
+  `preheat_coast`) instead of firing the radiators — the comfort guarantee kept,
+  but delivered by the free gain. Pure logic in `coast.py`
+  (`will_coast_to_target`), the most conservative module in the system because it
+  is the inverse of a comfort guarantee (a wrong "it'll coast" = a cold arrival).
+  **Comfort-lean by construction:** it declines heat only on an *observed* idle-
+  room climb, never a guess — `rise_rate < MIN_RISE_RATE` (~0.5 °C/h), no reading,
+  no rate, or too little spare time all fall through to heating; and it requires
+  arrival with `TIME_MARGIN_FRAC` (0.30) of the lead still unused, so resuming
+  heat is safe if the gain fades. **The rise rate is measured only while heaters
+  are IDLE** (`_update_passive_rise` accumulates the coldest-hall reading only
+  when `_heat_demand()` is false, clearing the buffer the instant demand appears)
+  — so the signal is genuine free gain, not the radiators' own work, and the
+  predictor *cannot oscillate* (applying heat wipes the evidence for withholding
+  it). Re-evaluated every tick, hall-only, pre-heat-window-only (a running booking
+  always heats normally). The `coast_decision` audit event records the prediction
+  inputs on the engaging edge (arrival checkable in a later export); diagnostics
+  carry the live `passive_rise_c_per_min` + `coasting` flags. **Default OFF** —
+  the owner enables it consciously and watches `preheat_coast` / `coast_decision`
+  before trusting it. **First-season watch:** did coasted mornings actually
+  *arrive* at comfort by event start (read `coast_decision` inputs vs the
+  `booking_start.shortfall`), and did the idle-only rate ever mislead (a climb
+  that stalled after the buffer measured it) — if shortfalls track coasted
+  mornings, raise `TIME_MARGIN_FRAC`/`MIN_RISE_RATE` or revert to observe-only.
 - **Office eco drift is unjudgeable** (the setpoint lives on the device and
   is never pushed); skipped rather than guessed.
 - **Alarm suppression is away-aware (1.12.0).** `_alarm_armed` reads a real

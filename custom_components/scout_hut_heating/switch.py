@@ -28,6 +28,7 @@ NAMES: dict[str, str] = {
     "cold_booking_heats": "Cold bookings heat despite lockout",
     "drive_to_target": "Drive heaters to target temperature",
     "summer_setback_mode": "Summer setback (state-based) mode",
+    "coast_when_free": "Coast on free heat (skip pre-heat)",
 }
 
 
