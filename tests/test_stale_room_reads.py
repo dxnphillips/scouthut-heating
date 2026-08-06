@@ -10,14 +10,11 @@ reading and under-heat.
 from datetime import timedelta
 
 from scout_testkit import (
-    COOLING_FOLLOW_SEASON,
     ZA,
     E,
     booking,
     make_controller,
     motion,
-    preheat_window,
-    set_cooling,
 )
 
 
@@ -63,7 +60,6 @@ def test_cold_booking_bypass_ignores_a_frozen_cold_reading():
     """Under summer lockout, a frozen reading does not pierce (summer fail-safe)."""
     ctrl, _ = make_controller()
     ctrl.seasonal_lockout = True
-    set_cooling(ctrl, COOLING_FOLLOW_SEASON)
     booking(ctrl, ZA)
     motion(ctrl, "hall")
     _hall_temp(ctrl, 12.0)  # cold, but frozen

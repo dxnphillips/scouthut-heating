@@ -25,8 +25,10 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   passing as of 2026-07-12.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
-  `fans_follow_state`) became one `cooling_changeover` **select** (Never cool /
-  Follow season / Follow room state / Always cool). Three near-universal "on"
+  `fans_follow_state`) were removed entirely — **fan direction is now fully
+  automatic from live room state** (`_fan_cooling_regime`; a brief
+  `cooling_changeover` select was tried and dropped — the owner wanted no admin
+  toggle at all). Three near-universal "on"
   switches were **baked into permanent behaviour** (no toggle): `cold_booking_heats`
   (a cold booked room always heats), `drive_self_check` (the Q20 notification-only
   command checks always run) and `winter_fans_need_occupancy` (empty-hut recirc is
@@ -369,12 +371,11 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     the last direction until the season has been stable for N minutes). If the
     only direction changes remain genuine day-scale transitions, the coupling is
     harmless and no debounce is needed.
-    **Superseded for anyone running `fans_follow_state` (F6, 2026-08-06):** with
-    that switch on the fan direction no longer follows the season at all — it
-    follows the hall's thermal state (`_fan_cooling_regime`), so a lockout flip
-    cannot flap the direction and this sub-question is moot. It remains live only
-    for the default (season-derived) mode; a debounce would only ever be needed
-    there.
+    **RESOLVED (F6, 2026-08-06):** fan direction no longer follows the season at
+    all — it is fully automatic from the hall's thermal state
+    (`_fan_cooling_regime`), so a lockout flip cannot flap the direction and this
+    sub-question is moot. Boundary flapping is instead prevented by the
+    `COOLING_DIRECTION_HYST` (1 °C) hysteresis on the warm/cool line.
 17. **Why does the hall cap at ~18 °C — capacity, stratification, or soak-time?
     (The master question under Q10 — is there apex heat to reclaim at all.)**
     Owner reports the hall maxes near 18 °C when heated, and *outdoor-invariantly*
@@ -597,28 +598,33 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   and accepted. Winter is unchanged (already reverse). The winter run/stop
   rules still apply, so heating a room that's already warm (no demand, floor
   above the recirc cap) just leaves the fans off rather than blowing anything.
-- **Fan direction: one `cooling_changeover` select (F6).** The old
-  `summer_mode` / `summer_follows_season` / `fans_follow_state` switch tangle is
-  now a single select with four options, read by `_fan_cooling_regime(warm,
-  heating)`: **Never cool** (always destratify) / **Follow season** (default —
-  cool while the seasonal lockout is engaged) / **Follow room state** (cool only
-  when the head-height air is genuinely warm, `warm` above `cooling_temp_high`,
-  AND the hall is not being heated; destratify otherwise) / **Always cool**
-  (force cooling). "Follow room state" is the F6 answer — the direction tracks
-  the thermometer, not a 3-day-average outdoor crossing, so a warm hall gets a
-  breeze even in "winter", a cool one destratifies even in "summer", and a
-  lockout flip can no longer flap the direction (mooting the Q16 sub-concern).
-  Active heating still forces reverse in every mode (the `heating` gate wins); a
-  warm reading is *required* for the room-state option, so no floor / unknown
-  warmth never blows a cooling draught on assumption. The season-scoped
-  `_summer_active` (the hall-pause breeze exception, the overheat/breeze
-  notifications, warm-up-rate attribution) tracks Never/Always directly and the
-  lockout for the two Follow options — so under "Follow room state" a
-  paused-and-warm hall in *winter season* stays the one unhandled corner
-  (negligible, noted not fixed). **First-shoulder-season watch** (only when set
-  to Follow room state): confirm the direction changes only on real warm↔cool
-  transitions (`fan_change.direction`), and that a warm winter hall getting a
-  forward breeze is actually wanted (if not, raise `cooling_temp_high`).
+- **Fan direction is fully automatic from room state — no toggle, no season
+  (F6, finalised 2026-08-06).** The whole `summer_mode` / `summer_follows_season`
+  / `fans_follow_state` switch tangle, and the `cooling_changeover` select that
+  briefly replaced it, are **gone**. `_fan_cooling_regime(warm, heating)` decides
+  the direction from live state alone: active heating → reverse (never wind-chill
+  the people being warmed — the `heating` gate); a genuinely warm (`warm`,
+  head-height above `cooling_temp_high`), not-being-heated hall → forward (cool
+  the hot people); a cool or unknown hall → reverse/off (a warm reading is
+  *required*, so unknown warmth never blows a draught on assumption). The season
+  does not enter into it — a warm hall gets a breeze whatever the calendar says,
+  a cool one destratifies. (The seasonal lockout still governs whether expensive
+  HEAT runs in summer — a separate concern in `_desired_zone` — but it no longer
+  steers the fans, which is exactly the F1/F6 decoupling.) **Reversals stay rare
+  via hysteresis, not the season:** `warm` is computed with a `COOLING_DIRECTION_HYST`
+  (1.0 °C) band keyed off the previous `fan_mode` — once cooling has started the
+  room must drop a full degree below `cooling_temp_high` before the direction
+  flips back, so a hall hovering at the threshold can't flap the heavy fans
+  forward↔reverse. `_summer_active` was removed: the hall-pause breeze exception
+  is now `allow_destrat` (a pause suppresses the reverse regime, leaves the
+  forward breeze — so a warm paused hall gets its breeze in *any* season), the
+  overheat/breeze notifications gate on `_fan_cooling_wanted`, and warm-up-rate
+  attribution keys off `fans_enabled` (heating forces reverse, so the fans assist
+  any heated warm-up regardless of season). **First-shoulder-season watch:**
+  confirm direction changes only on real warm↔cool transitions
+  (`fan_change.direction`) and that the 1 °C hysteresis is enough to keep
+  reversals rare (widen `COOLING_DIRECTION_HYST` if not); and that a warm hall
+  getting a forward breeze is always wanted (if not, raise `cooling_temp_high`).
 - **The heaters are driven to target, not trusted (`drive_to_target` = on).**
   The Rointes settle a fraction *below* the setpoint we give them (field
   2026-08-06: a hall probe held ~0.5 below a 19.5 comfort setpoint on a cold
