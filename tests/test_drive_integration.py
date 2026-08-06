@@ -157,6 +157,23 @@ def test_hands_off_during_manual_hold():
     assert _pushed(hass, _comfort_number("climate.hall_back")) is None
 
 
+# --- Driving must not be mistaken for manual control (v1.14.0 regression) -----
+def test_driving_does_not_false_flag_manual_control():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 18.0})
+    # Already in comfort before the tick (as after a restart), so no fresh preset
+    # apply -> the drift settle window is not active. The heaters report a null
+    # preset and the OLD setpoint (19.5) while the drive pushes a boosted value.
+    ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl.expected_preset[ZA] = PRESET_COMFORT
+    for climate in ("climate.hall_back", "climate.hall_front"):
+        hass.states.set(climate, "heat", {"current_temperature": 18.0, "temperature": 19.5})
+    ctrl.manual_hold[ZA] = True  # a hold the bug had latched
+    run(ctrl.async_reconcile())
+    assert ctrl.manual_hold[ZA] is False  # no false drift, and the stale hold cleared
+
+
 # --- Office driven to its own new slider --------------------------------------
 def test_office_driven_to_office_comfort_slider():
     _wire_numbers()

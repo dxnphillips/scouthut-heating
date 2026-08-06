@@ -2367,6 +2367,18 @@ class ScoutController:
             if actual:
                 matches: bool | None = actual == expected
                 detail = f"heater is {actual}"
+            elif expected == PRESET_COMFORT and self.switch_on(
+                "drive_to_target", default=True
+            ):
+                # The drive loop OWNS the comfort setpoint and varies it every
+                # tick, and the Rointe cloud lags our pushes — so the reported
+                # setpoint cannot judge drift here and a comparison would
+                # false-flag a manual change (it did, on the v1.14.0 startup). A
+                # genuine manual override still shows as a preset_mode change
+                # (handled above) or the user disabling automation. Treat as no
+                # drift, which also clears any hold this bug already latched.
+                matches = True
+                detail = "driven"
             else:
                 # The Rointe integration in the field accepts set_preset_mode
                 # but reports preset_mode as null, so judge drift from the
@@ -2409,13 +2421,6 @@ class ScoutController:
         if expected == PRESET_ICE:
             return abs(setpoint - ROINTE_ANTIFROST) <= tol
         if expected == PRESET_COMFORT:
-            # When the drive loop is overdriving this heater, the setpoint we
-            # expect on the device is the DRIVEN value, not the nominal target —
-            # otherwise every trim step would look like a manual change.
-            if climate is not None and self.switch_on("drive_to_target", default=True):
-                driven = self._drive_pushed.get(climate)
-                if driven is not None:
-                    return abs(setpoint - driven) <= tol
             if zone == ZONE_A:
                 return abs(setpoint - self.number("hall_comfort_temp")) <= tol
             cached = self._zone_comfort_target.get(zone)

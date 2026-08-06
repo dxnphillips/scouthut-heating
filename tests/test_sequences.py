@@ -151,8 +151,12 @@ def test_app_change_flags_manual_hold_then_clears():
 
 def test_setpoint_drift_flags_manual_hold_when_preset_is_unpublished():
     # The live Rointe integration accepts set_preset_mode but reports
-    # preset_mode as null, so drift falls back to the reported setpoint.
+    # preset_mode as null, so drift falls back to the reported setpoint. This
+    # setpoint-based fallback applies when drive-to-target is OFF; with driving
+    # ON the integration owns and varies the comfort setpoint, so a manual
+    # comfort change is overwritten rather than held (see the drive tests).
     ctrl, hass = make_controller()
+    ctrl._switches["drive_to_target"].is_on = False
     booking(ctrl, ZA)
     motion(ctrl, "hall")
     run(ctrl.async_reconcile())
