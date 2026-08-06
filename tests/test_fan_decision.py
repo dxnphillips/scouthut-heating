@@ -275,6 +275,24 @@ def test_summer_breeze_unchanged_when_not_heating():
     assert summer(warm=True, occupied=True, heating=False) == (True, "forward", "summer")
 
 
+# --- allow_destrat (hall pause) ------------------------------------------------
+
+def test_allow_destrat_false_suppresses_the_reverse_regime():
+    # A hall "too warm" pause: destrat (reverse) must not run, even with real
+    # stratification and demand.
+    assert winter(dt=5.0, demand=True, allow_destrat=False) == (False, None, "off")
+
+
+def test_allow_destrat_false_still_allows_the_cooling_breeze():
+    # The pause suppresses destrat only — a warm occupied hall still gets a
+    # forward cooling breeze.
+    assert summer(warm=True, occupied=True, allow_destrat=False) == (
+        True,
+        "forward",
+        "summer",
+    )
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

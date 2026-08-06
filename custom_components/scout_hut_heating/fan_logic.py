@@ -29,6 +29,7 @@ def fan_decision(
     heating: bool = False,
     currently_winter: bool,
     run_on_loss: bool,
+    allow_destrat: bool = True,
 ) -> tuple[bool, str | None, str]:
     """Return ``(want_on, direction, mode)``.
 
@@ -83,6 +84,12 @@ def fan_decision(
             stop thresholds apply instead of the start thresholds).
         run_on_loss: when the ceiling / floor reading is lost, assume
             stratification and keep the winter fans running instead of stopping.
+        allow_destrat: whether the reverse (up-air) destratification regime may
+            run at all. False during a hall "too warm" pause: pushing roof-space
+            heat down onto someone who just said they are too hot makes it worse,
+            so the reverse branch is suppressed to off — the forward cooling
+            breeze (the summer branch) is unaffected and still runs if the room
+            is warm and occupied.
     """
     # The sliders allow dt_off to be set above dt_on, which would invert the
     # hysteresis band (fans stopping the moment they start). Clamp so the stop
@@ -100,6 +107,13 @@ def fan_decision(
             return False, None, "off"
         if occupied and warm:
             return True, "forward", "summer"
+        return False, None, "off"
+
+    # The reverse/destrat regime is suppressed entirely during a hall pause (see
+    # `allow_destrat`): the cooling branch above still ran, so a warm paused hall
+    # gets its breeze, but a cool one is left off rather than reversing roof heat
+    # down onto the too-warm occupant.
+    if not allow_destrat:
         return False, None, "off"
 
     # Winter destratification. Gated on real stratification plus "the heat is

@@ -1,100 +1,95 @@
-"""Cooling changeover select: how the fan cooling-vs-destratify direction is chosen.
+"""Fan cooling-vs-destratify direction is fully automatic from room state.
 
 `_fan_cooling_regime(warm, heating)` returns whether the COOLING (forward) regime
-is wanted, from the single `cooling_changeover` select (Never cool / Follow
-season / Follow room state / Always cool). This replaced the old summer_mode /
-summer_follows_season / fans_follow_state switch tangle.
+is wanted — with no toggle and no season: heating always destratifies, a
+genuinely warm unheated hall cools, a cool one destratifies. The warm/cool
+boundary has hysteresis (keyed off the previous fan_mode) so the heavy fans
+don't flap forward<->reverse at the threshold.
 """
 
-from scout_testkit import (
-    COOLING_ALWAYS,
-    COOLING_FOLLOW_SEASON,
-    COOLING_FOLLOW_STATE,
-    COOLING_NEVER,
-    make_controller,
-    set_cooling,
-)
+from custom_components.scout_hut_heating.const import COOLING_DIRECTION_HYST
+from scout_testkit import make_controller
 
 
-def _ctrl(mode=COOLING_FOLLOW_SEASON, lockout=False):
+def _ctrl():
     ctrl, _ = make_controller()
-    set_cooling(ctrl, mode)
-    ctrl.seasonal_lockout = lockout
     return ctrl
 
 
-# --- Follow season (the default) ------------------------------------------
-def test_follow_season_cools_when_lockout_engaged():
-    ctrl = _ctrl(COOLING_FOLLOW_SEASON, lockout=True)
-    assert ctrl._fan_cooling_regime(warm=False, heating=False) is True
-
-
-def test_follow_season_destratifies_when_lockout_off():
-    ctrl = _ctrl(COOLING_FOLLOW_SEASON, lockout=False)
-    assert ctrl._fan_cooling_regime(warm=True, heating=False) is False
-
-
-# --- Never / Always -------------------------------------------------------
-def test_never_cool_always_destratifies():
-    ctrl = _ctrl(COOLING_NEVER, lockout=True)  # even in summer season
-    assert ctrl._fan_cooling_regime(warm=True, heating=False) is False
-
-
-def test_always_cool_forces_cooling():
-    ctrl = _ctrl(COOLING_ALWAYS, lockout=False)  # even cool + winter season
-    assert ctrl._fan_cooling_regime(warm=False, heating=False) is True
-
-
-# --- Follow room state ----------------------------------------------------
-def test_state_warm_and_not_heating_cools():
-    ctrl = _ctrl(COOLING_FOLLOW_STATE)
+# --- Pure state, no season ------------------------------------------------
+def test_warm_and_not_heating_cools():
+    ctrl = _ctrl()
     assert ctrl._fan_cooling_regime(warm=True, heating=False) is True
 
 
-def test_state_warm_but_heating_destratifies():
-    ctrl = _ctrl(COOLING_FOLLOW_STATE)
+def test_warm_but_heating_destratifies():
+    ctrl = _ctrl()
     assert ctrl._fan_cooling_regime(warm=True, heating=True) is False
 
 
-def test_state_cool_destratifies():
-    ctrl = _ctrl(COOLING_FOLLOW_STATE)
+def test_cool_destratifies():
+    ctrl = _ctrl()
     assert ctrl._fan_cooling_regime(warm=False, heating=False) is False
 
 
-def test_state_unknown_warmth_never_cools():
-    ctrl = _ctrl(COOLING_FOLLOW_STATE)
+def test_unknown_warmth_never_cools():
+    ctrl = _ctrl()
     assert ctrl._fan_cooling_regime(warm=None, heating=False) is False
 
 
-# --- The decoupling from season -------------------------------------------
-def test_state_cools_in_winter_season_when_warm():
-    ctrl = _ctrl(COOLING_FOLLOW_STATE, lockout=False)  # winter season
-    assert ctrl._fan_cooling_regime(warm=True, heating=False) is True
+def test_direction_ignores_the_season():
+    """The seasonal lockout no longer steers the fans at all."""
+    ctrl = _ctrl()
+    ctrl.seasonal_lockout = True  # "summer"
+    assert ctrl._fan_cooling_regime(warm=False, heating=False) is False  # cool -> destrat
+    ctrl.seasonal_lockout = False  # "winter"
+    assert ctrl._fan_cooling_regime(warm=True, heating=False) is True  # warm -> cool
 
 
-def test_state_destratifies_in_summer_season_when_cool():
-    ctrl = _ctrl(COOLING_FOLLOW_STATE, lockout=True)  # summer season
-    assert ctrl._fan_cooling_regime(warm=False, heating=False) is False
+# --- Warm-boundary hysteresis (via the _fan_target warm computation) -------
+def _hall(ctrl, floor, ceiling):
+    from scout_testkit import E
+
+    for eid in E["hall"]:
+        ctrl.hass.states.set(eid, "heat", {"current_temperature": floor})
+    ctrl.hass.states.set("sensor.ceiling", str(ceiling))
 
 
-# --- _summer_active (season-scoped uses) follows the select ---------------
-def test_summer_active_follows_season_option():
-    ctrl = _ctrl(COOLING_FOLLOW_SEASON, lockout=True)
-    assert ctrl._summer_active() is True
-    ctrl.seasonal_lockout = False
-    assert ctrl._summer_active() is False
+def _warm_flag(ctrl):
+    """Run _fan_target and return the computed warm flag."""
+    ctrl._fan_target()
+    return ctrl._fan_warm
 
 
-def test_summer_active_never_and_always():
-    ctrl = _ctrl(COOLING_NEVER, lockout=True)
-    assert ctrl._summer_active() is False
-    set_cooling(ctrl, COOLING_ALWAYS)
-    ctrl.seasonal_lockout = False
-    assert ctrl._summer_active() is True
+def _mk():
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP, CONF_FAN_MASTER
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: "switch.fan", CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    hass.states.set("switch.fan", "on")
+    return ctrl, hass
 
 
-def test_summer_active_state_mode_is_season_derived():
-    """Follow-room-state affects fan DIRECTION only; the season-scoped
-    _summer_active still tracks the lockout."""
-    ctrl = _ctrl(COOLING_FOLLOW_STATE, lockout=True)
-    assert ctrl._summer_active() is True
+def test_warm_needs_to_exceed_the_threshold_to_start_cooling():
+    ctrl, _ = _mk()
+    ctrl.fan_mode = "off"  # not currently cooling
+    high = ctrl.number("cooling_temp_high")  # 23
+    # Uniform room a touch below the threshold -> not warm.
+    _hall(ctrl, high - 0.4, high - 0.4)
+    assert _warm_flag(ctrl) is False
+    # Above the threshold -> warm.
+    _hall(ctrl, high + 1.0, high + 1.0)
+    assert _warm_flag(ctrl) is True
+
+
+def test_hysteresis_holds_cooling_below_the_threshold():
+    ctrl, _ = _mk()
+    high = ctrl.number("cooling_temp_high")
+    # Already cooling: stays warm until a full band below the threshold.
+    ctrl.fan_mode = "summer"
+    _hall(ctrl, high - 0.5, high - 0.5)  # below high, but within the hysteresis band
+    assert _warm_flag(ctrl) is True  # still cooling (no flap)
+    # Drop past the band -> cooling releases.
+    _hall(ctrl, high - COOLING_DIRECTION_HYST - 0.5, high - COOLING_DIRECTION_HYST - 0.5)
+    assert _warm_flag(ctrl) is False

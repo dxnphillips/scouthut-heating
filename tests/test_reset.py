@@ -1,6 +1,6 @@
 """Reset-to-defaults button and clamped number restore."""
 
-from scout_testkit import COOLING_ALWAYS, COOLING_DEFAULT, make_controller, run
+from scout_testkit import make_controller, run
 from custom_components.scout_hut_heating.const import NUMBER_DEFS
 from custom_components.scout_hut_heating.number import ScoutNumber
 
@@ -11,14 +11,12 @@ def test_reset_tunables_restores_every_default():
     ctrl._numbers["fan_dt_on"].native_value = 8
     ctrl._switches["zone_a_automation_enabled"].is_on = False
     ctrl._selects["boost_duration"].current_option = "90 min"
-    ctrl._selects["cooling_changeover"].current_option = COOLING_ALWAYS
     ctrl._texts["eco_keywords"].native_value = "something,else"
     run(ctrl.async_reset_tunables())
     assert ctrl.number("preheat_minutes") == NUMBER_DEFS["preheat_minutes"][3]
     assert ctrl.number("fan_dt_on") == NUMBER_DEFS["fan_dt_on"][3]
     assert ctrl.switch_on("zone_a_automation_enabled") is True
     assert ctrl.boost_minutes() == 60
-    assert ctrl._selects["cooling_changeover"].current_option == COOLING_DEFAULT
     assert ctrl.eco_keywords() == ["sal-vation", "test"]
 
 

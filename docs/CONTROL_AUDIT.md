@@ -290,16 +290,17 @@ control ladder should be changed on a tired night.
   the running-booking scope of the coast predictor above (folded into step 2
   rather than built separately, since the same `will_coast_to_target` with
   `gap_min=0` expresses it).
-- **Step 5 (decouple the fan-regime label from the season, F6) — SHIPPED behind
-  `fans_follow_state` (default off).** `_fan_cooling_regime(warm, heating)` sets
-  the cooling-vs-destratify direction from the hall's thermal state (cool only
+- **Step 5 (decouple the fan-regime from the season, F6) — SHIPPED, and now the
+  ONLY behaviour (no toggle).** `_fan_cooling_regime(warm, heating)` sets the
+  cooling-vs-destratify direction purely from the hall's thermal state (cool only
   when the head-height air is genuinely warm AND the hall is not being heated;
-  destratify otherwise) instead of `_summer_active()`'s 3-day-average seasonal
-  crossing. Manual `summer_mode` still forces cooling; active heating still
-  forces reverse. This also removes the Q16 sub-concern (a lockout flip flapping
-  the fan direction), because the direction now tracks the thermometer, which
-  does not flip on an average crossing. Default off — the season-labelled default
-  stands until the owner opts in.
+  destratify otherwise; active heating always reverses). It briefly shipped
+  behind a `fans_follow_state` switch / `cooling_changeover` select, but the owner
+  wanted no admin toggle — so the season is gone from the fan path entirely and
+  the direction is fully automatic. Reversals are kept rare by a 1 °C hysteresis
+  band (`COOLING_DIRECTION_HYST`) rather than the season. This dissolves the Q16
+  sub-concern (a lockout flip can't flap a direction that no longer reads the
+  lockout).
 
 **All six audit findings (F1–F6) are now addressed** — the season still sets
 *thresholds* and the seasonal-lockout *intent* (don't run expensive heat in

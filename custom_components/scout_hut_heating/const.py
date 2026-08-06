@@ -313,30 +313,15 @@ NUMBER_ICONS: dict[str, str] = {
 BOOST_OPTIONS = ["30 min", "60 min", "90 min"]
 BOOST_DEFAULT = "60 min"
 
-# Cooling changeover: one select replacing the old summer_mode /
-# summer_follows_season / fans_follow_state switch tangle. It answers the single
-# question "which way do the fans blow, and when do they cool?":
-#   Never cool      — winter destratification only, never a cooling breeze.
-#   Follow season   — cool while the seasonal lockout is engaged (the default;
-#                     the old summer_follows_season=on behaviour).
-#   Follow room state — cool only when the head-height air is genuinely warm and
-#                     the hall is not being heated; destratify otherwise (the old
-#                     fans_follow_state=on behaviour — direction tracks the
-#                     thermometer, not a 3-day-average outdoor crossing).
-#   Always cool     — force the cooling regime (the old summer_mode=on manual
-#                     force, e.g. an out-of-season heatwave).
-# Active hall heating still forces reverse in every mode (handled downstream).
-COOLING_NEVER = "Never cool"
-COOLING_FOLLOW_SEASON = "Follow season"
-COOLING_FOLLOW_STATE = "Follow room state"
-COOLING_ALWAYS = "Always cool"
-COOLING_OPTIONS = [
-    COOLING_NEVER,
-    COOLING_FOLLOW_SEASON,
-    COOLING_FOLLOW_STATE,
-    COOLING_ALWAYS,
-]
-COOLING_DEFAULT = COOLING_FOLLOW_SEASON
+# Cooling direction is fully automatic — no toggle, no season. The fans read the
+# room and decide (`_fan_cooling_regime` / `fan_decision`): active heating always
+# destratifies (reverse), a genuinely warm occupied hall gets a cooling breeze
+# (forward), a cool one destratifies. COOLING_DIRECTION_HYST is the hysteresis
+# band on the warm/cool boundary: once cooling has started the room must drop
+# this far below `cooling_temp_high` before the direction flips back, so a hall
+# hovering at the threshold cannot flap the heavy fans forward<->reverse (each
+# reversal is a ~5-min coast-down; reversals must stay rare).
+COOLING_DIRECTION_HYST = 1.0  # °C
 
 # User-facing switches: key -> default state (True = on)
 SWITCH_DEFS: dict[str, bool] = {
@@ -348,7 +333,7 @@ SWITCH_DEFS: dict[str, bool] = {
     # Master enable for the destratification fans (winter). Default on.
     "fans_enabled": True,
     # The old summer_mode / summer_follows_season / fans_follow_state switches are
-    # replaced by the single `cooling_changeover` select (see COOLING_OPTIONS).
+    # gone: fan direction is fully automatic from live room state, no toggle.
     # When the ceiling/floor sensor is lost, assume stratification is present and
     # keep running the winter fans (still gated by heat demand) rather than
     # failing to off. Default ON per site preference; turn off to fail-safe
@@ -381,7 +366,8 @@ SWITCH_DEFS: dict[str, bool] = {
     # were switches; they are now permanent behaviour (always on) — each was a
     # near-universal "on" with no realistic reason to disable, so the toggle was
     # UI clutter. The cooling-direction switches (summer_mode / summer_follows_
-    # season / fans_follow_state) became the `cooling_changeover` select above.
+    # season / fans_follow_state) are gone entirely: fan direction is now fully
+    # automatic from live room state (`_fan_cooling_regime`), no toggle at all.
 }
 
 SWITCH_ICONS: dict[str, str] = {
@@ -397,21 +383,17 @@ SWITCH_ICONS: dict[str, str] = {
     "coast_when_free": "mdi:weather-sunny-alert",
 }
 
-# Selects: key -> (options, default). The boost duration and the cooling
-# changeover (which replaced three fan-direction switches).
+# Selects: key -> (options, default).
 SELECT_DEFS: dict[str, tuple[list[str], str]] = {
     "boost_duration": (BOOST_OPTIONS, BOOST_DEFAULT),
-    "cooling_changeover": (COOLING_OPTIONS, COOLING_DEFAULT),
 }
 
 SELECT_ICONS: dict[str, str] = {
     "boost_duration": "mdi:fire",
-    "cooling_changeover": "mdi:sun-snowflake-variant",
 }
 
 SELECT_NAMES: dict[str, str] = {
     "boost_duration": "Boost duration",
-    "cooling_changeover": "Cooling changeover",
 }
 
 DEFAULT_ECO_KEYWORDS = "sal-vation,test"

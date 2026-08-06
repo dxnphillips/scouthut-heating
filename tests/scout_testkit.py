@@ -44,18 +44,6 @@ PRESET_ECO = C.PRESET_ECO
 PRESET_COMFORT = C.PRESET_COMFORT
 ZA = ZONE_A
 ZB = ZONE_B
-from custom_components.scout_hut_heating.const import (  # noqa: E402
-    COOLING_ALWAYS,
-    COOLING_DEFAULT,
-    COOLING_FOLLOW_SEASON,
-    COOLING_FOLLOW_STATE,
-    COOLING_NEVER,
-)
-
-
-def set_cooling(ctrl, mode):
-    """Set the cooling-changeover select option in a test."""
-    ctrl._selects["cooling_changeover"].current_option = mode
 
 # Stable entity ids wired into the default (fully configured) controller.
 E = {

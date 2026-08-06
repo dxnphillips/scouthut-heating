@@ -62,10 +62,7 @@ from .preheat import (
     updated_rate,
 )
 from .const import (
-    COOLING_ALWAYS,
-    COOLING_DEFAULT,
-    COOLING_FOLLOW_STATE,
-    COOLING_NEVER,
+    COOLING_DIRECTION_HYST,
     CONF_ALARM_MAIN,
     CONF_ALARM_OFFICE,
     CONF_CALENDAR_HALL,
@@ -362,6 +359,10 @@ class ScoutController:
         # ambiguous between "nobody there" and "not warm enough").
         self._fan_occupied: bool | None = None
         self._fan_warm: bool | None = None
+        # Whether the fans wanted the cooling (forward) regime this tick — used
+        # to gate the overheat/breeze notifications (they only matter when the
+        # fans are trying to cool). State-derived, replacing the old season flag.
+        self._fan_cooling_wanted: bool = False
         # Winter condensation watch state.
         self._humidity_entity: str | None = None  # auto-found ceiling RH sensor
         self._rh_high_since: datetime | None = None
@@ -1082,7 +1083,12 @@ class ScoutController:
         if zone != ZONE_A or not self.config.get(CONF_FAN_MASTER):
             return f"{zone}_warmup_rate"
         if assisted is None:
-            assisted = self.switch_on("fans_enabled", default=True) and not self._summer_active()
+            # During any heated warm-up the hall is on a heating preset, which
+            # forces the fans to reverse/destrat (they assist) — so the fans help
+            # whenever they are enabled, regardless of season (the old
+            # `not _summer_active()` proxy under-counted a summer cold-booking
+            # pierce, whose pre-heat fans DO assist).
+            assisted = self.switch_on("fans_enabled", default=True)
         return "zone_a_warmup_rate_fans" if assisted else "zone_a_warmup_rate"
 
     def _fans_running(self) -> bool:
@@ -1767,8 +1773,6 @@ class ScoutController:
                 "boost_until": {z: _iso(t) for z, t in self.boost_until.items()},
                 "hall_heating_paused": self.hall_heating_paused,
                 "seasonal_lockout": self.seasonal_lockout,
-                "summer_active": self._summer_active(),
-                "cooling_mode": self._cooling_mode(),
                 "cal_window": dict(self.cal_window),
                 "cal_title": dict(self.cal_title),
                 "drive": {
@@ -1797,7 +1801,7 @@ class ScoutController:
                     "overheated": self.fan_overheated,
                     "breeze_hot": self.fan_breeze_hot,
                     "mix": self.fan_mix,
-                    "cooling_mode": self._cooling_mode(),
+                    "cooling_wanted": self._fan_cooling_wanted,
                     "last_on": _iso(self.fan_last_on),
                     "last_off": _iso(self.fan_last_off),
                 },
@@ -3636,55 +3640,24 @@ class ScoutController:
             self.config.get(ZONE_CALENDAR[ZONE_A])
         )
 
-    def _cooling_mode(self) -> str:
-        """The current `cooling_changeover` select option (see COOLING_OPTIONS)."""
-        entity = self._selects.get("cooling_changeover")
-        return entity.current_option if entity is not None else COOLING_DEFAULT
-
-    def _summer_active(self) -> bool:
-        """Whether the *cooling season* is active (season-derived).
-
-        Read from the single `cooling_changeover` select. "Always cool" forces
-        it on; "Never cool" forces it off; "Follow season" and "Follow room
-        state" both derive it from the seasonal heating lockout — because this
-        flag drives the season-scoped uses (the hall-pause breeze exception, the
-        overheat/breeze notifications, warm-up rate attribution), which stay
-        season-based even when the fan *direction* follows room state. The fan
-        direction itself uses `_fan_cooling_regime`, which honours the "Follow
-        room state" option. An active hall heating preset forces the
-        reverse/destrat regime regardless (see `heating` in `_fan_target`).
-        """
-        mode = self._cooling_mode()
-        if mode == COOLING_ALWAYS:
-            return True
-        if mode == COOLING_NEVER:
-            return False
-        return self.seasonal_lockout
-
     def _fan_cooling_regime(self, warm: bool | None, heating: bool) -> bool:
         """Whether the fans should run the COOLING (forward) regime this tick.
 
-        Reads the `cooling_changeover` select:
-          Never cool        -> always destratify (never a cooling breeze);
-          Follow season     -> cool while the seasonal lockout is engaged;
-          Follow room state -> cool only when the head-height air is genuinely
-                               warm (`warm`) AND the hall is not being heated, so
-                               the direction tracks the thermometer rather than a
-                               3-day-average outdoor crossing (no lockout-flip
-                               flapping); destratify otherwise;
-          Always cool       -> force the cooling regime.
-        A warm reading is required for the room-state option, so no floor /
-        unknown warmth never blows a cooling draught on assumption. Active
-        heating still forces reverse downstream (the caller passes `heating`).
+        Fully automatic from live room state — no toggle, no season:
+          * active hall heating -> False (destratify: never wind-chill the people
+            being warmed; the caller passes `heating`);
+          * a genuinely warm (`warm`, head-height above `cooling_temp_high` with
+            hysteresis) hall that is NOT being heated -> True (a cooling breeze
+            for the people who are hot);
+          * a cool hall, or an unknown reading -> False (destratify / off; a warm
+            reading is REQUIRED, so unknown warmth never blows a draught on
+            assumption).
+        The season no longer enters into it: a warm hall gets a breeze whatever
+        the calendar says, a cool one destratifies. (The seasonal lockout still
+        governs whether expensive HEAT runs in summer — a separate concern — but
+        it no longer steers the fans.)
         """
-        mode = self._cooling_mode()
-        if mode == COOLING_ALWAYS:
-            return True
-        if mode == COOLING_NEVER:
-            return False
-        if mode == COOLING_FOLLOW_STATE:
-            return bool(warm) and not heating
-        return self.seasonal_lockout  # Follow season
+        return bool(warm) and not heating
 
     def _reset_fan_flags(self) -> None:
         """Clear every fan condition flag before a fans-off early-out, so a stale
@@ -3698,6 +3671,7 @@ class ScoutController:
         self.fan_mix = None
         self._fan_occupied = None
         self._fan_warm = None
+        self._fan_cooling_wanted = False
 
     def _fan_target(self) -> tuple[bool, str | None, str]:
         """Resolve the desired fan state with fail-safe precedence on top."""
@@ -3707,13 +3681,10 @@ class ScoutController:
         if self._fan_fault():
             self._reset_fan_flags()
             return False, None, "off"
-        # A hall "too warm" pause holds the WINTER destrat fans off — reversing
-        # roof-space heat down onto the people who just said they are too hot
-        # would make it worse. The summer cooling breeze is left alone (a
-        # forward down-draught cools them, which is what they want).
-        if self.hall_heating_paused and not self._summer_active():
-            self._reset_fan_flags()
-            return False, None, "off"
+        # A hall "too warm" pause is handled downstream by `allow_destrat` (the
+        # reverse regime is suppressed, the cooling breeze is left running) —
+        # keyed off live state, not the season, so a warm paused hall still gets
+        # its breeze whatever the calendar says.
 
         stale_min = self.number("fan_sensor_stale_minutes")
         floor_id = self.config.get(CONF_FLOOR_TEMP)
@@ -3760,7 +3731,19 @@ class ScoutController:
         # the air a fan would deliver hits skin temperature a breeze heats
         # people, whatever the floor lags at.
         comfort = self.fan_mix if self.fan_mix is not None else ft
-        warm = None if comfort is None else comfort > self.number("cooling_temp_high")
+        # Warm-enough-to-cool, with hysteresis on the DIRECTION boundary: enter
+        # cooling above `cooling_temp_high`, but once cooling has started stay
+        # cooling until the room drops COOLING_DIRECTION_HYST below it. Keyed off
+        # the previous tick's mode (`fan_mode`), this stops a hall hovering at
+        # the threshold from flapping the heavy fans forward<->reverse — the
+        # stability the old season gate gave for free, now from the thermometer.
+        high = self.number("cooling_temp_high")
+        if comfort is None:
+            warm: bool | None = None
+        elif self.fan_mode == "summer":
+            warm = comfort > high - COOLING_DIRECTION_HYST
+        else:
+            warm = comfort > high
         overheated = comfort is not None and comfort >= FAN_COOLING_MAX_TEMP
         self.fan_overheated = overheated
         self._fan_warm = warm
@@ -3811,9 +3794,11 @@ class ScoutController:
         # off the applied preset, not demand, so the fan direction cannot flap as
         # the radiator thermostat cycles.
         heating = self.applied[ZONE_A] in (PRESET_COMFORT, PRESET_ECO)
+        cooling_wanted = self._fan_cooling_regime(warm, heating)
+        self._fan_cooling_wanted = cooling_wanted
 
         return fan_decision(
-            summer=self._fan_cooling_regime(warm, heating),
+            summer=cooling_wanted,
             occupied=occupied,
             warm=warm,
             # The breeze guard holds the summer fans exactly like the hard
@@ -3834,6 +3819,10 @@ class ScoutController:
             heating=heating,
             currently_winter=currently_winter,
             run_on_loss=self.switch_on("fans_run_on_sensor_loss", default=True),
+            # A hall "too warm" pause suppresses the reverse/destrat regime (no
+            # roof heat pushed down onto the too-warm occupant); the forward
+            # cooling breeze still runs if the room is warm and occupied.
+            allow_destrat=not self.hall_heating_paused,
         )
 
     async def _reconcile_fans(self) -> None:
@@ -4045,7 +4034,7 @@ class ScoutController:
 
         # Overheat: past the fan-cooling ceiling a breeze heats people instead
         # of cooling them, so the summer fans are held off.
-        if self.fan_overheated and not prev_hot and self._summer_active():
+        if self.fan_overheated and not prev_hot and self._fan_cooling_wanted:
             self.audit.record("overheat_holdoff", self._now(), dt=self.fan_dt)
             persistent_notification.async_create(
                 self.hass,
@@ -4063,7 +4052,7 @@ class ScoutController:
 
         # Hot-breeze guard: between the useful-breeze ceiling and the hard
         # overheat cutoff, the fans are held and the fix is ventilation.
-        if self.fan_breeze_hot and not prev_breeze and self._summer_active():
+        if self.fan_breeze_hot and not prev_breeze and self._fan_cooling_wanted:
             self.audit.record("breeze_holdoff", self._now(), mix=self.fan_mix)
             persistent_notification.async_create(
                 self.hass,

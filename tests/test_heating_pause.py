@@ -159,18 +159,22 @@ def test_pause_holds_the_winter_fans_off():
     assert ctrl._fan_target() == (False, None, "off")
 
 
-def test_pause_leaves_the_summer_breeze_alone():
-    ctrl, hass = make_controller(
-        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
-    )
-    ctrl.seasonal_lockout = True  # summer cooling regime
-    for eid in E["hall"]:
-        hass.states.set(eid, "heat", {"current_temperature": 26.0})  # warm
-    hass.states.set("sensor.ceiling", "27.0")
-    motion(ctrl, "hall")
-    ctrl.hall_heating_paused = True
-    # A heating pause must not kill the cooling breeze a hot person wants.
-    assert ctrl._fan_target() == (True, "forward", "summer")
+def test_pause_leaves_the_cooling_breeze_alone_regardless_of_season():
+    """A heating pause suppresses destrat (reverse) but must not kill the cooling
+    breeze a hot person wants — and that now holds whatever the season, because
+    the direction is state-based. A WARM paused hall gets its breeze even in
+    'winter' (the old season gate would have held all fans off here)."""
+    for lockout in (True, False):  # summer and winter season
+        ctrl, hass = make_controller(
+            config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+        )
+        ctrl.seasonal_lockout = lockout
+        for eid in E["hall"]:
+            hass.states.set(eid, "heat", {"current_temperature": 26.0})  # warm
+        hass.states.set("sensor.ceiling", "27.0")
+        motion(ctrl, "hall")
+        ctrl.hall_heating_paused = True
+        assert ctrl._fan_target() == (True, "forward", "summer")
 
 
 # --- Audit + persistence -------------------------------------------------------

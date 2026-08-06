@@ -125,32 +125,25 @@ def test_off_opens_master():
     assert ctrl.fan_on is False and ctrl.fan_master_expected is False
 
 
-# --- Season changeover (which regime is active) --------------------------------
+# --- Direction is automatic from room state (no season, no toggle) -------------
 
-def test_summer_follows_seasonal_lockout():
-    ctrl, _ = fan_controller()
-    assert ctrl._summer_active() is False  # heating season, default switches
-    ctrl.seasonal_lockout = True
-    assert ctrl._summer_active() is True  # lockout engaged -> cooling regime
+def test_direction_is_state_based_not_season_based():
+    """The seasonal lockout does not steer the fans: a warm hall cools and a cool
+    hall destratifies regardless of the season flag."""
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller, motion
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    off(hass, MASTER)
+    motion(ctrl, "hall")  # occupied
+    # Warm hall, "winter" season (lockout off) -> a cooling breeze, not destrat.
     ctrl.seasonal_lockout = False
-    assert ctrl._summer_active() is False  # autumn: back to destratification
-
-
-def test_manual_summer_mode_forces_cooling_regardless_of_season():
-    from scout_testkit import COOLING_ALWAYS, set_cooling
-
-    ctrl, _ = fan_controller()
-    set_cooling(ctrl, COOLING_ALWAYS)
-    assert ctrl._summer_active() is True
-
-
-def test_never_cool_disables_the_cooling_regime():
-    from scout_testkit import COOLING_NEVER, set_cooling
-
-    ctrl, _ = fan_controller()
-    set_cooling(ctrl, COOLING_NEVER)
-    ctrl.seasonal_lockout = True  # summer season, but never-cool wins
-    assert ctrl._summer_active() is False
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 24.0})
+    hass.states.set("sensor.ceiling", "25.0")  # head-height ~24.25 > 23
+    assert ctrl._fan_target() == (True, "forward", "summer")
 
 
 def test_winter_occupancy_gate_suppresses_empty_hall_recirc():
@@ -203,11 +196,14 @@ def test_warmup_rate_key_follows_fan_availability():
     from scout_testkit import ZA, ZB
 
     ctrl, _ = fan_controller()
-    # Winter, fans enabled: predict warm-ups with the fan-assisted rate.
+    # Fans enabled: predict warm-ups with the fan-assisted rate. During any
+    # heated warm-up the hall is on a heating preset, which forces the fans to
+    # reverse/destrat, so they assist regardless of season — the key does NOT
+    # depend on the seasonal lockout any more.
     assert ctrl._warmup_rate_key(ZA) == "zone_a_warmup_rate_fans"
-    # Summer regime: fans blow a cooling breeze, not destratified heat.
     ctrl.seasonal_lockout = True
-    assert ctrl._warmup_rate_key(ZA) == "zone_a_warmup_rate"
+    assert ctrl._warmup_rate_key(ZA) == "zone_a_warmup_rate_fans"  # still assisted
+    # Fans disabled: no assistance, so the base rate.
     ctrl.seasonal_lockout = False
     ctrl._switches["fans_enabled"].is_on = False
     assert ctrl._warmup_rate_key(ZA) == "zone_a_warmup_rate"

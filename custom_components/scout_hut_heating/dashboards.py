@@ -135,7 +135,6 @@ _FAN_STATUS = [
 ]
 _FAN_CONTROLS = [
     ("fans_enabled", "Ceiling fans enabled"),
-    ("cooling_changeover", "Cooling changeover"),
     ("fans_run_on_sensor_loss", "Run when sensor lost"),
 ]
 _FAN_TUNING = [

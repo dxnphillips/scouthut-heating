@@ -134,25 +134,23 @@ Direction (Shelly O2 relay): **open = forward = down air = summer**;
 through the Shelly **reverse button** (id 200); Home Assistant only writes the
 direction relay directly while the master is off, and never while it is running.
 
-Three regimes. Which one is active is set by a single **Cooling changeover**
-control with four options:
+Three regimes. **Which one runs is fully automatic — there is no mode to set.**
+The fans read the room and pick their own direction from moment to moment:
 
-- **Follow season** (default) — cool while the seasonal heating lockout is
-  engaged, destratify once it releases in autumn. Nobody has to remember to flip
-  anything, and direction reversals stay seasonal-rare (best practice for these
-  motors).
-- **Follow room state** — the cooling-vs-destratify choice is made from the
-  hall's own temperature: cool (forward) only when the head-height air is
-  genuinely warm *and* the hall is not being heated, destratify (reverse)
-  otherwise. A warm hall then gets a breeze even on a cold-classified day, a cool
-  hall destratifies even on a warm-classified one, and the direction can never
-  flip on a rolling-average weather crossing — only on a real change in how warm
-  the room actually is.
-- **Always cool** — force the cooling regime (an out-of-season heatwave).
-- **Never cool** — winter destratification only, never a cooling breeze.
+- If the hall is **being heated** → **reverse** (bring the made heat down; a
+  forward draught would wind-chill the very people being warmed).
+- Not heated but **genuinely warm and occupied** → **forward** (cool the people
+  who are hot).
+- Not heated, **cool but stratified** with harvestable ceiling heat and someone
+  to benefit → **reverse** (destratify / reclaim).
+- Empty, or nothing to do → **off**.
 
-Active heating always forces reverse regardless of the option (a cooling
-draught is never blown on people being warmed).
+The season plays no part — a warm hall gets a breeze whatever the calendar says,
+a cool one destratifies. To keep the heavy motors from flipping back and forth
+at the warm/cool boundary, there is a 1 °C hysteresis band: once cooling has
+started the room has to cool a full degree below the "warm enough" line before
+the direction changes back, so reversals stay rare. (A warm reading is required
+before any cooling breeze, so a lost sensor never blows a draught on a guess.)
 
 - **Winter destratification** (default) → fans **reverse (up air)** when the
   ceiling-minus-floor ΔT is above the start threshold (default 2 °C, tuned
