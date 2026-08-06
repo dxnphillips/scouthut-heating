@@ -73,6 +73,15 @@ def test_setback_eco_carries_the_setback_floor():
     assert ctrl.number("hall_summer_comfort_temp") != ctrl.number("hall_eco_temp")
 
 
+def test_setback_floor_wins_over_a_stale_eco_keyword():
+    """A leftover ECO keyword in cal_title must not undercut the setback floor
+    to the 14 eco-low value — the setback reason is checked first."""
+    ctrl = _occupied_cool_hall()
+    ctrl._desired_zone(ZA)  # reason -> summer_setback
+    # eco_low would otherwise route to hall_eco_low_temp (14); the setback wins.
+    assert ctrl._hall_eco_target(eco_low=True) == ctrl.number("hall_summer_comfort_temp")
+
+
 def test_warm_hall_stays_ice_for_the_cooling_fans():
     ctrl = _occupied_cool_hall()
     _hall_temp(ctrl, 18.0)  # above the 17.5 setback floor

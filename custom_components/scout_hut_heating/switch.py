@@ -21,16 +21,10 @@ NAMES: dict[str, str] = {
     "zone_b_occupied_override": "Office occupied override",
     "water_manual_override": "Water heater manual override",
     "fans_enabled": "Ceiling fans enabled",
-    "summer_mode": "Summer cooling mode",
-    "summer_follows_season": "Summer cooling follows season",
     "fans_run_on_sensor_loss": "Fans run when sensor lost",
-    "winter_fans_need_occupancy": "Winter fans need occupancy",
-    "cold_booking_heats": "Cold bookings heat despite lockout",
     "drive_to_target": "Drive heaters to target temperature",
     "summer_setback_mode": "Summer setback (state-based) mode",
-    "coast_when_free": "Coast on free heat (skip pre-heat)",
-    "drive_self_check": "Drive self-validation (command checks)",
-    "fans_follow_state": "Fan direction follows room state (not season)",
+    "coast_when_free": "Coast on free heat",
 }
 
 

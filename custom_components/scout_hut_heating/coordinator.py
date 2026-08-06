@@ -62,6 +62,10 @@ from .preheat import (
     updated_rate,
 )
 from .const import (
+    COOLING_ALWAYS,
+    COOLING_DEFAULT,
+    COOLING_FOLLOW_STATE,
+    COOLING_NEVER,
     CONF_ALARM_MAIN,
     CONF_ALARM_OFFICE,
     CONF_CALENDAR_HALL,
@@ -375,6 +379,14 @@ class ScoutController:
         # Cached calendar look-ahead (refreshed on a slower cadence).
         self.cal_window: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self.cal_title: dict[str, str] = {ZONE_A: "", ZONE_B: ""}
+        # The event start the pre-heat window is currently latched open for.
+        # The latch holds the window open through the room warming up (so `lead`
+        # shrinking cannot flap comfort<->ice), but is keyed to the SPECIFIC
+        # event so it does NOT bridge one booking's pre-heat into the next: a
+        # running event and an empty look-ahead both clear it, and a new first
+        # event re-evaluates `gap <= lead` fresh (else back-to-back bookings
+        # inside the look-ahead would hold comfort continuously across the gap).
+        self._preheat_open_for: dict[str, datetime | None] = {ZONE_A: None, ZONE_B: None}
         self.water_window = False
         # The (comfort, eco) setpoint pair last written to the hall heaters, so
         # the reconciler can re-assert the eco/eco-low value when it changes
@@ -750,6 +762,10 @@ class ScoutController:
             if self._is_on(cal):
                 state = self.hass.states.get(cal)
                 self.cal_window[zone] = True
+                # The event is running, not pre-heating: drop the pre-heat latch
+                # so that when this event ends the NEXT event's pre-heat is
+                # re-evaluated fresh rather than inheriting this one's open window.
+                self._preheat_open_for[zone] = None
                 self.cal_title[zone] = (
                     (state.attributes.get("message") or "").lower() if state else ""
                 )
@@ -768,6 +784,7 @@ class ScoutController:
                 self.cal_window[zone] = False
                 self.cal_title[zone] = ""
                 self._coasting[zone] = False
+                self._preheat_open_for[zone] = None
                 continue
             first = events[0]
             start = self._parse_event_start(first.get("start"))
@@ -791,17 +808,19 @@ class ScoutController:
                 self.cal_window[zone] = True
                 continue
             lead = self._zone_preheat_minutes(zone, eco=eco, gap_hours=gap_min / 60)
-            # Latch the window OPEN once it has opened for this event, rather than
+            # Latch the window OPEN once it has opened FOR THIS EVENT, rather than
             # re-deciding the boundary every refresh. `lead` shrinks as the room
             # warms, so a bare `gap <= lead` test lets the window close again the
             # moment the room nears target — flipping the zone out of comfort and
             # back (observed 2026-08-05: comfort->ice->comfort during a near-target
-            # pre-heat, amplified under the seasonal-lockout pierce). Holding it
-            # open commits the pre-heat to the booking; it still releases when the
-            # event ends/cancels (the `if not events` branch above clears it) or
-            # when it starts (`_is_on(cal)` is handled earlier). Cannot overheat —
-            # the room only sits at comfort a little early.
-            window = gap_min <= lead or self.cal_window[zone]
+            # pre-heat, amplified under the seasonal-lockout pierce). The latch is
+            # keyed to the event's start (`_preheat_open_for`), so it holds this
+            # pre-heat open but does NOT bridge into the NEXT booking: a running
+            # event / empty look-ahead clears the key, and a fresh first event is
+            # judged on `gap <= lead` again (else two bookings inside the look-ahead
+            # would hold comfort continuously across the empty gap between them).
+            latched = start is not None and self._preheat_open_for.get(zone) == start
+            window = gap_min <= lead or latched
             if window and not self.cal_window[zone]:
                 self.audit.record(
                     "preheat_start",
@@ -816,6 +835,7 @@ class ScoutController:
                 if zone == ZONE_A:
                     self._clear_hall_pause("preheat")
             self.cal_window[zone] = window
+            self._preheat_open_for[zone] = start if window else None
 
         water = False
         for zone in (ZONE_A, ZONE_B):
@@ -877,13 +897,29 @@ class ScoutController:
     # ------------------------------------------------------------------
     # Adaptive pre-heat (optimum start)
     # ------------------------------------------------------------------
-    def _zone_climate_temps(self, zone: str) -> list[float]:
-        """All readable room temperatures from a zone's own heaters."""
+    def _zone_climate_temps(
+        self, zone: str, stale_min: float | None = None
+    ) -> list[float]:
+        """All readable room temperatures from a zone's own heaters.
+
+        ``stale_min``: drop a heater whose reading has not updated within this
+        many minutes. The Rointe cloud can FREEZE while the entity still reads
+        ``available`` (CLAUDE.md: "readings can freeze while looking alive"), so
+        any path that decides whether the room is warm enough — pre-heat sizing,
+        the cold-booking pierce, the summer setback — must reject a frozen value
+        rather than trust it (a stale-high reading otherwise under-leads a cold
+        start into a cold arrival). Omit it where a frozen value is harmless
+        (the fan ΔT reference, the diagnostic spread).
+        """
         vals: list[float] = []
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
+            if stale_min is not None:
+                ts = getattr(st, "last_reported", None) or st.last_updated
+                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
+                    continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:
@@ -892,7 +928,9 @@ class ScoutController:
                 continue
         return vals
 
-    def _zone_room_temp(self, zone: str, coldest: bool = False) -> float | None:
+    def _zone_room_temp(
+        self, zone: str, coldest: bool = False, stale_min: float | None = None
+    ) -> float | None:
         """Room temperature reported by a zone's own heaters.
 
         ``coldest=True`` returns the lowest reading instead of the average:
@@ -900,16 +938,24 @@ class ScoutController:
         for "will the room be warm enough?" questions (pre-heat sizing) the
         coldest reading is the truer measure of the far end. The average
         stays right for the fan ΔT reference and the learning, where
-        stability against a single odd sensor matters more.
+        stability against a single odd sensor matters more. ``stale_min`` (see
+        ``_zone_climate_temps``) rejects a frozen Rointe reading on the
+        warm-enough decision paths.
         """
-        vals = self._zone_climate_temps(zone)
+        vals = self._zone_climate_temps(zone, stale_min=stale_min)
         if coldest and vals:
             return min(vals)
         if zone == ZONE_A:
             # The hall average shares the fan logic's floor reading (explicit
             # floor sensor if mapped, else the hall Rointes' average).
-            return self._floor_temp()
+            return self._floor_temp(stale_min=stale_min)
         return sum(vals) / len(vals) if vals else None
+
+    def _rointe_stale_min(self) -> float:
+        """The window (minutes) after which an un-updated Rointe reading is
+        treated as frozen on the warm-enough decision paths — reuses the fan
+        floor-staleness slider so there is one Rointe freshness knob, not two."""
+        return self.number("fan_sensor_stale_minutes")
 
     @property
     def hall_temp_spread(self) -> float | None:
@@ -968,8 +1014,10 @@ class ScoutController:
         target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
         rate, rate_key = self._prediction_rate(zone)
         # Size the pre-heat for the coldest reading, not the average: the
-        # warm end's heater must not cut the lead short for the cold end.
-        indoor = self._zone_room_temp(zone, coldest=True)
+        # warm end's heater must not cut the lead short for the cold end. Reject
+        # a frozen Rointe reading (stale_min) — a stale-high value would
+        # under-lead a cold start; None falls back to the cap, i.e. fail-warm.
+        indoor = self._zone_room_temp(zone, coldest=True, stale_min=self._rointe_stale_min())
         outdoor = self._outdoor_temp()
         loss_pct = self.number(f"{zone}_heatloss_pct")
         minutes = required_lead_minutes(
@@ -1720,6 +1768,7 @@ class ScoutController:
                 "hall_heating_paused": self.hall_heating_paused,
                 "seasonal_lockout": self.seasonal_lockout,
                 "summer_active": self._summer_active(),
+                "cooling_mode": self._cooling_mode(),
                 "cal_window": dict(self.cal_window),
                 "cal_title": dict(self.cal_title),
                 "drive": {
@@ -1727,7 +1776,6 @@ class ScoutController:
                     "pushed": dict(self._drive_pushed),
                     "stair": dict(self._drive_stair),
                     "capped_alert": self._drive_notified,
-                    "self_check": self.switch_on("drive_self_check", default=True),
                     "setpoint_rejected": sorted(self._drive_rejected),
                     "rejected_alert": self._drive_reject_notified,
                     "no_response_alert": self._drive_noresp_notified,
@@ -1749,7 +1797,7 @@ class ScoutController:
                     "overheated": self.fan_overheated,
                     "breeze_hot": self.fan_breeze_hot,
                     "mix": self.fan_mix,
-                    "follows_state": self.switch_on("fans_follow_state", default=False),
+                    "cooling_mode": self._cooling_mode(),
                     "last_on": _iso(self.fan_last_on),
                     "last_off": _iso(self.fan_last_off),
                 },
@@ -1901,12 +1949,13 @@ class ScoutController:
         (``COLD_BOOKING_RELEASE_BAND``) keeps the pierce from flapping around the
         setpoint. An unreadable room does NOT bypass: under the summer regime the
         fail-safe is to stay locked (a manual Boost is still the escape hatch).
+        Always on (was the `cold_booking_heats` switch): freezing a genuinely
+        cold booked room is never wanted, so this is permanent behaviour — a
+        manual Boost pierces the lockout the same way if ever needed.
         """
-        if not self.switch_on("cold_booking_heats", default=True):
-            return False
         if not self._cal_active(zone):
             return False
-        room = self._zone_room_temp(zone, coldest=True)
+        room = self._zone_room_temp(zone, coldest=True, stale_min=self._rointe_stale_min())
         if room is None:
             return False
         margin = (
@@ -2002,7 +2051,9 @@ class ScoutController:
         if zone != ZONE_A or not self.switch_on("coast_when_free", default=False):
             return False
         return will_coast_to_target(
-            indoor=self._zone_room_temp(ZONE_A, coldest=True),
+            indoor=self._zone_room_temp(
+                ZONE_A, coldest=True, stale_min=self._rointe_stale_min()
+            ),
             target=target,
             rise_rate=self._passive_rise_rate(),
             gap_min=gap_min,
@@ -2031,7 +2082,7 @@ class ScoutController:
         )
         if not occupied:
             return False
-        room = self._zone_room_temp(ZONE_A)
+        room = self._zone_room_temp(ZONE_A, stale_min=self._rointe_stale_min())
         if room is None:
             return False
         margin = COLD_BOOKING_RELEASE_BAND if self.applied[ZONE_A] == PRESET_ECO else 0.0
@@ -2498,11 +2549,18 @@ class ScoutController:
         number. Read off the freshly-computed preset reason: the ladder runs in
         ``_reconcile_zones`` immediately before every eco push, so the reason
         reflects the preset being applied this tick.
+
+        The summer-setback reason is checked BEFORE eco-low: the setback rung
+        fires on non-booking occupancy, but ``cal_title`` (hence ``eco_low``)
+        can still carry an eco keyword from a prior/upcoming event in the
+        look-ahead — without this ordering the setback's ~17.5 floor would be
+        undercut to the 14 eco-low value, leaving an occupied cool hall barely
+        heated.
         """
-        if eco_low:
-            return self.number("hall_eco_low_temp")
         if self._preset_reason.get(ZONE_A) == REASON_SUMMER_SETBACK:
             return self.number("hall_summer_comfort_temp")
+        if eco_low:
+            return self.number("hall_eco_low_temp")
         return self.number("hall_eco_temp")
 
     async def _reconcile_hall_temps(self) -> None:
@@ -2941,7 +2999,6 @@ class ScoutController:
         now = self._now()
         outdoor = self._outdoor_temp()
         offset = self.number("drive_max_offset")
-        self_check = self.switch_on("drive_self_check", default=True)
         any_capped_short = False
         for zone, cfg_key in DRIVE_ZONE_CLIMATES.items():
             climates = self._as_list(self.config.get(cfg_key))
@@ -2988,7 +3045,7 @@ class ScoutController:
                 if evaluated:
                     self._drive_step_at[climate] = now
                 await self._drive_push(climate, number, pushed, reassert=True)
-                self._check_setpoint_readback(climate, pushed, now, self_check)
+                self._check_setpoint_readback(climate, pushed, now)
                 # Cap-pinned watch: at the cap AND still a full step short.
                 if pushed >= cap - 1e-9 and (target - probe) >= DRIVE_STEP:
                     if self._drive_cap_since.get(climate) is None:
@@ -3000,7 +3057,10 @@ class ScoutController:
                 else:
                     self._drive_cap_since[climate] = None
         self._update_drive_alarm(any_capped_short)
-        self._update_drive_self_check(now, self_check)
+        # Self-validation (always on — was the `drive_self_check` switch): a
+        # notification-only watch on whether our commands are landing.
+        self._update_drive_reject_alarm()
+        self._update_drive_no_response(now)
 
     def _drive_minutes_since_step(self, climate: str, now: datetime) -> float:
         at = self._drive_step_at.get(climate)
@@ -3045,7 +3105,7 @@ class ScoutController:
             return None
 
     def _check_setpoint_readback(
-        self, climate: str, pushed: float, now: datetime, self_check: bool
+        self, climate: str, pushed: float, now: datetime
     ) -> None:
         """Track whether a driven heater has adopted the setpoint we pushed (Q20a).
 
@@ -3056,9 +3116,6 @@ class ScoutController:
         settled is "the heater isn't accepting our setpoint" — the phantom-push
         failure, invisible to the cap alarm.
         """
-        if not self_check:
-            self._drive_rejected.discard(climate)
-            return
         at = self._drive_pushed_at.get(climate)
         if at is None or (now - at).total_seconds() < DRIVE_SETTLE_MINUTES * 60:
             self._drive_rejected.discard(climate)
@@ -3071,21 +3128,6 @@ class ScoutController:
             self._drive_rejected.add(climate)
         else:
             self._drive_rejected.discard(climate)
-
-    def _update_drive_self_check(self, now: datetime, self_check: bool) -> None:
-        """Raise/clear the two Q20 self-validation alerts (notification-only)."""
-        if not self_check:
-            self._drive_rejected.clear()
-            self._drive_response_ref = None
-            if self._drive_reject_notified:
-                self._drive_reject_notified = False
-                persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_REJECTED)
-            if self._drive_noresp_notified:
-                self._drive_noresp_notified = False
-                persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_NO_RESPONSE)
-            return
-        self._update_drive_reject_alarm()
-        self._update_drive_no_response(now)
 
     def _update_drive_reject_alarm(self) -> None:
         rejected = bool(self._drive_rejected)
@@ -3124,7 +3166,7 @@ class ScoutController:
         abstains.
         """
         hall_comfort = self.applied.get(ZONE_A) == PRESET_COMFORT
-        floor = self._zone_room_temp(ZONE_A, coldest=True)
+        floor = self._zone_room_temp(ZONE_A, coldest=True, stale_min=self._rointe_stale_min())
         ceiling = self._ceiling_temp()
         target = self._drive_comfort_target(ZONE_A)
         short = floor is not None and floor < target - DRIVE_STEP
@@ -3594,83 +3636,83 @@ class ScoutController:
             self.config.get(ZONE_CALENDAR[ZONE_A])
         )
 
-    def _summer_active(self) -> bool:
-        """Whether the fans should run the summer cooling regime.
+    def _cooling_mode(self) -> str:
+        """The current `cooling_changeover` select option (see COOLING_OPTIONS)."""
+        entity = self._selects.get("cooling_changeover")
+        return entity.current_option if entity is not None else COOLING_DEFAULT
 
-        The manual "Summer cooling mode" switch forces it on; otherwise, with
-        "Summer cooling follows season" enabled (the default), the regime
-        tracks the seasonal heating lockout — cooling while heating is locked
-        out for the season, winter destratification once it releases. Nobody
-        has to remember the changeover, and reversals stay seasonal-rare — the
-        one exception being an active hall heating preset, which forces the
-        reverse/destrat regime regardless (see `heating` in `_fan_target`), so a
-        summer-lockout boost costs up to two reversals but never cools the people
-        it is heating.
+    def _summer_active(self) -> bool:
+        """Whether the *cooling season* is active (season-derived).
+
+        Read from the single `cooling_changeover` select. "Always cool" forces
+        it on; "Never cool" forces it off; "Follow season" and "Follow room
+        state" both derive it from the seasonal heating lockout — because this
+        flag drives the season-scoped uses (the hall-pause breeze exception, the
+        overheat/breeze notifications, warm-up rate attribution), which stay
+        season-based even when the fan *direction* follows room state. The fan
+        direction itself uses `_fan_cooling_regime`, which honours the "Follow
+        room state" option. An active hall heating preset forces the
+        reverse/destrat regime regardless (see `heating` in `_fan_target`).
         """
-        if self.switch_on("summer_mode", default=False):
+        mode = self._cooling_mode()
+        if mode == COOLING_ALWAYS:
             return True
-        return self.switch_on("summer_follows_season", default=True) and self.seasonal_lockout
+        if mode == COOLING_NEVER:
+            return False
+        return self.seasonal_lockout
 
     def _fan_cooling_regime(self, warm: bool | None, heating: bool) -> bool:
         """Whether the fans should run the COOLING (forward) regime this tick.
 
-        F6 — decouple the cooling-vs-destratify direction from the season label.
-        By default this is `_summer_active()` (season-derived: manual force, or
-        the seasonal lockout via `summer_follows_season`). With
-        `fans_follow_state` on, the direction instead follows the hall's actual
-        thermal STATE: cool only when the head-height air is genuinely warm
-        (`warm`) and the hall is not being heated, and destratify otherwise — so
-        the direction tracks the thermometer, not a 3-day-average outdoor
-        crossing (which also removes the Q16 risk of a lockout flip flapping the
-        fan direction). Manual `summer_mode` still forces cooling; active heating
-        still forces reverse (the caller passes `heating` straight through). A
-        warm reading is required, so no floor / unknown warmth never blows a
-        cooling draught on assumption — the same fail-safe the summer branch keeps.
+        Reads the `cooling_changeover` select:
+          Never cool        -> always destratify (never a cooling breeze);
+          Follow season     -> cool while the seasonal lockout is engaged;
+          Follow room state -> cool only when the head-height air is genuinely
+                               warm (`warm`) AND the hall is not being heated, so
+                               the direction tracks the thermometer rather than a
+                               3-day-average outdoor crossing (no lockout-flip
+                               flapping); destratify otherwise;
+          Always cool       -> force the cooling regime.
+        A warm reading is required for the room-state option, so no floor /
+        unknown warmth never blows a cooling draught on assumption. Active
+        heating still forces reverse downstream (the caller passes `heating`).
         """
-        if self.switch_on("fans_follow_state", default=False):
-            return self.switch_on("summer_mode", default=False) or (
-                bool(warm) and not heating
-            )
-        return self._summer_active()
+        mode = self._cooling_mode()
+        if mode == COOLING_ALWAYS:
+            return True
+        if mode == COOLING_NEVER:
+            return False
+        if mode == COOLING_FOLLOW_STATE:
+            return bool(warm) and not heating
+        return self.seasonal_lockout  # Follow season
+
+    def _reset_fan_flags(self) -> None:
+        """Clear every fan condition flag before a fans-off early-out, so a stale
+        pre-condition value cannot keep feeding fail_safe_off or the diagnostics
+        while the fans are held off (disabled / fault-latched / hall paused)."""
+        self.fan_sensor_stale = False
+        self.fan_dt = None
+        self.fan_overheated = False
+        self.fan_breeze_hot = False
+        self._breeze_latch = False
+        self.fan_mix = None
+        self._fan_occupied = None
+        self._fan_warm = None
 
     def _fan_target(self) -> tuple[bool, str | None, str]:
         """Resolve the desired fan state with fail-safe precedence on top."""
         if not self.switch_on("fans_enabled", default=True):
-            self.fan_sensor_stale = False
-            self.fan_dt = None
-            self.fan_overheated = False
-            self.fan_breeze_hot = False
-            self._breeze_latch = False
-            self.fan_mix = None
-            self._fan_occupied = None
-            self._fan_warm = None
+            self._reset_fan_flags()
             return False, None, "off"
         if self._fan_fault():
-            # Reset the condition flags like the disabled branch does, so
-            # stale pre-fault values cannot keep feeding fail_safe_off or the
-            # diagnostics while the latch holds.
-            self.fan_sensor_stale = False
-            self.fan_dt = None
-            self.fan_overheated = False
-            self.fan_breeze_hot = False
-            self._breeze_latch = False
-            self.fan_mix = None
-            self._fan_occupied = None
-            self._fan_warm = None
+            self._reset_fan_flags()
             return False, None, "off"
         # A hall "too warm" pause holds the WINTER destrat fans off — reversing
         # roof-space heat down onto the people who just said they are too hot
         # would make it worse. The summer cooling breeze is left alone (a
         # forward down-draught cools them, which is what they want).
         if self.hall_heating_paused and not self._summer_active():
-            self.fan_sensor_stale = False
-            self.fan_dt = None
-            self.fan_overheated = False
-            self.fan_breeze_hot = False
-            self._breeze_latch = False
-            self.fan_mix = None
-            self._fan_occupied = None
-            self._fan_warm = None
+            self._reset_fan_flags()
             return False, None, "off"
 
         stale_min = self.number("fan_sensor_stale_minutes")
@@ -3783,9 +3825,12 @@ class ScoutController:
             dt_off=self.number("fan_dt_off"),
             demand=demand,
             recirc_ok=recirc_ok,
-            recirc_needs_occupancy=self.switch_on(
-                "winter_fans_need_occupancy", default=True
-            ),
+            # Always require occupancy for the no-demand recirc path (was the
+            # `winter_fans_need_occupancy` switch): the field cool-off samples
+            # settled that empty-hut fan-mixing buys no retention (~150 W for
+            # nothing), so running on ambient stratification alone is never
+            # wanted. Active heat demand still runs the fans regardless.
+            recirc_needs_occupancy=True,
             heating=heating,
             currently_winter=currently_winter,
             run_on_loss=self.switch_on("fans_run_on_sensor_loss", default=True),

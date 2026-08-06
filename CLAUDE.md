@@ -23,6 +23,20 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
   a fully wired controller). Every behaviour change ships with tests. 255
   passing as of 2026-07-12.
+- **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
+  The three fan-direction switches (`summer_mode` / `summer_follows_season` /
+  `fans_follow_state`) became one `cooling_changeover` **select** (Never cool /
+  Follow season / Follow room state / Always cool). Three near-universal "on"
+  switches were **baked into permanent behaviour** (no toggle): `cold_booking_heats`
+  (a cold booked room always heats), `drive_self_check` (the Q20 notification-only
+  command checks always run) and `winter_fans_need_occupancy` (empty-hut recirc is
+  never run — the field data settled it). Kept as real switches: the six
+  operational ones (per-zone automation-enabled + occupied-override, water
+  override, fans-enabled), `fans_run_on_sensor_loss` and `drive_to_target` (both
+  genuine fail-direction / big-behaviour escape hatches), and the two
+  field-unvalidated features `summer_setback_mode` + `coast_when_free` (default
+  off — the deliberate "validate before trust" opt-ins; `coast_when_free` is the
+  only feature that can *withhold* heat, so it stays opt-in on principle).
 - **Data before constants.** This project's core discipline: tuning values
   are changed only against evidence from the audit trail (below), never
   guessed twice. When a value is uncertain, prefer the fail-safe direction
@@ -583,30 +597,28 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   and accepted. Winter is unchanged (already reverse). The winter run/stop
   rules still apply, so heating a room that's already warm (no demand, floor
   above the recirc cap) just leaves the fans off rather than blowing anything.
-- **Fan direction can follow room state instead of the season
-  (`fans_follow_state` = off, F6).** By default the cooling-vs-destrat *default*
-  direction is season-derived (`_summer_active`: manual force, or the seasonal
-  lockout via `summer_follows_season`) — a 3-day-average outdoor crossing flips
-  it. With this switch on, `_fan_cooling_regime(warm, heating)` sets the direction
-  from the hall's *thermal state*: cool (forward) only when the head-height air is
-  genuinely warm (`warm`, i.e. above `cooling_temp_high`) **and** the hall is not
-  being heated; destratify (reverse) otherwise. So the direction tracks the
-  thermometer, not the calendar — a warm hall gets a breeze even in "winter"
-  season, a cool hall destratifies even in "summer" season, and a lockout flip
-  can no longer flap the direction (the Q16 sub-concern, mooted by this). Manual
-  `summer_mode` still forces cooling; active heating still forces reverse (the
-  `heating` gate above is unchanged and wins). A warm reading is *required*, so no
-  floor / unknown warmth never blows a cooling draught on assumption — the same
-  fail-safe the summer branch keeps. Only the `summer` argument into
-  `fan_decision` changes; the run/stop thresholds, the overheat/breeze guards and
-  the hall-pause early-out are untouched (the pause early-out still reads
-  `_summer_active`, so a paused-and-warm hall in *winter season* under state-mode
-  is the one unhandled corner — negligible, noted not fixed). Default OFF — the
-  season-labelled default stands until the owner opts in. **First-shoulder-season
-  watch:** confirm the direction now only changes on real warm↔cool state
-  transitions (in `fan_change.direction`), not on lockout flips, and that a warm
-  winter hall getting a forward breeze is actually wanted (if not, the fix is a
-  higher `cooling_temp_high`, not re-coupling to the season).
+- **Fan direction: one `cooling_changeover` select (F6).** The old
+  `summer_mode` / `summer_follows_season` / `fans_follow_state` switch tangle is
+  now a single select with four options, read by `_fan_cooling_regime(warm,
+  heating)`: **Never cool** (always destratify) / **Follow season** (default —
+  cool while the seasonal lockout is engaged) / **Follow room state** (cool only
+  when the head-height air is genuinely warm, `warm` above `cooling_temp_high`,
+  AND the hall is not being heated; destratify otherwise) / **Always cool**
+  (force cooling). "Follow room state" is the F6 answer — the direction tracks
+  the thermometer, not a 3-day-average outdoor crossing, so a warm hall gets a
+  breeze even in "winter", a cool one destratifies even in "summer", and a
+  lockout flip can no longer flap the direction (mooting the Q16 sub-concern).
+  Active heating still forces reverse in every mode (the `heating` gate wins); a
+  warm reading is *required* for the room-state option, so no floor / unknown
+  warmth never blows a cooling draught on assumption. The season-scoped
+  `_summer_active` (the hall-pause breeze exception, the overheat/breeze
+  notifications, warm-up-rate attribution) tracks Never/Always directly and the
+  lockout for the two Follow options — so under "Follow room state" a
+  paused-and-warm hall in *winter season* stays the one unhandled corner
+  (negligible, noted not fixed). **First-shoulder-season watch** (only when set
+  to Follow room state): confirm the direction changes only on real warm↔cool
+  transitions (`fan_change.direction`), and that a warm winter hall getting a
+  forward breeze is actually wanted (if not, raise `cooling_temp_high`).
 - **The heaters are driven to target, not trusted (`drive_to_target` = on).**
   The Rointes settle a fraction *below* the setpoint we give them (field
   2026-08-06: a hall probe held ~0.5 below a 19.5 comfort setpoint on a cold
@@ -652,15 +664,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   **First-winter watch:** confirm it lands *on* target without hover/overshoot on
   the slow fabric, and read `drive_capped` / the `drive.pushed` trace for which
   heaters need the most boost.
-- **A cold booking pierces the seasonal lockout (`cold_booking_heats` = on).**
+- **A cold booking pierces the seasonal lockout (always on).**
   The summer lockout freezes heating, but a booked (or pre-heating) session
   whose room is genuinely below the target it is asking for still heats — an
   out-of-season cold snap on a booked day must not be frozen out.
   `_cold_booking_bypass` gates the `seasonal_lockout` rung in `_desired_zone`:
-  switch on, `_cal_active` (so the pre-heat window is covered — a cold booked
+  `_cal_active` (so the pre-heat window is covered — a cold booked
   morning is warm from minute one), and the room's **coldest** heater probe
+  (freshness-gated — a frozen Rointe reading is rejected, `_rointe_stale_min`)
   below the booking target (`_booking_target` — comfort, or eco-low for an
-  ECO-keyword event). **Self-calibrating, no weather constant** (deliberately
+  ECO-keyword event). Was the `cold_booking_heats` switch; now permanent
+  behaviour (freezing a cold booked room is never wanted — a manual Boost
+  pierces the lockout the same way if ever needed). **Self-calibrating, no weather constant** (deliberately
   *not* the outdoor "cold-snap" framing the owner first reached for): a
   warm-fabric summer booking already at target does not bypass, so this stays a
   cold-snap escape hatch, not a season-long defeat of the lockout. Release
@@ -732,19 +747,39 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   under the 0.5 start gate) while the pierce sizes off *coldest* (18.5), so the
   climb was too shallow by the averaged measure to start a sample. Q3 stays open
   until a booking begins meaningfully cold by the averaged floor.
-- **The pre-heat window latches open (2026-08-05).** `_async_refresh_calendars`
-  recomputes the lead every ~5 min, but once `cal_window[zone]` has opened for an
-  event it is held open (`window = gap_min <= lead or self.cal_window[zone]`)
-  until the event starts (`_is_on(cal)` takes over) or leaves the look-ahead (the
-  `if not events` branch clears it). Without the latch, `lead` shrinks as the room
-  warms and a bare `gap <= lead` test re-closes the window the moment the room
-  nears target, flipping the zone out of comfort and back — observed in the first
-  cold-booking pierce (comfort↔ice, 2026-08-05) but a general near-target pre-heat
-  flaw (comfort↔eco/ice in an empty winter too). The `preheat_start` audit + hall
-  pause-clear still fire only on the first open (the false→true edge). Trade-off:
-  the room sits at comfort a little early if it reaches target before the booking
-  — it cannot overheat past setpoint, and it removes the cold-arrival risk of the
-  window closing mid-lead.
+- **The pre-heat window latches open, keyed to the event (2026-08-05, refined
+  2026-08-06).** `_async_refresh_calendars` recomputes the lead every ~5 min, but
+  once the window has opened for an event it is held open (`window = gap_min <=
+  lead or latched`, `latched = _preheat_open_for[zone] == start`) until the event
+  starts (`_is_on(cal)` takes over) or leaves the look-ahead. Without the latch,
+  `lead` shrinks as the room warms and a bare `gap <= lead` test re-closes the
+  window the moment the room nears target, flipping the zone out of comfort and
+  back — observed in the first cold-booking pierce (comfort↔ice, 2026-08-05) but a
+  general near-target pre-heat flaw. **The latch is keyed to the specific event's
+  start** (`_preheat_open_for`), not a bare `cal_window` bool: a running event and
+  an empty look-ahead both clear the key, so the latch holds *this* pre-heat open
+  but does NOT bridge into the *next* booking — without the keying, two bookings
+  inside the 120-min look-ahead held comfort continuously across the empty gap
+  between them (audit found 2026-08-06). A fresh first event is judged on `gap <=
+  lead` again, so the hall rests at eco between back-to-back bookings and pre-heats
+  the second one on its own optimum-start lead. The `preheat_start` audit + hall
+  pause-clear still fire only on the first open. Trade-off: the room sits at
+  comfort a little early if it reaches target before its booking — it cannot
+  overheat past setpoint, and it removes the cold-arrival risk of the window
+  closing mid-lead. (`_preheat_open_for` is not persisted; after a restart mid-
+  pre-heat the next refresh re-derives it, at most one benign comfort↔eco cycle at
+  the near-target boundary.)
+- **Warm-enough reads reject a frozen Rointe value (2026-08-06).** The Rointe
+  cloud can freeze while the entity still reads `available`, so every path that
+  decides "is the room warm enough?" — pre-heat sizing (`_zone_preheat_minutes`),
+  the cold-booking pierce (`_cold_booking_bypass`), the summer setback
+  (`_summer_setback_wants_heat`), the coast predictor and the drive no-response
+  witness — passes `stale_min` (`_rointe_stale_min`, the `fan_sensor_stale_minutes`
+  window) into `_zone_room_temp` / `_zone_climate_temps`, which now drop a heater
+  whose `last_reported` is older than that. A frozen-high reading previously
+  under-led a cold start into a cold arrival; it now reads as None → fail-warm
+  (the pre-heat falls back to the cap). The fan ΔT reference and the diagnostic
+  spread deliberately omit `stale_min` (a frozen value is harmless there).
 - **State-based summer setback (`summer_setback_mode` = off).** The seasonal
   lockout's default behaviour is to *block* — it freezes the hall to ice for the
   warm season and only a booking pierces it (cold-booking, above). This switch

@@ -404,30 +404,57 @@ def _events_for(hall_events):
 
 
 def test_preheat_window_latches_open_as_the_room_warms(monkeypatch):
-    """Once open, the window holds until the event starts — it must not re-close
-    when the warming room shrinks the recomputed lead below the gap."""
+    """Once open FOR AN EVENT, the window holds until it starts — it must not
+    re-close when the warming room shrinks the recomputed lead below the gap."""
     from datetime import timedelta
     from homeassistant.util import dt as dt_util
     from scout_testkit import run
 
     ctrl, hass = make_controller()
-    _hall_temp(hass, 22.0)  # already above target
     _set_rate(ctrl, "zone_a_heatloss_pct", 0)  # no cooling prediction
-    # Event 90 min out — well beyond the ~MIN_LEAD lead a warm room needs.
-    start_iso = (dt_util.now() + timedelta(minutes=90)).isoformat()
+    start_iso = (dt_util.now() + timedelta(minutes=25)).isoformat()
     monkeypatch.setattr(
         ctrl, "_async_calendar_events", _events_for([{"start": start_iso, "summary": "squirrels"}])
     )
 
-    # Closed on its own: gap 90 > lead ~15.
-    run(ctrl._async_refresh_calendars())
-    assert ctrl.cal_window[ZA] is False
-
-    # Simulate the window having opened earlier (when the room was cold); with the
-    # room now warm the recomputed lead is small, but the latch holds it open.
-    ctrl.cal_window[ZA] = True
+    # Cold room: the lead is long, so the window opens (and latches for this event).
+    _hall_temp(hass, 12.0)
     run(ctrl._async_refresh_calendars())
     assert ctrl.cal_window[ZA] is True
+
+    # Room now warm: the recomputed lead shrinks below the gap, but the latch
+    # (keyed to this event) holds the window open.
+    _hall_temp(hass, 22.0)
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True
+
+
+def test_preheat_latch_does_not_bridge_into_the_next_booking(monkeypatch):
+    """Back-to-back bookings inside the look-ahead must NOT hold comfort across
+    the empty gap: when booking A ends, booking B's pre-heat is judged fresh."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+    from scout_testkit import E, run
+
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 22.0)  # warm -> B needs only a short lead
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)
+    cal = E["cal_hall"]
+
+    # Booking A is running now; booking B starts in 100 min (inside the 120 cap).
+    b_start = (dt_util.now() + timedelta(minutes=100)).isoformat()
+    monkeypatch.setattr(
+        ctrl, "_async_calendar_events", _events_for([{"start": b_start, "summary": "beavers"}])
+    )
+    hass.states.set(cal, "on", {"message": "squirrels"})  # A running
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True  # A running -> window open
+
+    # A ends. B is 100 min out; a warm room's lead is ~15 min, so the window must
+    # DROP (not stay latched from A) — the hall can rest at eco across the gap.
+    hass.states.set(cal, "off")
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is False
 
 
 def test_latched_window_still_releases_when_the_event_goes_away(monkeypatch):

@@ -100,13 +100,12 @@ _OCCUPANCY = [
     ("zone_a_occupied_override", "Hall occupied override"),
     ("zone_b_occupied_override", "Office occupied override"),
     ("motion_timeout_minutes", "No-motion eco timeout"),
-    ("cold_booking_heats", "Cold bookings heat despite lockout"),
     ("zone_a_manual_hold", "Hall manual hold (app change)"),
     ("zone_b_manual_hold", "Office manual hold (app change)"),
 ]
 _OPTIMUM_START = [
     ("preheat_minutes", "Pre-heat lead time (max / cap)"),
-    ("coast_when_free", "Coast on free heat (skip pre-heat)"),
+    ("coast_when_free", "Coast on free heat"),
     ("zone_a_warmup_rate", "Hall warm-up rate"),
     ("zone_a_warmup_rate_fans", "Hall warm-up rate (fans running)"),
     ("zone_b_warmup_rate", "Office warm-up rate"),
@@ -136,11 +135,8 @@ _FAN_STATUS = [
 ]
 _FAN_CONTROLS = [
     ("fans_enabled", "Ceiling fans enabled"),
-    ("summer_mode", "Summer cooling mode (manual force)"),
-    ("summer_follows_season", "Summer cooling follows season"),
-    ("fans_follow_state", "Direction follows room state (not season)"),
+    ("cooling_changeover", "Cooling changeover"),
     ("fans_run_on_sensor_loss", "Run when sensor lost"),
-    ("winter_fans_need_occupancy", "Winter fans need occupancy"),
 ]
 _FAN_TUNING = [
     ("fan_dt_on", "ΔT to start"),

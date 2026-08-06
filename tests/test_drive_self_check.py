@@ -36,14 +36,14 @@ def _settled_push(ctrl, hass, pushed, reported):
 def test_matching_setpoint_is_not_flagged():
     ctrl, hass = make_controller()
     now = _settled_push(ctrl, hass, pushed=22.0, reported=22.0)
-    ctrl._check_setpoint_readback(CLIMATE, 22.0, now, self_check=True)
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
     assert CLIMATE not in ctrl._drive_rejected
 
 
 def test_diverging_setpoint_after_settle_is_flagged_and_notifies():
     ctrl, hass = make_controller()
     now = _settled_push(ctrl, hass, pushed=22.0, reported=19.5)  # never adopted
-    ctrl._check_setpoint_readback(CLIMATE, 22.0, now, self_check=True)
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
     assert CLIMATE in ctrl._drive_rejected
     ctrl._update_drive_reject_alarm()
     assert ctrl._drive_reject_notified
@@ -55,7 +55,7 @@ def test_divergence_within_settle_window_abstains():
     now = ctrl._now()
     ctrl._drive_pushed_at[CLIMATE] = now - timedelta(minutes=DRIVE_SETTLE_MINUTES - 2)
     hass.states.set(CLIMATE, "heat", {"temperature": 19.5})
-    ctrl._check_setpoint_readback(CLIMATE, 22.0, now, self_check=True)
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
     assert CLIMATE not in ctrl._drive_rejected
 
 
@@ -64,26 +64,32 @@ def test_unreadable_setpoint_abstains():
     now = ctrl._now()
     ctrl._drive_pushed_at[CLIMATE] = now - timedelta(minutes=DRIVE_SETTLE_MINUTES + 1)
     hass.states.set(CLIMATE, "heat", {"current_temperature": 18.0})  # no 'temperature'
-    ctrl._check_setpoint_readback(CLIMATE, 22.0, now, self_check=True)
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
     assert CLIMATE not in ctrl._drive_rejected
 
 
-def test_switch_off_never_flags():
+def test_recovers_when_a_new_value_is_pushed():
+    """A fresh push resets the settle clock, so the heater is not flagged until
+    the new value has had its own window to land."""
     ctrl, hass = make_controller()
     now = _settled_push(ctrl, hass, pushed=22.0, reported=19.5)
-    ctrl._check_setpoint_readback(CLIMATE, 22.0, now, self_check=False)
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
+    assert CLIMATE in ctrl._drive_rejected
+    # A new push just now: within the settle window, so abstain.
+    ctrl._drive_pushed_at[CLIMATE] = now
+    ctrl._check_setpoint_readback(CLIMATE, 21.5, now)
     assert CLIMATE not in ctrl._drive_rejected
 
 
 def test_reject_alarm_clears_on_recovery():
     ctrl, hass = make_controller()
     now = _settled_push(ctrl, hass, pushed=22.0, reported=19.5)
-    ctrl._check_setpoint_readback(CLIMATE, 22.0, now, self_check=True)
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
     ctrl._update_drive_reject_alarm()
     assert ctrl._drive_reject_notified
     # Device adopts the value.
     hass.states.set(CLIMATE, "heat", {"temperature": 22.0})
-    ctrl._check_setpoint_readback(CLIMATE, 22.0, now, self_check=True)
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
     ctrl._update_drive_reject_alarm()
     assert not ctrl._drive_reject_notified
 
