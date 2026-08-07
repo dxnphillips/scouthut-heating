@@ -2541,6 +2541,27 @@ class ScoutController:
                 continue
             await self._async_set_preset(zone, desired)
 
+    def _hall_desired_setpoint(self) -> float:
+        """The temperature the hall is currently being driven toward — the
+        applied preset's setpoint.
+
+        Used to gate destratification recirculation: harvesting stored ceiling
+        heat only helps when the room is BELOW what is wanted, so the fans chase
+        the same goal the heaters do. When there is no heating goal the applied
+        preset is ice, which returns the anti-frost floor (7) — so a warm-enough
+        or frozen hall (e.g. an eco-low booking whose room already sits above its
+        low target) does not destratify unwanted heat onto its occupants. Because
+        a booked zone only lands on ice once its room is already at/above the
+        booking target, the applied setpoint is a faithful proxy for "what the
+        occupants actually want".
+        """
+        applied = self.applied[ZONE_A]
+        if applied == PRESET_COMFORT:
+            return self.number("hall_comfort_temp")
+        if applied == PRESET_ECO:
+            return self._hall_eco_target(self._eco_keyword_active(ZONE_A))
+        return ROINTE_ANTIFROST
+
     def _hall_eco_target(self, eco_low: bool) -> float:
         """The eco setpoint to push for the hall.
 
@@ -3780,9 +3801,19 @@ class ScoutController:
             self._vent_anchor_mix = None
             self._vent_effective = True
         self.fan_breeze_hot = self._breeze_latch and not (vent and self._vent_effective)
-        # Recirculate residual / leaked ceiling heat while the occupied zone is
-        # still below the cap, decoupled from whether a heater is drawing power.
-        recirc_ok = ft is not None and ft < self.number("fan_recirc_max_floor_temp")
+        # Recirculate residual / leaked ceiling heat only toward the temperature
+        # the hall is actually being driven to — the applied setpoint — not a
+        # fixed cap. Destratifying stored heat onto occupants only helps when the
+        # room is BELOW what is wanted; so the fans chase the same goal the
+        # heaters do, and harvest nothing when there is no goal. This is what
+        # stops an eco-low booking whose room already sits above its low target
+        # (applied ice) from having unwanted ceiling heat pushed down onto people
+        # who asked for it cool. `fan_recirc_max_floor_temp` stays as an absolute
+        # upper ceiling.
+        recirc_target = min(
+            self._hall_desired_setpoint(), self.number("fan_recirc_max_floor_temp")
+        )
+        recirc_ok = ft is not None and ft < recirc_target
         occupied = self._cooling_occupied()
         self._fan_occupied = occupied
         demand = self._heat_demand()

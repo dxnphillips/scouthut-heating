@@ -597,7 +597,24 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   cost is up to two reversals per *summer* boost (start + end), which is rare
   and accepted. Winter is unchanged (already reverse). The winter run/stop
   rules still apply, so heating a room that's already warm (no demand, floor
-  above the recirc cap) just leaves the fans off rather than blowing anything.
+  above the recirc target) just leaves the fans off rather than blowing anything.
+- **Destrat recirculation chases the applied setpoint, not a fixed cap
+  (2026-08-07).** The winter recirc "is the heat worth moving?" test gates on the
+  floor being below `_hall_desired_setpoint()` — the temperature the hall is
+  actually being driven to (the applied preset's comfort/eco value, or the 7 °C
+  anti-frost floor when the hall is on ice) — capped by `fan_recirc_max_floor_temp`
+  as an absolute ceiling. Previously it used the fixed `fan_recirc_max_floor_temp`
+  (24) alone, which is a *winter comfort ceiling* blind to what the occupants want:
+  a field export (2026-08-07) caught the fans destratifying stored ceiling heat
+  down onto an **eco-low cleaning slot** (target 14) whose room already sat at 16
+  — the booking was on ice (room above its low target, lockout engaged, no
+  pierce), so floor 16 < 24 wrongly read as "worth harvesting". Now the fans chase
+  the same goal the heaters do: an ice preset returns 7, so a warm-enough / frozen
+  hall harvests nothing (`recirc_ok = floor < min(desired_setpoint, cap)`). Because
+  a booked zone only lands on ice once its room is at/above the booking target, the
+  applied setpoint is a faithful proxy for "what the occupants want". The
+  *demand* path (`worth_moving = demand or recirc`) is unchanged and remains the
+  building-wide Q15 sub-question (office heat still runs the hall fans via demand).
 - **Fan direction is fully automatic from room state — no toggle, no season
   (F6, finalised 2026-08-06).** The whole `summer_mode` / `summer_follows_season`
   / `fans_follow_state` switch tangle, and the `cooling_changeover` select that

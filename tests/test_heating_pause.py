@@ -149,14 +149,15 @@ def test_pause_holds_the_winter_fans_off():
         config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
     )
     ctrl.seasonal_lockout = False  # winter regime
+    ctrl.applied[ZA] = "eco"  # hall being heated -> a genuine destrat goal
     for eid in E["hall"]:
-        hass.states.set(eid, "heat", {"current_temperature": 20.0})  # floor 20 < cap
-    hass.states.set("sensor.ceiling", "23.0")  # dt 3 > dt_on
-    motion(ctrl, "hall")  # occupied -> the recirc gate is satisfied
+        hass.states.set(eid, "heat", {"current_temperature": 14.0})  # floor below eco (16)
+    hass.states.set("sensor.ceiling", "17.0")  # dt 3 > dt_on
+    motion(ctrl, "hall")  # occupied
 
-    assert ctrl._fan_target()[0] is True  # would run without the pause
+    assert ctrl._fan_target()[0] is True  # winter destrat wants to run
     ctrl.hall_heating_paused = True
-    assert ctrl._fan_target() == (False, None, "off")
+    assert ctrl._fan_target() == (False, None, "off")  # pause suppresses destrat
 
 
 def test_pause_leaves_the_cooling_breeze_alone_regardless_of_season():
