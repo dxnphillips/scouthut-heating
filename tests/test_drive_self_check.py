@@ -13,7 +13,13 @@ from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
 from custom_components.scout_hut_heating.coordinator import (
     DRIVE_NO_RESPONSE_MINUTES,
     DRIVE_SETTLE_MINUTES,
+    DRIVE_STARTUP_GRACE_MINUTES,
 )
+
+
+def _past_startup(ctrl):
+    """Simulate the integration having been up past the drive self-check grace."""
+    ctrl._started_at = ctrl._now() - timedelta(minutes=DRIVE_STARTUP_GRACE_MINUTES + 1)
 from scout_testkit import PRESET_COMFORT, ZA, E, make_controller
 
 CLIMATE = "climate.hall_back"
@@ -27,6 +33,7 @@ def _audit(ctrl, kind):
 # --- (a) Setpoint read-back ------------------------------------------------
 def _settled_push(ctrl, hass, pushed, reported):
     now = ctrl._now()
+    _past_startup(ctrl)
     ctrl._drive_pushed[CLIMATE] = pushed
     ctrl._drive_pushed_at[CLIMATE] = now - timedelta(minutes=DRIVE_SETTLE_MINUTES + 1)
     hass.states.set(CLIMATE, "heat", {"temperature": reported, "current_temperature": 18.0})
@@ -48,6 +55,23 @@ def test_diverging_setpoint_after_settle_is_flagged_and_notifies():
     ctrl._update_drive_reject_alarm()
     assert ctrl._drive_reject_notified
     assert len(_audit(ctrl, "drive_setpoint_rejected")) == 1
+
+
+def test_startup_grace_abstains_even_after_settle():
+    # Post-restart: the settle window has elapsed but the integration only just
+    # started, so the read-back must abstain (the Rointe cloud lags after boot).
+    ctrl, hass = make_controller()
+    now = ctrl._now()
+    ctrl._started_at = now - timedelta(minutes=1)  # just started
+    ctrl._drive_pushed[CLIMATE] = 22.0
+    ctrl._drive_pushed_at[CLIMATE] = now - timedelta(minutes=DRIVE_SETTLE_MINUTES + 1)
+    hass.states.set(CLIMATE, "heat", {"temperature": 19.5})  # not adopted yet
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
+    assert CLIMATE not in ctrl._drive_rejected  # grace holds it off
+    # Once past the grace, the same unadopted setpoint IS flagged.
+    _past_startup(ctrl)
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
+    assert CLIMATE in ctrl._drive_rejected
 
 
 def test_divergence_within_settle_window_abstains():
@@ -97,6 +121,7 @@ def test_reject_alarm_clears_on_recovery():
 # --- (b) Ceiling cross-check (no response) ---------------------------------
 def _no_resp_ctrl(floor=17.0, ceiling=20.0):
     ctrl, hass = make_controller(config_overrides={CONF_CEILING_TEMP: CEIL})
+    _past_startup(ctrl)
     ctrl.applied[ZA] = PRESET_COMFORT
     for eid in E["hall"]:
         hass.states.set(eid, "heat", {"current_temperature": floor})

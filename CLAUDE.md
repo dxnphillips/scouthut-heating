@@ -582,6 +582,20 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     unchanged, so the read-back only judges a heater that has been *continuously*
     driven for the full window. General (not shared-only), fail-safe (abstains
     longer, never flags sooner).
+    **Startup false-positive fixed (v1.24.3, 2026-08-08 field export + owner
+    confirmation).** A booked-evening export caught the read-back flagging *all
+    four* hall heaters ~10 min after a restart (the phone showed "wrapping up
+    startup"), reporting the old 19.5 setpoint while the drive pushed the hold's
+    20.0–20.5 — then **they matched once the cloud caught up, with nothing pushed**.
+    So the Rointe cloud is much slower to reflect a setpoint *just after a restart*
+    than the settle window assumes (it is NOT a real setpoint-not-landing, and NOT
+    a comfort ceiling — the pushes did land, late). Fix: `_within_startup_grace`
+    holds BOTH drive self-checks (read-back and no-response) off until the
+    integration has been up `DRIVE_STARTUP_GRACE_MINUTES` (25). Same fail-safe
+    direction (abstain longer). This is why the earlier "the hall can't be driven
+    above comfort" alarm was a false read — the above-comfort push *does* land, it
+    was just the post-boot cloud lag; the v1.24.2 comfort-number diagnostic is kept
+    to confirm should a genuine non-adoption ever recur mid-run (not at startup).
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
