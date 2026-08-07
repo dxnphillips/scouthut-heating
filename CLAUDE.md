@@ -754,6 +754,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   (opposite decisions). It only ever aims *warmer*, capped, so it cannot overheat.
   **The trade is explicit:** a booked hall runs a fraction warm on cold evenings (up
   to the cap) to guarantee it never dips *below* comfort — which is the point.
+  **The Rointes only accept 0.5 °C setpoints** (field-confirmed 2026-08-07), so the
+  continuous margin is used raw as a *comparison* threshold at the gate but
+  `_drive_comfort_target` rounds the final driven target to the 0.5 grid — an
+  off-grid value is silently rounded by the device and would wobble the read-back
+  self-check. (All other setpoints — the comfort/eco sliders, the boost offset, the
+  drive staircase — were already on the grid; the continuous hold was the only leak.)
   Diagnostics carry `drive.hold_margin`. **First-winter watch:** read the trace at a
   cooling-evening booking — did the floor stay at/above comfort through the slot
   (hold working) or still dip (raise the cap / `HOLD_LEAD_BASE_MIN`)? And confirm it
