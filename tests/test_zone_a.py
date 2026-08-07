@@ -68,7 +68,8 @@ def test_season_no_longer_ices_a_cold_booking():
 
 def test_warm_booking_ices_for_the_cooling_fans():
     # A booking already at/above target needs no heat; ice frees the cooling fans.
-    ctrl, _ = make_controller()
+    ctrl, hass = make_controller()
+    hass.states.set("weather.forecast", "sunny", {"temperature": 22.0})  # warm -> no hold
     booking(ctrl, ZA)
     motion(ctrl, "hall")
     hall_temp(ctrl, 20.5)  # above the 19.5 comfort target

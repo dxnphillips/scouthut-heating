@@ -41,6 +41,7 @@ NAMES: dict[str, str] = {
     "office_comfort_temp": "Office comfort temperature",
     "shared_comfort_temp": "Shared comfort temperature",
     "boost_offset": "Boost temperature offset (above comfort)",
+    "booking_hold_cap": "Booking hold: max °C above comfort",
 }
 
 HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp", "hall_eco_low_temp")

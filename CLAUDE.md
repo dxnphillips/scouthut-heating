@@ -734,6 +734,31 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   cold-radiant hall is real): a boost is the "I want more than the standing
   setpoint right now" signal, and the slider lets the owner tune how aggressive it
   is. It only ever aims *warmer*, time-boxed, so it cannot leave the hut overheated.
+- **A booking "holds" the hall above comfort so it can't dip during the slot
+  (2026-08-07, owner insight; `preheat.hold_margin`).** The drive is slow (0.5 °C
+  staircase, 15 min/step) and only fires *below* target, so on a cooling evening it
+  catches a booked hall reactively at comfort and then lags — the room undershoots
+  while the radiators spin up. Because a booking means comfort is wanted for the
+  whole slot, `_booking_hold_margin` raises the drive's target (and the gate's
+  engage point) a little above comfort to pre-empt the fall. The margin is sized
+  from **both** learned rates — Newton cool-off (`zone_a_heatloss_pct` × the
+  comfort−outdoor gap = °C/h lost) × a response lead scaled by the learned warm-up
+  rate (sluggish hall → longer lead) — so it is exactly the head-start the fall
+  warrants: bigger on a cold night, ~zero on a mild one, and zero when the rates
+  are unlearned or the `booking_hold_cap` slider (default 1.5, 0 = off) is 0.
+  **Model-based** (comfort + outdoor + the two learned constants, NOT the live
+  indoor trend), so applying the heat can't collapse the margin and oscillate — a
+  stable function of conditions. Hall only, running comfort bookings only (an eco
+  booking targets eco-low; the pre-heat still owns *arrival*, this owns holding the
+  floor *through* the slot); suppressed while the coast predictor is holding at eco
+  (opposite decisions). It only ever aims *warmer*, capped, so it cannot overheat.
+  **The trade is explicit:** a booked hall runs a fraction warm on cold evenings (up
+  to the cap) to guarantee it never dips *below* comfort — which is the point.
+  Diagnostics carry `drive.hold_margin`. **First-winter watch:** read the trace at a
+  cooling-evening booking — did the floor stay at/above comfort through the slot
+  (hold working) or still dip (raise the cap / `HOLD_LEAD_BASE_MIN`)? And confirm it
+  self-zeros on mild evenings. Pairs with Q17 (a capacity-limited hall may not
+  *reach* the held target — the `drive_capped` alarm surfaces that).
 - **Heating is decoupled from the season — one gate, occupancy == booking
   (2026-08-07).** The seasonal lockout no longer blocks heat. Both a booking and
   bare occupancy heat on the **same** self-calibrating test, `_room_wants_heat(zone,

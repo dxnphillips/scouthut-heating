@@ -89,6 +89,7 @@ _TEMPERATURES = [
     ("office_comfort_temp", "Office comfort"),
     ("shared_comfort_temp", "Shared comfort"),
     ("boost_offset", "Boost offset (above comfort)"),
+    ("booking_hold_cap", "Booking hold: max °C above comfort"),
     ("seasonal_lockout_temp", "Warm-season threshold (condensation watch)"),
     ("drive_to_target", "Drive heaters to target"),
     ("drive_max_offset", "Drive: max setpoint boost"),

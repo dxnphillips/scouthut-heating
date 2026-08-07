@@ -58,6 +58,7 @@ def _hall_comfort(ctrl, hass, temps):
     """Put the hall into comfort with the given per-heater probe temps."""
     booking(ctrl, ZA)
     motion(ctrl, "hall")
+    ctrl._numbers["booking_hold_cap"].native_value = 0  # isolate drive mechanics
     hass.states.set(E["weather"], "cloudy", {"temperature": 6.0})  # cold -> feedforward
     for climate, t in temps.items():
         hass.states.set(climate, "heat", {"current_temperature": t})
