@@ -468,6 +468,13 @@ class ScoutController:
         # while boosting hard, reset whenever either moves. Notification latches
         # so the alerts raise/clear once, not every tick.
         self._drive_pushed_at: dict[str, datetime] = {}
+        # Heaters currently in the driven (comfort) state. A heater that flips
+        # OUT of comfort and back must restart its read-back settle window and
+        # re-assert the comfort preset — otherwise a stale settle stamp from a
+        # withdrawal (which writes the comfort number while the heater is on ice)
+        # makes the read-back judge it before it has adopted the freshly-applied
+        # comfort setpoint, a false `drive_setpoint_rejected`.
+        self._drive_driven: set[str] = set()
         self._drive_rejected: set[str] = set()
         self._drive_reject_notified = False
         self._drive_response_ref: tuple[datetime, float | None, float | None] | None = None
@@ -2953,7 +2960,12 @@ class ScoutController:
             return None
 
     async def _drive_push(
-        self, climate: str, number: str, value: float, reassert: bool = False
+        self,
+        climate: str,
+        number: str,
+        value: float,
+        reassert: bool = False,
+        force: bool = False,
     ) -> None:
         """Write a heater's comfort setpoint, only when it actually changes.
 
@@ -2964,8 +2976,14 @@ class ScoutController:
         ``async_hall_temps_changed``). The drive must do the same or its boost
         never reaches the radiator. Only used on the driving (comfort) path; the
         withdrawal path just stores the plain target for the next real apply.
+
+        ``force``: push (and re-assert, and restamp the settle clock) even when
+        the number is unchanged. Used when a heater (re-)enters the driven state:
+        its live setpoint may have been on ice while the withdrawal left the
+        comfort *number* already at this value, so the reassert is what actually
+        moves the radiator, and the fresh stamp restarts the read-back window.
         """
-        if self._drive_pushed.get(climate) == value:
+        if self._drive_pushed.get(climate) == value and not force:
             return
         self._drive_pushed[climate] = value
         # Stamp the push so the read-back self-check waits a full settle window
@@ -3041,6 +3059,7 @@ class ScoutController:
                     self._drive_stair[climate] = 0.0
                     self._drive_cap_since[climate] = None
                     self._drive_rejected.discard(climate)
+                    self._drive_driven.discard(climate)
                     await self._drive_push(climate, number, target)
                     continue
                 since = self._drive_minutes_since_step(climate, now)
@@ -3051,7 +3070,15 @@ class ScoutController:
                 self._drive_stair[climate] = stair
                 if evaluated:
                     self._drive_step_at[climate] = now
-                await self._drive_push(climate, number, pushed, reassert=True)
+                # Entering the driven state (a fresh comfort episode): re-assert
+                # and restart the read-back window even if the comfort number is
+                # unchanged from a prior withdrawal, so the read-back does not
+                # judge a heater whose live setpoint was on ice moments ago.
+                entering = climate not in self._drive_driven
+                self._drive_driven.add(climate)
+                await self._drive_push(
+                    climate, number, pushed, reassert=True, force=entering
+                )
                 self._check_setpoint_readback(climate, pushed, now)
                 # Cap-pinned watch: at the cap AND still a full step short.
                 if pushed >= cap - 1e-9 and (target - probe) >= DRIVE_STEP:
@@ -3247,6 +3274,7 @@ class ScoutController:
         self._drive_step_at.clear()
         self._drive_pushed.clear()
         self._drive_pushed_at.clear()
+        self._drive_driven.clear()
         self._drive_cap_since.clear()
         self._drive_rejected.clear()
         self._drive_response_ref = None
