@@ -57,6 +57,7 @@ from .preheat import (
     MIN_COOL_SAMPLE_HOURS,
     MIN_SAMPLE_MINUTES,
     MIN_SAMPLE_RISE,
+    hold_margin,
     required_lead_minutes,
     updated_cooling_k,
     updated_rate,
@@ -1785,6 +1786,10 @@ class ScoutController:
                     "setpoint_rejected": sorted(self._drive_rejected),
                     "rejected_alert": self._drive_reject_notified,
                     "no_response_alert": self._drive_noresp_notified,
+                    # Booking hold: how far above comfort the hall is currently
+                    # being held to pre-empt an evening dip (0 when not a running
+                    # comfort booking, mild, or disabled).
+                    "hold_margin": round(self._booking_hold_margin(ZONE_A), 3),
                 },
                 "coast": {
                     "enabled": self.switch_on("coast_when_free", default=False),
@@ -2114,7 +2119,13 @@ class ScoutController:
             base = PRESET_ECO if self._eco_keyword_active(zone) else PRESET_COMFORT
             event_running = self._is_on(self.config.get(ZONE_CALENDAR[zone]))
             occupied = self._motion_recent(area, timeout)
-            if not self._room_wants_heat(zone, self._booking_target(zone)):
+            # A running comfort booking holds the room a little ABOVE comfort (the
+            # booking hold) so a cooling evening cannot drop it below comfort while
+            # the slow drive catches up. The gate engages at that raised target so
+            # the hall does not ice while still above bare comfort; the margin is 0
+            # for eco bookings, pre-heat (not yet running) and mild nights.
+            booking_target = self._booking_target(zone) + self._booking_hold_margin(zone)
+            if not self._room_wants_heat(zone, booking_target):
                 # Already warm enough for what this booking asked — no heat, and
                 # ice lets the cooling fans run if the room is genuinely hot.
                 self._note_coasting(zone, False)
@@ -2918,18 +2929,45 @@ class ScoutController:
             return self.boost_active(ZONE_A) or self.boost_active(ZONE_B)
         return self.boost_active(zone)
 
-    def _drive_comfort_target(self, zone: str) -> float:
-        """The temperature the drive aims the room at — comfort, or comfort plus
-        the Boost offset while a Boost is active.
+    def _booking_hold_margin(self, zone: str) -> float:
+        """°C above comfort to hold the hall at during a running booking so it does
+        not dip below comfort as the evening cools (see preheat.hold_margin).
 
-        A Boost is an occupant saying "still too cold", so it must aim ABOVE the
-        standing comfort setpoint: without this, boosting a room already at
-        comfort tells the drive to keep targeting comfort — a no-op exactly when
-        someone is asking for more. Clamped to the Rointe max."""
+        Hall only, comfort bookings only (an ECO-keyword booking targets eco-low,
+        not comfort), and only once the event is actually running — the pre-heat
+        owns the arrival, this owns holding the floor through the slot. Sized from
+        the same learned cool-off and warm-up rates the pre-heat uses, so it is
+        self-calibrating and self-zeroing (mild night / unlearned rates → 0). Not
+        applied while the coast predictor is holding at eco on free gain (they are
+        opposite decisions and cannot both be right)."""
+        if zone != ZONE_A or self._eco_keyword_active(zone):
+            return 0.0
+        if not self._is_on(self.config.get(ZONE_CALENDAR[zone])):
+            return 0.0
+        if self._coasting.get(zone):
+            return 0.0
+        rate, _ = self._prediction_rate(zone)
+        return hold_margin(
+            comfort=self._zone_target(zone),
+            outdoor=self._outdoor_temp(),
+            cool_k=self.number(f"{zone}_heatloss_pct") / 100,
+            warmup_rate=rate,
+            cap=self.number("booking_hold_cap"),
+        )
+
+    def _drive_comfort_target(self, zone: str) -> float:
+        """The temperature the drive aims the room at — comfort, plus any upward
+        nudge from a Boost or a booking "hold".
+
+        A Boost is an occupant saying "still too cold", so it aims ABOVE comfort
+        (without it, boosting a room already at comfort would be a no-op). A
+        booking hold anticipates a cooling evening, holding the hall a little
+        above comfort so the slow drive does not undershoot. Both only ever aim
+        warmer; take the larger (they do not stack) and clamp to the Rointe max."""
         base = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
-        if self._boosting(zone):
-            return min(base + self.number("boost_offset"), ROINTE_COMFORT_MAX)
-        return base
+        bump = self.number("boost_offset") if self._boosting(zone) else 0.0
+        bump = max(bump, self._booking_hold_margin(zone))
+        return min(base + bump, ROINTE_COMFORT_MAX)
 
     def _drive_heatloss_frac(self, zone: str) -> float:
         # The shared zone has no learned heat-loss of its own; borrow the hall's
@@ -3277,7 +3315,9 @@ class ScoutController:
         crash-left overdrive is undone within seconds of the next boot.
         """
         for zone, cfg_key in DRIVE_ZONE_CLIMATES.items():
-            target = self._drive_comfort_target(zone)
+            # Restore the owner's PLAIN comfort setpoint, never a transient Boost
+            # or booking-hold bump — the last will exists to undo overdrive.
+            target = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
             for climate in self._as_list(self.config.get(cfg_key)):
                 number = self._heater_comfort_number(climate)
                 if number is None:

@@ -53,6 +53,14 @@ OUTDOOR_MARGIN_PER_DEG = 0.01
 # floor — the heating system holds it there even when "off".
 MIN_PREDICT_TEMP = 7.0
 
+# Booking "hold" (anticipatory maintain — see hold_margin). The response lead
+# for a reference-speed hall (min), scaled up for a sluggish one and down for a
+# brisk one via the learned warm-up rate against this reference (min/°C, the
+# middle of the plausible warm-up band). 20 min ~= one-to-two of the drive's
+# 15-min staircase steps — enough head-start for the slow loop to arrest a fall.
+HOLD_LEAD_BASE_MIN = 20.0
+HOLD_WARMUP_REF = 30.0
+
 # Learned heat-loss constant k: the FRACTION of the indoor-outdoor gap lost
 # per hour (Newton cooling, dT/dt = -k·(indoor - outdoor)). Gap-normalising
 # the observation is what makes a July sample transfer to January: the same
@@ -137,6 +145,51 @@ def required_lead_minutes(
     if outdoor is not None and outdoor < OUTDOOR_BASE:
         lead *= 1 + (OUTDOOR_BASE - outdoor) * OUTDOOR_MARGIN_PER_DEG
     return max(min(lead, max_minutes), min(MIN_LEAD, max_minutes))
+
+
+def hold_margin(
+    *,
+    comfort: float,
+    outdoor: float | None,
+    cool_k: float,
+    warmup_rate: float,
+    cap: float,
+    lead_base_min: float = HOLD_LEAD_BASE_MIN,
+    warmup_ref: float = HOLD_WARMUP_REF,
+) -> float:
+    """How far ABOVE comfort to hold a room during a booking, to stop it dipping.
+
+    The drive is slow (a 0.5 °C staircase, 15 min/step) and only fires below its
+    target, so on a falling evening it catches the room reactively at comfort and
+    then lags — the room undershoots while the radiators spin up. During a booking
+    we KNOW comfort is wanted for the whole slot, so we pre-empt the dip by holding
+    the drive's target a little above comfort. The margin is sized from BOTH learned
+    rates, so it is exactly the head-start the fall warrants and no more:
+
+      * how fast the room is losing heat — Newton cooling at comfort,
+        ``cool_k · (comfort − outdoor)`` °C/h (the same gap-normalised heat-loss
+        the pre-heat uses), so a cold night earns a bigger margin, a mild one ~none;
+      * how sluggish the radiators are to respond — the learned warm-up rate scales
+        the response lead (``lead_base_min · warmup_rate / warmup_ref``), so a
+        slow-to-heat hall gets more lead than a brisk one.
+
+    margin = cooling_rate × response_lead. Model-based (comfort + outdoor + the two
+    learned constants), NOT the live indoor trend, so applying the heat cannot
+    collapse the margin and set up an oscillation — it is a stable function of the
+    conditions. Zero when the outdoor is at/above comfort (nothing to hold against),
+    when either rate is unlearned/zero, or when the cap is 0 (the off switch).
+    Clamped to ``cap``. Unreadable outdoor assumes the cold fallback (errs warm).
+    """
+    if cap <= 0 or cool_k <= 0 or warmup_rate <= 0:
+        return 0.0
+    out = outdoor if outdoor is not None else COOL_FALLBACK_OUTDOOR
+    gap = comfort - out
+    if gap <= 0:
+        return 0.0
+    cooling_rate_per_h = cool_k * gap
+    lead_min = lead_base_min * (warmup_rate / warmup_ref)
+    margin = cooling_rate_per_h * (lead_min / 60.0)
+    return max(0.0, min(margin, cap))
 
 
 def updated_rate(rate: float, minutes_elapsed: float, temp_rise: float) -> float:

@@ -29,6 +29,7 @@ def _cold_hall_booking(started=True, lockout=True):
     make no difference to the heating decision)."""
     ctrl, _ = make_controller()
     ctrl.seasonal_lockout = lockout
+    ctrl._numbers["booking_hold_cap"].native_value = 0  # isolate the base gate
     if started:
         booking(ctrl, ZA)
     else:
@@ -53,7 +54,8 @@ def test_cold_booking_reason_is_plain_booking_no_lockout_tag():
 
 def test_warm_booking_ices_for_the_cooling_fans():
     """A booking already at/above target needs no heat — ice frees the fans."""
-    ctrl, _ = make_controller()
+    ctrl, hass = make_controller()
+    hass.states.set("weather.forecast", "sunny", {"temperature": 22.0})  # warm -> no hold
     booking(ctrl, ZA)
     motion(ctrl, "hall")
     hall_temp(ctrl, 20.5)  # above the 19.5 target — warm fabric, no heat needed

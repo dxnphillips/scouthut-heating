@@ -279,6 +279,12 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # max downstream. 2 °C is a measured bump; raise it for a more aggressive
     # boost (Q19: felt-cold at a satisfied 19.5 is real in this cold-radiant hall).
     "boost_offset": (1, 5, 0.5, 2.0, "°C"),
+    # Ceiling on the booking "hold" margin — how far above comfort the drive may
+    # hold the hall during a running booking to stop it dipping below comfort as
+    # the evening cools. The margin itself is sized automatically from the learned
+    # cool-off and warm-up rates (preheat.hold_margin); this is the cap and the
+    # off switch (0 disables the hold entirely). Hall only.
+    "booking_hold_cap": (0, 3, 0.5, 1.5, "°C"),
 }
 
 NUMBER_ICONS: dict[str, str] = {
@@ -310,6 +316,7 @@ NUMBER_ICONS: dict[str, str] = {
     "office_comfort_temp": "mdi:thermometer-high",
     "shared_comfort_temp": "mdi:thermometer-high",
     "boost_offset": "mdi:thermometer-plus",
+    "booking_hold_cap": "mdi:thermometer-chevron-up",
 }
 
 BOOST_OPTIONS = ["30 min", "60 min", "90 min"]

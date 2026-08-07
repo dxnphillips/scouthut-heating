@@ -263,6 +263,15 @@ this priority (highest wins):
    is someone saying "still too cold", so it must reach *above* the standing
    comfort setpoint — otherwise pressing it while already at comfort would do
    nothing. Reverts to plain comfort when the boost expires.
+
+   *Booking hold (anticipatory).* During a running booking the hall is held a
+   little **above** comfort so it can't dip below it as the evening cools — the
+   slow radiators would otherwise catch the fall late and undershoot. The margin
+   is worked out automatically from how fast the hall is losing heat (the learned
+   cool-off rate and the outdoor temperature) and how sluggish it is to warm back
+   up (the learned warm-up rate): bigger on a cold night, near-zero on a mild one.
+   Capped by the **Booking hold** slider (default 1.5 °C, set to 0 to switch it
+   off). Hall only, and only while a booking is actually running.
 5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
