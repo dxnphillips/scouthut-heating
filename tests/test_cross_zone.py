@@ -67,20 +67,23 @@ def test_internal_door_alone_does_not_ice():
     assert ctrl.opening_ice[ZB] is False
 
 
-def test_hall_booking_drives_shared_eco():
+def test_hall_booking_warms_shared():
+    # A booking means the kitchen/toilets get used, so the shared block heats
+    # toward comfort (was capped at eco before the shared unification).
     ctrl, _ = make_controller()
     booking(ctrl, ZA)
     run(ctrl.async_reconcile())
-    assert ctrl.applied["shared"] == PRESET_ECO
+    assert ctrl.applied["shared"] == PRESET_COMFORT
 
 
 def test_kitchen_motion_multi_zone_effect():
-    # Kitchen motion: shared -> eco, water -> on, and the empty heated zones
-    # rest at eco (someone is in the building, just not the hall/office).
+    # Kitchen motion (a shared PIR): shared -> comfort (someone's in the block),
+    # water -> on, and the empty hall/office rest at eco (someone is in the
+    # building, just not those zones).
     ctrl, _ = make_controller()
     motion(ctrl, "kitchen")
     run(ctrl.async_reconcile())
-    assert ctrl.applied["shared"] == PRESET_ECO
+    assert ctrl.applied["shared"] == PRESET_COMFORT
     assert ctrl.water_on is True
     assert ctrl.applied[ZA] == PRESET_ECO
     assert ctrl.applied[ZB] == PRESET_ECO
@@ -102,6 +105,6 @@ def test_both_bookings_all_zones_active():
     booking(ctrl, ZA)
     booking(ctrl, ZB)
     run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_ECO  # no motion -> eco
+    assert ctrl.applied[ZA] == PRESET_ECO  # booking, no motion -> booking_quiet
     assert ctrl.applied[ZB] == PRESET_ECO
-    assert ctrl.applied["shared"] == PRESET_ECO
+    assert ctrl.applied["shared"] == PRESET_COMFORT  # booking warms the shared block

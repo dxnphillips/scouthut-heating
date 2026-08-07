@@ -23,7 +23,6 @@ NAMES: dict[str, str] = {
     "fans_enabled": "Ceiling fans enabled",
     "fans_run_on_sensor_loss": "Fans run when sensor lost",
     "drive_to_target": "Drive heaters to target temperature",
-    "summer_setback_mode": "Summer setback (state-based) mode",
     "coast_when_free": "Coast on free heat",
 }
 

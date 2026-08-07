@@ -2,9 +2,9 @@
 decisions cold.
 
 The Rointe cloud can stop updating while the entity still reads `available`.
-The pre-heat sizing, the cold-booking pierce and the summer setback must reject
-such a frozen value (fall back to fail-warm) rather than trust a stale-high
-reading and under-heat.
+The pre-heat sizing and the unified heat gate (`_room_wants_heat`) must reject
+such a frozen value rather than trust a stale-high reading and under-heat: a
+dropped reading falls back to fail-warm (heat), never to "warm enough, no heat".
 """
 
 from datetime import timedelta
@@ -56,21 +56,28 @@ def test_preheat_lead_fails_warm_on_frozen_reading():
     assert lead == int(round(ctrl.number("preheat_minutes")))  # the cap (fail-warm)
 
 
-def test_cold_booking_bypass_ignores_a_frozen_cold_reading():
-    """Under summer lockout, a frozen reading does not pierce (summer fail-safe)."""
+def test_frozen_warm_reading_does_not_suppress_heat():
+    """A frozen WARM reading must not read as 'warm enough, no heat'. Dropped as
+    stale, the room reads None -> the gate errs warm (heat), not off."""
     ctrl, _ = make_controller()
-    ctrl.seasonal_lockout = True
     booking(ctrl, ZA)
     motion(ctrl, "hall")
-    _hall_temp(ctrl, 12.0)  # cold, but frozen
-    _freeze(ctrl, 180)
-    assert ctrl._cold_booking_bypass(ZA) is False
+    _hall_temp(ctrl, 20.0)  # would say 'no heat' if trusted...
+    _freeze(ctrl, 180)  # ...but it is frozen
+    assert ctrl._room_wants_heat(ZA, ctrl._zone_target(ZA)) is True
 
 
-def test_cold_booking_bypass_pierces_on_a_fresh_cold_reading():
+def test_fresh_warm_reading_suppresses_heat():
     ctrl, _ = make_controller()
-    ctrl.seasonal_lockout = True
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    _hall_temp(ctrl, 20.0)  # fresh and warm -> no heat needed
+    assert ctrl._room_wants_heat(ZA, ctrl._zone_target(ZA)) is False
+
+
+def test_fresh_cold_reading_wants_heat():
+    ctrl, _ = make_controller()
     booking(ctrl, ZA)
     motion(ctrl, "hall")
     _hall_temp(ctrl, 12.0)  # cold and fresh
-    assert ctrl._cold_booking_bypass(ZA) is True
+    assert ctrl._room_wants_heat(ZA, ctrl._zone_target(ZA)) is True

@@ -112,9 +112,9 @@ entirely, the button fails soft and points at the YAML files:
 - **Fan numbers:** ceiling-floor ΔT to start / stop, minimum run / off times,
   sensor-stale timeout, the summer warm-enough temperature, the heat-demand
   power threshold, and the winter recirculation floor cap.
-- **Fan switches:** ceiling fans enabled, summer cooling mode (manual
-  force-on), summer cooling follows season, and "run when the
-  sensor is lost".
+- **Fan switches:** ceiling fans enabled, and "run when the sensor is lost".
+  (Fan direction is fully automatic from live room state — no season or mode
+  toggle.)
 - **Fan diagnostics:** ceiling-floor ΔT, fan mode/direction, fan running, fault,
   heat-demand active, and sensor-lost flags.
 
@@ -184,8 +184,8 @@ before any cooling breeze, so a lost sensor never blows a draught on a guess.)
   group outside PIR coverage keeps its breeze) — and the floor temperature is
   above the warm-enough threshold (default 23 °C — a degree under the
   sedentary norm because hall users are active). **Exception — heating wins:**
-  if the hall is actively being *heated* (a boost or booking has set comfort/eco,
-  e.g. a boost forcing heat through the summer lockout), the fans run
+  if the hall is actively being *heated* (a boost or booking has set comfort/eco),
+  the fans run
   **reverse (destrat)** instead, so a cooling down-draught is never blown on the
   people the heat is for. That override follows the heating *preset*, not the
   radiator's on/off cycle, so the direction can't flap; the only cost is up to
@@ -258,46 +258,32 @@ this priority (highest wins):
    winter fans off. See *Pause hall heating* below.
 3. **Door or window held open** past its delay → `ice` (the internal door only
    counts when an exterior opening is also open).
-4. **Boost active** → `comfort` (bypasses the seasonal lockout).
-5. **Seasonal lockout** (3-day *average* forecast temperature at/above the
-   threshold; releases when the average falls half a degree below it, or on a
-   **genuine cold snap** — RealFeel more than 2 °C under the threshold. Mild
-   summer nights a degree under it neither release the lockout nor flap it)
-   → `ice` — **unless a cold booking pierces it**. A booking (or its pre-heat
-   window) whose room is genuinely below the target it is asking for still
-   heats, so an out-of-season cold snap on a booked day is not frozen out. The
-   test is read from the room itself (its coldest heater probe vs the booking
-   target), so a warm-fabric summer booking already at target stays locked out;
-   once the pierce has warmed the room it holds until half a degree above target
-   (release hysteresis, no flapping). The shared kitchen/toilets/stores follow a
-   piercing hall/office booking to `eco`. This is always-on behaviour — freezing
-   a genuinely cold booked room is never wanted (a manual Boost pierces the
-   lockout the same way if ever needed).
-
-   *State-based summer setback (optional).* The **Summer setback (state-based)
-   mode** switch (default **off**) turns the seasonal lockout from a hard block
-   into a gentle floor for the hall: when it is on, an **occupied** hall (a
-   booking/pre-heat, recent hall motion, or the occupied override) that is
-   genuinely cool — below the **Hall summer setback temperature** slider
-   (default 17.5 °C) — is warmed to that floor instead of frozen to `ice`, so
-   heat follows the *building's state*, not just the calendar. A warm hall (at or
-   above the floor) or an empty hall still ices, leaving the summer cooling fans
-   the room. It is delivered through the `eco` preset (the Rointe comfort floor
-   is 19 °C, so a lower target rides eco); a genuinely cold *booking* still gets
-   full `comfort` through the pierce above. Off is exactly the original
-   lockout-as-block behaviour — enable it when you want a cool shoulder-season
-   hall kept comfortable rather than shut off.
-6. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
+4. **Boost active** → `comfort`.
+5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
    sleepover), and a legacy binary `on` still counts as away.
-7. **Booking or pre-heat window** (optimum start — see below) → `comfort`.
-   An unoccupied room drops to `eco` only once the event has actually
-   started — the pre-heat window always heats at comfort, since its whole
-   purpose is reaching the comfort target by event start. Events matching an
-   ECO keyword stay on the lower `eco` setpoint throughout.
-8. **Occupied override or recent motion** → `eco`.
-9. **Zone empty** → `eco` while someone is still elsewhere in the building,
+6. **Booking or pre-heat window** (optimum start — see below) → `comfort`,
+   **when the room genuinely wants heat** (its coldest heater probe is below the
+   booking target). A booking already at/above target lands on `ice` instead, so
+   the cooling fans are free to run — heating is **not** gated by the season, only
+   by whether the room is actually cold. An unoccupied room drops to `eco` only
+   once the event has actually started (the pre-heat window always heats at
+   comfort, since its whole purpose is reaching the target by event start).
+   Events matching an ECO keyword aim at the lower `eco` setpoint throughout. The
+   shared kitchen/toilets/stores heat toward their own comfort target when the
+   block is in use — a running hall/office booking, or motion in the shared PIRs
+   (kitchen/gents/female) — gated the same way (cold → comfort, warm → `eco`).
+   Motion only in the hall/office keeps the shared block at the lighter `eco`
+   floor, so a cleaner in the hall doesn't warm the toilets to comfort.
+7. **Occupied override or recent motion** → `comfort` on the **same** test as a
+   booking: a cold occupied zone heats to comfort, a warm one lands on `ice` for
+   the cooling fans. Occupancy and a booking are not different behaviours — a
+   booking simply also *pre-heats* ahead of arrival and *holds* the room through
+   the slot, whereas bare presence heats only while someone is confirmed there.
+   (Heating is fully decoupled from the season: the warm-season flag no longer
+   blocks heat, it only pauses the winter condensation watch.)
+8. **Zone empty** → `eco` while someone is still elsewhere in the building,
    `ice` once the building is empty.
 
 **Drive to target** (the heaters actually reach the temperature). The Rointe
@@ -398,7 +384,8 @@ speed. All the learned numbers are visible and adjustable — re-seed them
 after any building change, or set the heat-loss constant to 0 to disable the
 cooling prediction.
 
-The **shared zone** follows either calendar / any motion / boost, and the
+The **shared zone** heats toward comfort on a hall/office booking or shared-PIR
+motion (cold → comfort, warm → eco; hall/office-only motion → eco), and the
 **water heater** turns on for its own pre-heat window, kitchen/toilet motion
 (within the keep-alive) or the manual override, and off when the building is
 alarmed. The switch is reconciled against its **real state**, not the last
@@ -463,12 +450,12 @@ restarts) of everything it decides and learns:
   decision inputs (`occupied`, `warm`, ΔT, demand, O1 watts), so a stopped
   fan is never ambiguous between "nobody there" and "not warm enough";
   preset changes carry the `reason` (which rung of the priority ladder
-  decided them: `booking`, `preheat`, `booking_quiet`, `motion`,
-  `seasonal_lockout`, `alarm`, `opening`, `boost`, `heating_paused`,
-  `building_empty`, ...; a cold booking that pierced the seasonal lockout is
-  tagged `lockout_booking` / `lockout_preheat` / `lockout_booking_eco` /
-  `lockout_booking_quiet`, so a lockout-piercing session is greppable in the
-  trail); and the hall pause records its temps/occupancy on
+  decided them: `booking`, `preheat`, `booking_warm`, `booking_eco`,
+  `booking_quiet`, `preheat_coast`, `booking_coast`, `motion`,
+  `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `opening`,
+  `boost`, `heating_paused`, `building_empty`, ...; the `_warm` reasons mark a
+  room already at/above target that landed on `ice` so the cooling fans can
+  run); and the hall pause records its temps/occupancy on
   activation and *what cleared it* (`manual`, `boost`, `preheat`, `booking_end`)
   — so how often people find the hall too warm, and in which sessions, is
   visible in the log.

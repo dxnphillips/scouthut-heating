@@ -104,8 +104,10 @@ def _last_eco_value(hass):
 def test_eco_low_repushed_when_keyword_starts_on_an_already_eco_hall():
     _hall_eco_registry()
     ctrl, hass = make_controller()
-    # Hall goes to eco via motion first (no keyword) -> device eco = 16.
-    motion(ctrl, "hall")
+    # Hall rests at ordinary eco because someone is elsewhere in the building
+    # (no hall keyword) -> device eco = 16. (Hall occupancy would now heat to
+    # comfort, so "others present" is the clean way onto ordinary eco.)
+    motion(ctrl, "office")
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_ECO
     assert _last_eco_value(hass) == ctrl.number("hall_eco_temp")  # 16

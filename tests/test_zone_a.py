@@ -7,6 +7,7 @@ from scout_testkit import (
     ZA,
     booking,
     boost,
+    hall_temp,
     make_controller,
     motion,
     on,
@@ -54,11 +55,25 @@ def test_boost_beats_seasonal_lockout():
     assert ctrl._desired_zone(ZA) == PRESET_COMFORT
 
 
-def test_seasonal_lockout_is_ice():
+def test_season_no_longer_ices_a_cold_booking():
+    # The season no longer gates heating: a cold booking heats whatever the
+    # calendar says (the old lockout would have forced ice here).
     ctrl, _ = make_controller()
     ctrl.seasonal_lockout = True
     booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 12.0)  # genuinely cold
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_warm_booking_ices_for_the_cooling_fans():
+    # A booking already at/above target needs no heat; ice frees the cooling fans.
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 20.5)  # above the 19.5 comfort target
     assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_warm"
 
 
 def test_automation_disabled_leaves_alone():
@@ -89,16 +104,30 @@ def test_alarm_during_booking_still_heats():
     assert ctrl._desired_zone(ZA) == PRESET_COMFORT
 
 
-def test_motion_outside_booking_is_eco():
+def test_motion_in_a_cold_hall_heats_to_comfort():
+    # Unified with a booking: bare presence in a genuinely cold hall heats to the
+    # SAME comfort target (was eco 16 before the occupied/booked split was removed).
     ctrl, _ = make_controller()
     motion(ctrl, "hall")
-    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    hall_temp(ctrl, 15.0)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "motion"
 
 
-def test_occupied_override_is_eco():
+def test_motion_in_a_warm_hall_ices_for_the_cooling_fans():
+    ctrl, _ = make_controller()
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 21.0)  # already warm — no heat, let the fans cool
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "occupied_warm"
+
+
+def test_occupied_override_in_a_cold_hall_heats_to_comfort():
     ctrl, _ = make_controller()
     ctrl._switches["zone_a_occupied_override"].is_on = True
-    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    hall_temp(ctrl, 15.0)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "occupied_override"
 
 
 def test_someone_elsewhere_rests_hall_at_eco():

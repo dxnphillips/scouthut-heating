@@ -15,6 +15,7 @@ from scout_testkit import (
     advance,
     booking,
     boost,
+    hall_temp,
     make_controller,
     motion,
     off,
@@ -49,6 +50,7 @@ def test_door_opened_then_closed_restores_heating():
 
 def test_booking_ends_reverts_then_cools_to_ice():
     ctrl, _ = make_controller()
+    hall_temp(ctrl, 15.0)           # cold throughout
     booking(ctrl, ZA)
     motion(ctrl, "hall")
     run(ctrl.async_reconcile())
@@ -56,7 +58,8 @@ def test_booking_ends_reverts_then_cools_to_ice():
 
     end_booking(ctrl, ZA)           # booking ends, people still around
     run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_ECO
+    # Occupancy heats to the same comfort target a booking does (no eco split).
+    assert ctrl.applied[ZA] == PRESET_COMFORT
 
     advance(ctrl, 20)               # everyone leaves, timeout passes
     run(ctrl.async_reconcile())
@@ -65,9 +68,10 @@ def test_booking_ends_reverts_then_cools_to_ice():
 
 def test_motion_outside_booking_then_times_out():
     ctrl, _ = make_controller()
+    hall_temp(ctrl, 15.0)           # cold -> occupancy heats to comfort
     motion(ctrl, "hall")
     run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_ECO
+    assert ctrl.applied[ZA] == PRESET_COMFORT
 
     advance(ctrl, 20)
     run(ctrl.async_reconcile())
@@ -106,9 +110,10 @@ def test_boost_then_expiry_restores_zone_and_shared():
 
 def test_occupied_override_on_then_off():
     ctrl, _ = make_controller()
+    hall_temp(ctrl, 15.0)           # cold -> the override heats to comfort
     ctrl._switches["zone_a_occupied_override"].is_on = True
     run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_ECO
+    assert ctrl.applied[ZA] == PRESET_COMFORT
 
     ctrl._switches["zone_a_occupied_override"].is_on = False
     run(ctrl.async_reconcile())
@@ -117,9 +122,10 @@ def test_occupied_override_on_then_off():
 
 def test_alarm_set_then_cleared():
     ctrl, hass = make_controller()
+    hall_temp(ctrl, 15.0)           # cold -> occupancy heats to comfort
     motion(ctrl, "hall")
     run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_ECO
+    assert ctrl.applied[ZA] == PRESET_COMFORT
 
     on(hass, E["alarm_main"])       # building armed
     run(ctrl.async_reconcile())
@@ -127,7 +133,7 @@ def test_alarm_set_then_cleared():
 
     off(hass, E["alarm_main"])      # disarmed, motion still recent
     run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_ECO
+    assert ctrl.applied[ZA] == PRESET_COMFORT
 
 
 def test_app_change_flags_manual_hold_then_clears():
@@ -187,7 +193,7 @@ def test_setpoint_drift_detects_an_expected_ice_override():
     # preset-based path.)
     ctrl, hass = make_controller()
     booking(ctrl, ZA)
-    ctrl.seasonal_lockout = True  # ice outranks the booking
+    ctrl.hall_heating_paused = True  # the hall pause ices, outranking the booking
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_ICE
 
@@ -230,21 +236,21 @@ def test_manual_hold_blocks_then_resumes():
     assert ctrl.applied[ZA] == PRESET_COMFORT   # resumes
 
 
-def test_seasonal_lockout_engages_then_releases():
+def test_season_flag_does_not_gate_heating():
+    # The season no longer blocks heat: a cold booking stays at comfort whether
+    # the warm-season flag is set or not (the flag now only pauses condensation).
     ctrl, _ = make_controller()
+    hall_temp(ctrl, 12.0)
     booking(ctrl, ZA)
     motion(ctrl, "hall")
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_COMFORT
+    assert ctrl.applied["shared"] == PRESET_COMFORT  # booking warms the shared block
 
     ctrl.seasonal_lockout = True
     run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_ICE
-    assert ctrl.applied["shared"] == PRESET_ICE
-
-    ctrl.seasonal_lockout = False
-    run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_COMFORT
+    assert ctrl.applied[ZA] == PRESET_COMFORT        # unchanged by the season
+    assert ctrl.applied["shared"] == PRESET_COMFORT
 
 
 def test_water_motion_then_ages_off():

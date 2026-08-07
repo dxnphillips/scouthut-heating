@@ -11,6 +11,7 @@ from scout_testkit import (
     make_controller,
     motion,
     on,
+    zone_temp,
     E,
 )
 
@@ -46,10 +47,13 @@ def test_boost_is_comfort():
     assert ctrl._desired_zone(ZB) == PRESET_COMFORT
 
 
-def test_lockout_is_ice():
+def test_empty_office_is_ice_regardless_of_season():
+    # The season no longer gates heating; an empty office is ice because it is
+    # empty, not because of any lockout.
     ctrl, _ = make_controller()
     ctrl.seasonal_lockout = True
     assert ctrl._desired_zone(ZB) == PRESET_ICE
+    assert ctrl._preset_reason[ZB] == "building_empty"
 
 
 def test_automation_disabled_leaves_alone():
@@ -71,16 +75,18 @@ def test_alarm_office_without_booking_is_ice():
     assert ctrl._desired_zone(ZB) == PRESET_ICE
 
 
-def test_office_motion_outside_booking_is_eco():
+def test_office_motion_in_a_cold_office_heats_to_comfort():
     ctrl, _ = make_controller()
     motion(ctrl, "office")
-    assert ctrl._desired_zone(ZB) == PRESET_ECO
+    zone_temp(ctrl, ZB, 15.0)
+    assert ctrl._desired_zone(ZB) == PRESET_COMFORT
 
 
-def test_occupied_override_is_eco():
+def test_occupied_override_in_a_cold_office_heats_to_comfort():
     ctrl, _ = make_controller()
     ctrl._switches["zone_b_occupied_override"].is_on = True
-    assert ctrl._desired_zone(ZB) == PRESET_ECO
+    zone_temp(ctrl, ZB, 15.0)
+    assert ctrl._desired_zone(ZB) == PRESET_COMFORT
 
 
 def test_zone_a_alarm_does_not_ice_zone_b():
@@ -89,5 +95,6 @@ def test_zone_a_alarm_does_not_ice_zone_b():
     ctrl, hass = make_controller()
     on(hass, E["alarm_main"])
     motion(ctrl, "office")
-    assert ctrl._desired_zone(ZB) == PRESET_ECO
+    zone_temp(ctrl, ZB, 15.0)
+    assert ctrl._desired_zone(ZB) == PRESET_COMFORT
     assert ctrl._desired_zone(ZA) == PRESET_ICE
