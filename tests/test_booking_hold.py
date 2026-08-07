@@ -74,6 +74,15 @@ def test_running_cold_booking_has_a_hold_margin():
     assert ctrl._drive_comfort_target(ZA) > ctrl.number("hall_comfort_temp")
 
 
+def test_drive_target_stays_on_the_rointe_half_degree_grid():
+    # The Rointes only accept 0.5 °C setpoints; the continuous hold margin (e.g.
+    # 0.72 °C) must not push an off-grid target to the hardware.
+    ctrl, _ = _cold_evening_booking()
+    assert ctrl._booking_hold_margin(ZA) % 0.5 != 0  # the raw margin IS off-grid
+    target = ctrl._drive_comfort_target(ZA)
+    assert round(target * 2) / 2 == target  # ...but the driven target is not
+
+
 def test_hold_stops_a_slightly_warm_booking_dropping():
     # Hall at 20.0 — above bare comfort (19.5) but the hold wants it higher, so it
     # keeps heating instead of icing, pre-empting the dip.

@@ -2963,11 +2963,17 @@ class ScoutController:
         (without it, boosting a room already at comfort would be a no-op). A
         booking hold anticipates a cooling evening, holding the hall a little
         above comfort so the slow drive does not undershoot. Both only ever aim
-        warmer; take the larger (they do not stack) and clamp to the Rointe max."""
+        warmer; take the larger (they do not stack) and clamp to the Rointe max.
+
+        Quantised to the Rointe's 0.5 °C setpoint grid: the booking-hold margin is
+        a continuous number (e.g. 0.72 °C), but the radiators only accept 0.5 steps
+        — an off-grid target is silently rounded by the device (and would wobble
+        the setpoint read-back self-check), so we round it here at the boundary."""
         base = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
         bump = self.number("boost_offset") if self._boosting(zone) else 0.0
         bump = max(bump, self._booking_hold_margin(zone))
-        return min(base + bump, ROINTE_COMFORT_MAX)
+        target = min(base + bump, ROINTE_COMFORT_MAX)
+        return round(target / DRIVE_STEP) * DRIVE_STEP
 
     def _drive_heatloss_frac(self, zone: str) -> float:
         # The shared zone has no learned heat-loss of its own; borrow the hall's
