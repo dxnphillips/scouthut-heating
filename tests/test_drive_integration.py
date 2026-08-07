@@ -4,10 +4,13 @@ from datetime import timedelta
 
 from homeassistant.util import dt as dt_util
 
+from custom_components.scout_hut_heating.coordinator import DRIVE_SETTLE_MINUTES
 from scout_testkit import (
     PRESET_COMFORT,
+    PRESET_ICE,
     ZA,
     booking,
+    hall_temp,
     make_controller,
     motion,
     run,
@@ -86,6 +89,54 @@ def test_drive_reasserts_the_comfort_preset_so_the_setpoint_lands():
         and c["data"].get("preset_mode") == PRESET_COMFORT
     ]
     assert reasserts  # the driven heater had comfort re-applied after the push
+
+
+def test_reentering_comfort_does_not_false_reject_readback():
+    # Regression from the v1.22.0 shared-comfort field export (2026-08-07):
+    # a heater withdrawn to its comfort NUMBER while on ice, then re-entering
+    # comfort with that number unchanged, was judged by the read-back against a
+    # stale settle stamp while its live setpoint was still the ice value (7) —
+    # a false `drive_setpoint_rejected`. Re-entry must restart the settle window
+    # and re-assert the preset.
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    hass.states.set(E["weather"], "cloudy", {"temperature": 24.0})  # warm -> no feedforward
+    hb, hf = "climate.hall_back", "climate.hall_front"
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+
+    # Round 1: warm hall -> ice. The withdrawal writes the comfort number to the
+    # plain target while the heater's live setpoint stays the ice 7.
+    for c in (hb, hf):
+        hass.states.set(c, "heat", {"current_temperature": 24.0, "temperature": 7.0})
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZA] == PRESET_ICE
+    assert hb not in ctrl._drive_driven
+
+    # An overnight-length gap: the withdrawal's settle stamp is now stale.
+    old = ctrl._now() - timedelta(minutes=DRIVE_SETTLE_MINUTES + 30)
+    for c in (hb, hf):
+        ctrl._drive_pushed_at[c] = old
+
+    # Round 2: hall just below target -> comfort, pushed value unchanged (19.4 is
+    # within a step of 19.5, warm outdoor, so no staircase step / feedforward).
+    # The heater has NOT yet adopted comfort — it still reports the ice 7.
+    motion(ctrl, "hall")
+    for c in (hb, hf):
+        hass.states.set(c, "heat", {"current_temperature": 19.4, "temperature": 7.0})
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZA] == PRESET_COMFORT
+
+    # The read-back must ABSTAIN (window restarted on entry), not flag a reject.
+    assert not ctrl._drive_rejected
+    # And comfort was re-asserted so the radiator actually adopts the setpoint.
+    reasserts = [
+        c for c in hass.services.calls
+        if c["domain"] == "climate" and c["service"] == "set_preset_mode"
+        and hb in (c["data"].get("entity_id") if isinstance(c["data"].get("entity_id"), list) else [c["data"].get("entity_id")])
+        and c["data"].get("preset_mode") == PRESET_COMFORT
+    ]
+    assert reasserts
 
 
 def test_per_heater_independent_drive():

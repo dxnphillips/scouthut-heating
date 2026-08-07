@@ -562,6 +562,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     climb (the settle/window sizes are still first guesses — over-generous on
     purpose); if the read-back ever flags on genuine slow adoption, widen
     `DRIVE_SETTLE_MINUTES` rather than tightening the tolerance.
+    **Re-entry false-positive fixed (v1.22.1, 2026-08-07 field export).** The
+    first v1.22.0 export caught `drive_setpoint_rejected` firing on the *shared*
+    heaters (kitchen/gents) 8 s after the shared zone entered comfort — impossible
+    for a genuine 10-min-settled judgment. Cause: the withdrawal path writes the
+    comfort *number* to the plain target while the heater is on ice (live setpoint
+    still 7), stamping the settle clock; on re-entry to comfort `_drive_push`
+    early-returned on the unchanged number, so the reassert was skipped and the
+    read-back judged against the stale stamp while the heater still read 7. The
+    shared zone exposed it because it now flips in/out of comfort often (the hall
+    mostly holds comfort through a booking). Fix: a `_drive_driven` set tracks the
+    driven episode; on the withdrawn→comfort edge `_drive_push(..., force=True)`
+    re-asserts the preset AND restarts the settle window even when the number is
+    unchanged, so the read-back only judges a heater that has been *continuously*
+    driven for the full window. General (not shared-only), fail-safe (abstains
+    longer, never flags sooner).
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
