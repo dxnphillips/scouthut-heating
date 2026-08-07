@@ -2560,7 +2560,9 @@ class ScoutController:
         """
         applied = self.applied[ZONE_A]
         if applied == PRESET_COMFORT:
-            return self.number("hall_comfort_temp")
+            # Chase the boosted target too, so the destrat fans keep delivering
+            # heat to head height while a Boost is driving the room past comfort.
+            return self._drive_comfort_target(ZONE_A)
         if applied == PRESET_ECO:
             return self._hall_eco_target(self._eco_keyword_active(ZONE_A))
         return ROINTE_ANTIFROST
@@ -2910,8 +2912,24 @@ class ScoutController:
     # overdrives the setpoint until the probe actually reaches target — the pure
     # controller lives in drive.py; the safety policy lives here.
     # ------------------------------------------------------------------
+    def _boosting(self, zone: str) -> bool:
+        """Is this zone currently under a Boost? Shared follows either room's boost."""
+        if zone == "shared":
+            return self.boost_active(ZONE_A) or self.boost_active(ZONE_B)
+        return self.boost_active(zone)
+
     def _drive_comfort_target(self, zone: str) -> float:
-        return self.number(DRIVE_COMFORT_TARGET_KEY[zone])
+        """The temperature the drive aims the room at — comfort, or comfort plus
+        the Boost offset while a Boost is active.
+
+        A Boost is an occupant saying "still too cold", so it must aim ABOVE the
+        standing comfort setpoint: without this, boosting a room already at
+        comfort tells the drive to keep targeting comfort — a no-op exactly when
+        someone is asking for more. Clamped to the Rointe max."""
+        base = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
+        if self._boosting(zone):
+            return min(base + self.number("boost_offset"), ROINTE_COMFORT_MAX)
+        return base
 
     def _drive_heatloss_frac(self, zone: str) -> float:
         # The shared zone has no learned heat-loss of its own; borrow the hall's

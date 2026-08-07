@@ -511,7 +511,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     `booking_start.shortfall`; if occupants reliably reach for more heat at a
     satisfied 19.5, the fix is either a higher hall comfort setpoint or an
     *activity-aware* target (a warmer number for low-activity bookings), **not**
-    a code change to the control law. The measurement gap is the deeper issue:
+    a code change to the control law. **The occupant-side lever now exists
+    (2026-08-07): a Boost drives to `comfort + boost_offset`** (see the boost
+    bullet below), so "felt cold at 19.5 → pressed boost" both *relieves* the
+    complaint in the moment and *records* it (`boost` events); a recurring boost
+    pattern at a satisfied 19.5 is the data that would justify raising the standing
+    setpoint. The measurement gap is the deeper issue:
     if this recurs, a cheap surface/globe-ish sensor or a seated-height air
     sensor would turn the felt complaint into data. Reverse (destrat) fans help
     only once the heaters have built a warm roof to bring down — on an unheated
@@ -716,6 +721,19 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   **First-winter watch:** confirm it lands *on* target without hover/overshoot on
   the slow fabric, and read `drive_capped` / the `drive.pushed` trace for which
   heaters need the most boost.
+- **Boost drives ABOVE comfort, not just to it (2026-08-07, owner insight).** A
+  boost used to return the comfort preset and nothing more — so pressing it while
+  the room was already at the comfort setpoint was a *no-op* (the drive was
+  already targeting comfort), exactly when the occupant is saying "still too
+  cold." Now `_drive_comfort_target` returns `comfort + boost_offset` (a slider,
+  default +2 °C, clamped to the 30 °C Rointe max) while `_boosting(zone)` is true,
+  so the drive chases the higher target for the boost duration and reverts on
+  expiry. `_hall_desired_setpoint` follows it, so the destrat fans keep delivering
+  the boosted heat to head height. Shared follows either room's boost. This is the
+  occupant-side lever for **Q19** (felt-cold at a satisfied 19.5 in this
+  cold-radiant hall is real): a boost is the "I want more than the standing
+  setpoint right now" signal, and the slider lets the owner tune how aggressive it
+  is. It only ever aims *warmer*, time-boxed, so it cannot leave the hut overheated.
 - **Heating is decoupled from the season — one gate, occupancy == booking
   (2026-08-07).** The seasonal lockout no longer blocks heat. Both a booking and
   bare occupancy heat on the **same** self-calibrating test, `_room_wants_heat(zone,
