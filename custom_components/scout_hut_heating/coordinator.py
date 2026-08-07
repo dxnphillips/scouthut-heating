@@ -242,6 +242,15 @@ DRIVE_CAP_ALARM_MINUTES = 60.0
 # note asked for, rather than a tight guess that would false-alarm.
 DRIVE_SETTLE_MINUTES = 10.0
 DRIVE_SETPOINT_TOL = 0.3  # °C; our pushes and the Rointe are 0.5-quantised
+# Grace after (re)start before the drive self-checks may fire. The Rointe cloud
+# is much slower to reflect a pushed setpoint just after a restart than in
+# steady state: a 2026-08-07 export caught the read-back flagging all four hall
+# heaters ~10 min after a restart (mid "wrapping up startup"), stuck reporting
+# the OLD setpoint — then they matched once the cloud caught up. So the settle
+# window alone is not enough right after boot; abstain until the integration has
+# been up this long. Generous on purpose (fail-safe: abstain longer, never flag
+# sooner), matching the other over-sized self-check windows.
+DRIVE_STARTUP_GRACE_MINUTES = 25.0
 # (b) Independent no-response witness. The ceiling thermometer is an independent
 # instrument: if the hall is boosting hard (a heater pushed above its plain
 # target) with heat demand on yet, over this window, NEITHER the floor probes
@@ -486,6 +495,7 @@ class ScoutController:
 
         self._unsubs: list = []
         self._started = False
+        self._started_at: datetime | None = None
         self._reconciling = False
         self._reconcile_pending = False
         self._debounce_cancel = None
@@ -612,6 +622,7 @@ class ScoutController:
             if self.switch_on("drive_to_target", default=True):
                 await self.async_drive_reset()
             self._started = True
+            self._started_at = self._now()
             await self.async_reconcile()
 
         self._unsubs.append(async_call_later(self.hass, STARTUP_DELAY, _first_run))
@@ -3231,20 +3242,37 @@ class ScoutController:
             "max": st.attributes.get("max"),
         }
 
+    def _within_startup_grace(self, now: datetime) -> bool:
+        """True while too soon after (re)start for the drive self-checks to judge.
+
+        The Rointe cloud is much slower to reflect a pushed setpoint just after a
+        restart than in steady state, so the settle window alone false-flags there
+        (2026-08-07 export: all four hall heaters flagged ~10 min post-restart,
+        then matched once the cloud caught up)."""
+        return (
+            self._started_at is None
+            or (now - self._started_at).total_seconds() < DRIVE_STARTUP_GRACE_MINUTES * 60
+        )
+
     def _check_setpoint_readback(
         self, climate: str, pushed: float, now: datetime
     ) -> None:
         """Track whether a driven heater has adopted the setpoint we pushed (Q20a).
 
         Judged only after the push has had a full settle window to round-trip
-        through the Rointe cloud; before that, or when the setpoint is
-        unreadable, the check abstains (drops the heater from the rejected set)
-        so ordinary lag never false-flags. A divergence beyond tolerance once
-        settled is "the heater isn't accepting our setpoint" — the phantom-push
-        failure, invisible to the cap alarm.
+        through the Rointe cloud, AND once past the post-restart startup grace
+        (the cloud lags much longer just after boot); before either, or when the
+        setpoint is unreadable, the check abstains (drops the heater from the
+        rejected set) so ordinary lag never false-flags. A divergence beyond
+        tolerance once settled is "the heater isn't accepting our setpoint" — the
+        phantom-push failure, invisible to the cap alarm.
         """
         at = self._drive_pushed_at.get(climate)
-        if at is None or (now - at).total_seconds() < DRIVE_SETTLE_MINUTES * 60:
+        if (
+            at is None
+            or self._within_startup_grace(now)
+            or (now - at).total_seconds() < DRIVE_SETTLE_MINUTES * 60
+        ):
             self._drive_rejected.discard(climate)
             return
         reported = self._heater_setpoint(climate)
@@ -3297,7 +3325,7 @@ class ScoutController:
         ceiling = self._ceiling_temp()
         target = self._drive_comfort_target(ZONE_A)
         short = floor is not None and floor < target - DRIVE_STEP
-        if not (hall_comfort and short) or floor is None or ceiling is None:
+        if self._within_startup_grace(now) or not (hall_comfort and short) or floor is None or ceiling is None:
             self._drive_response_ref = None
             if self._drive_noresp_notified:
                 self._drive_noresp_notified = False
