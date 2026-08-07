@@ -157,13 +157,18 @@ before any cooling breeze, so a lost sensor never blows a draught on a guess.)
   for this under-radiatored hall; generic practice is ~3 °C) **and** the
   heat is worth moving — meaning either a radiator in *any* zone is drawing power
   (so office or shared heat leaking into the hall counts too), **or** the floor is
-  still below the recirculation cap (default 24 °C). That second condition is the
-  key one: like real destratification controllers, it runs on the ceiling-floor
-  difference **decoupled from the heater's on/off cycle**, so it keeps harvesting
-  *residual* heat after a heater has reached setpoint and cut out — pushing that
-  already-paid-for warmth back down instead of letting it escape through the
-  poorly-insulated roof. That residual-harvest path requires the hall to be
-  **occupied**: an empty,
+  still below **the temperature the hall is actually being heated to** (its
+  applied setpoint — capped at the recirculation ceiling, default 24 °C). That
+  second condition is the key one: like real destratification controllers, it runs
+  on the ceiling-floor difference **decoupled from the heater's on/off cycle**, so
+  it keeps harvesting *residual* heat after a heater has reached setpoint and cut
+  out — pushing that already-paid-for warmth back down instead of letting it escape
+  through the poorly-insulated roof. Crucially it chases the **same goal the
+  heaters have**, so it never pushes stored ceiling heat down onto people who are
+  already warm enough — e.g. an eco-low cleaning slot (14 °C) whose room already
+  sits at 16 gets no unwanted destrat, because the hall's on its anti-frost floor
+  and there's no heating goal to harvest toward. That residual-harvest path
+  requires the hall to be **occupied**: an empty,
   unheated hut still stratifies from warm fabric, but the field cool-off samples
   measured a fan-mixed overnight decay ≈ the still one — so running on that
   ambient gradient with nobody there is ~150 W for no measurable retention or

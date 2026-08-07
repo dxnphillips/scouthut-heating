@@ -59,12 +59,15 @@ def fan_decision(
             unavailable or stale.
         dt_on / dt_off: hysteresis band for winter start / stop.
         demand: at least one radiator (any zone) is actively producing heat.
-        recirc_ok: the floor is below the recirculation cap, so ceiling heat is
-            still worth bringing down even with no active demand (harvests residual
-            heat after a heater cuts out, and heat leaking in from other zones).
-            This is how real destratification controllers run — on the ceiling-floor
-            difference, decoupled from the heater's on/off cycle — backing off only
-            once the occupied zone is genuinely warm.
+        recirc_ok: the floor is below the temperature the room is being driven
+            to (the applied setpoint), so ceiling heat is still worth bringing
+            down even with no active demand (harvests residual heat after a
+            heater cuts out, and heat leaking in from other zones). Gating on the
+            desired setpoint — not a fixed cap — means the fans chase the same
+            goal the heaters do and harvest nothing when the room is already at
+            or above what is wanted (e.g. an eco-low booking whose room sits
+            above its low target): no unwanted heat is destratified onto people
+            who asked for it cool.
         recirc_needs_occupancy: require hall occupancy for the no-demand recirc
             path. An empty, unheated hut still stratifies from warm fabric, and
             the field cool-off samples measured a fan-mixed overnight decay ≈ the
