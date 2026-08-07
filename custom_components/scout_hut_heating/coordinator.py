@@ -1708,6 +1708,12 @@ class ScoutController:
                     "setpoint": (st.attributes.get("temperature") if st else None),
                     "action": (st.attributes.get("hvac_action") if st else None),
                     "online": self._climate_online(climate),
+                    # The comfort-temperature NUMBER the drive writes to, plus its
+                    # value and allowed max — so a "setpoint not landing" can be
+                    # split three ways: the number accepted our value but the
+                    # climate setpoint did not follow (preset-reset), the number
+                    # clamped our value (range too low), or the write never took.
+                    "comfort_number": self._comfort_number_state(climate),
                 }
             zones[zone] = {
                 "heaters": heaters,
@@ -3199,6 +3205,31 @@ class ScoutController:
             return float(temp) if temp is not None else None
         except (TypeError, ValueError):
             return None
+
+    def _comfort_number_state(self, climate: str) -> dict[str, Any] | None:
+        """Diagnostic snapshot of the comfort-temperature NUMBER the drive writes.
+
+        Splits a "setpoint not landing" three ways: `value` is what the number
+        entity currently holds (did our write take?), `max` is its allowed ceiling
+        (did the device clamp us below the target?), against the climate's live
+        `setpoint` reported alongside it (did the number propagate to the target?).
+        """
+        number = self._heater_comfort_number(climate)
+        if number is None:
+            return None
+        st = self.hass.states.get(number)
+        if st is None:
+            return {"entity": number, "value": None, "min": None, "max": None}
+        try:
+            value = float(st.state)
+        except (TypeError, ValueError):
+            value = None
+        return {
+            "entity": number,
+            "value": value,
+            "min": st.attributes.get("min"),
+            "max": st.attributes.get("max"),
+        }
 
     def _check_setpoint_readback(
         self, climate: str, pushed: float, now: datetime
