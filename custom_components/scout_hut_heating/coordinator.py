@@ -2173,10 +2173,15 @@ class ScoutController:
     def _desired_shared(self) -> str | None:
         if not self.config.get(CONF_SHARED_CLIMATES):
             return None
-        # The shared kitchen/toilets/stores rest at a low eco floor whenever a
-        # hall or office booking is on, or anyone is in the building — the tank
-        # lives here and the rooms are transient-use, so eco (not comfort) is the
-        # right idle warmth. No seasonal gate: the season no longer blocks heat.
+        # The shared kitchen/toilets/stores heat toward `shared_comfort_temp`
+        # (like the hall/office zones) when the block is genuinely in use — a
+        # hall/office booking is running (people are in for a session and will
+        # use the kitchen/toilets) OR there is motion in the shared PIRs
+        # themselves (kitchen/gents/female). Gated by the shared zone being
+        # genuinely cold (`_shared_wants_heat`); a warm shared zone rests at eco.
+        # Bare motion only in the hall/office (nobody in the shared rooms) keeps
+        # the lighter eco floor, so a cleaner in the office does not warm the
+        # toilets to comfort. No seasonal gate: the season no longer blocks heat.
         if self.opening_ice["shared"]:
             return self._reason("shared", "opening", PRESET_ICE)
         if self.boost_active(ZONE_A) or self.boost_active(ZONE_B):
@@ -2185,24 +2190,37 @@ class ScoutController:
             self.config.get(CONF_ALARM_OFFICE)
         ):
             return self._reason("shared", "alarm", PRESET_ICE)
-        if self._cal_active(ZONE_A) or self._cal_active(ZONE_B):
-            return self._reason("shared", "booking", PRESET_ECO)
-        if self._motion_recent_any(self.number("motion_timeout_minutes")):
+        timeout = self.number("motion_timeout_minutes")
+        booking = self._cal_active(ZONE_A) or self._cal_active(ZONE_B)
+        shared_motion = any(self._motion_recent(a, timeout) for a in WATER_MOTION_AREAS)
+        if booking or shared_motion:
+            if self._shared_wants_heat():
+                reason = "booking" if booking else "shared_motion"
+                return self._reason("shared", reason, PRESET_COMFORT)
+            return self._reason("shared", "shared_warm", PRESET_ECO)
+        if self._motion_recent_any(timeout):
             return self._reason("shared", "motion", PRESET_ECO)
         return self._reason("shared", "building_empty", PRESET_ICE)
 
-    def _shared_room_temp(self) -> float | None:
+    def _shared_room_temp(self, stale_min: float | None = None) -> float | None:
         """Coldest reported room temperature around the water heater.
 
         Reads the shared-zone (kitchen/toilet) Rointe climates, ignoring any
         heater that is unavailable; the tank lives in that zone, so the coldest
-        reading is the one that matters for frost.
+        reading is the one that matters for frost. ``stale_min`` (see
+        ``_zone_climate_temps``) drops a heater whose reading has frozen — passed
+        on the warm-enough decision path (`_shared_wants_heat`), omitted for the
+        frost/diagnostic reads where a stale value is harmless.
         """
         vals: list[float] = []
         for climate in self._as_list(self.config.get(CONF_SHARED_CLIMATES)):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
+            if stale_min is not None:
+                ts = getattr(st, "last_reported", None) or st.last_updated
+                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
+                    continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:
@@ -2210,6 +2228,26 @@ class ScoutController:
             except (TypeError, ValueError):
                 continue
         return min(vals) if vals else None
+
+    def _shared_wants_heat(self) -> bool:
+        """True when the shared zone is genuinely below its comfort target — the
+        shared analog of `_room_wants_heat`.
+
+        Reads the coldest shared heater probe (freshness-gated) against
+        `shared_comfort_temp`, with the same `COLD_BOOKING_RELEASE_BAND` release
+        hysteresis keyed off the applied preset. An unreadable shared zone errs
+        WARM (heats), like the zone gate — the Rointe governs real firing against
+        its own probe.
+        """
+        room = self._shared_room_temp(stale_min=self._rointe_stale_min())
+        if room is None:
+            return True
+        margin = (
+            COLD_BOOKING_RELEASE_BAND
+            if self.applied["shared"] in (PRESET_COMFORT, PRESET_ECO)
+            else 0.0
+        )
+        return room < self.number("shared_comfort_temp") + margin
 
     def _water_actual(self) -> bool | None:
         """The real switch state, or None when unknown."""

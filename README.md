@@ -271,7 +271,11 @@ this priority (highest wins):
    once the event has actually started (the pre-heat window always heats at
    comfort, since its whole purpose is reaching the target by event start).
    Events matching an ECO keyword aim at the lower `eco` setpoint throughout. The
-   shared kitchen/toilets/stores follow a hall/office booking to `eco`.
+   shared kitchen/toilets/stores heat toward their own comfort target when the
+   block is in use — a running hall/office booking, or motion in the shared PIRs
+   (kitchen/gents/female) — gated the same way (cold → comfort, warm → `eco`).
+   Motion only in the hall/office keeps the shared block at the lighter `eco`
+   floor, so a cleaner in the hall doesn't warm the toilets to comfort.
 7. **Occupied override or recent motion** → `comfort` on the **same** test as a
    booking: a cold occupied zone heats to comfort, a warm one lands on `ice` for
    the cooling fans. Occupancy and a booking are not different behaviours — a
@@ -380,7 +384,8 @@ speed. All the learned numbers are visible and adjustable — re-seed them
 after any building change, or set the heat-loss constant to 0 to disable the
 cooling prediction.
 
-The **shared zone** follows either calendar / any motion / boost, and the
+The **shared zone** heats toward comfort on a hall/office booking or shared-PIR
+motion (cold → comfort, warm → eco; hall/office-only motion → eco), and the
 **water heater** turns on for its own pre-heat window, kitchen/toilet motion
 (within the keep-alive) or the manual override, and off when the building is
 alarmed. The switch is reconciled against its **real state**, not the last

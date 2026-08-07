@@ -245,12 +245,12 @@ def test_season_flag_does_not_gate_heating():
     motion(ctrl, "hall")
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_COMFORT
-    assert ctrl.applied["shared"] == PRESET_ECO
+    assert ctrl.applied["shared"] == PRESET_COMFORT  # booking warms the shared block
 
     ctrl.seasonal_lockout = True
     run(ctrl.async_reconcile())
-    assert ctrl.applied[ZA] == PRESET_COMFORT       # unchanged by the season
-    assert ctrl.applied["shared"] == PRESET_ECO
+    assert ctrl.applied[ZA] == PRESET_COMFORT        # unchanged by the season
+    assert ctrl.applied["shared"] == PRESET_COMFORT
 
 
 def test_water_motion_then_ages_off():

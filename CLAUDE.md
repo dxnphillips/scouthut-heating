@@ -727,8 +727,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   lapses. Reason strings: `booking` / `preheat` / `booking_warm` / `booking_eco` /
   `booking_quiet` / `preheat_coast` / `booking_coast` for bookings; `motion` /
   `occupied_override` (heating) and `occupied_warm` (warm → ice) for occupancy; the
-  `lockout_*` tags are gone. Shared follows a booking to eco via `_desired_shared`
-  (no seasonal gate). **First-shoulder-season watch:** confirm bare motion heating
+  `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
+  comfort too now** (2026-08-07): `_desired_shared` warms the block to
+  `shared_comfort_temp` (via `_shared_wants_heat`, the shared analog of the gate —
+  coldest shared probe below target, err-warm on unreadable) whenever it is
+  genuinely in use — a hall/office booking is running OR there is motion in the
+  shared PIRs (`WATER_MOTION_AREAS` = kitchen/gents/female). A warm shared block
+  rests at eco (`shared_warm`); motion only in the hall/office (nobody in the
+  shared rooms) keeps the lighter eco floor (`motion`), so a cleaner in the hall
+  doesn't drive the toilets to comfort. The drive-to-target loop already owns the
+  shared comfort setpoint, so no new wiring. Reasons: `booking` / `shared_motion`
+  (→ comfort), `shared_warm` / `motion` (→ eco), `building_empty` (→ ice). No
+  seasonal gate. **First-shoulder-season watch:** confirm bare motion heating
   to comfort is wanted (it is eager — any drift below 19.5 while occupied heats;
   present-only bounds the cost) and that a warm occupied hall correctly gets the
   cooling breeze rather than heat; if motion proves too eager, an engage-side

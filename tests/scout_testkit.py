@@ -315,6 +315,16 @@ def hall_temp(ctrl, temp):
     zone_temp(ctrl, ZA, temp)
 
 
+def shared_temp(ctrl, temp):
+    """Report the same current temperature on every shared (kitchen/toilet) heater.
+
+    The shared zone now heats toward `shared_comfort_temp` when in use and cold
+    (`_shared_wants_heat`), so a test wanting shared to warm must give it a cold
+    reading; a warm one rests at eco. With no reading it errs warm (heats)."""
+    for eid in E["shared"]:
+        ctrl.hass.states.set(eid, "heat", {"current_temperature": temp})
+
+
 def motion(ctrl, area):
     """Record recent motion in an area (hall/office/kitchen/gents/female).
 

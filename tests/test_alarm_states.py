@@ -79,16 +79,16 @@ def test_both_night_keeps_shared_heating():
     ctrl, hass = make_controller()
     _set(hass, E["alarm_main"], "armed_night")
     _set(hass, E["alarm_office"], "armed_night")
-    motion(ctrl, "kitchen")
-    assert ctrl._desired_shared() == PRESET_ECO
+    motion(ctrl, "kitchen")  # someone in the kitchen -> heats (not iced by night)
+    assert ctrl._desired_shared() == PRESET_COMFORT
 
 
 def test_one_away_one_night_does_not_ice_shared():
     ctrl, hass = make_controller()
     _set(hass, E["alarm_main"], "armed_away")
     _set(hass, E["alarm_office"], "armed_night")
-    motion(ctrl, "kitchen")
-    assert ctrl._desired_shared() == PRESET_ECO
+    motion(ctrl, "kitchen")  # not both-away, so not iced -> heats
+    assert ctrl._desired_shared() == PRESET_COMFORT
 
 
 # --- Water heater (needs BOTH panels away to suppress motion) ---------------

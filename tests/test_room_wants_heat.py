@@ -135,6 +135,8 @@ def test_cold_office_booking_heats():
 
 # --- Shared zone follows ----------------------------------------------------
 def test_shared_follows_a_hall_booking_regardless_of_season():
+    # A booking warms a cold shared zone to comfort (people use the kitchen/
+    # toilets during a session), whatever the warm-season flag says.
     ctrl = _cold_hall_booking()
-    assert ctrl._desired_shared() == PRESET_ECO
+    assert ctrl._desired_shared() == PRESET_COMFORT
     assert ctrl._preset_reason["shared"] == "booking"
