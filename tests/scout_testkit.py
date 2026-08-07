@@ -299,6 +299,22 @@ def end_booking(ctrl, zone):
         ctrl.hass.states.set(cal, "off")
 
 
+def zone_temp(ctrl, zone, temp):
+    """Report the same current temperature on every heater in a zone.
+
+    Heating now fires only when the room is genuinely below its target
+    (`_room_wants_heat`), so a test that wants an occupied/booked zone to heat
+    must give it a cold reading; a warm one lands on ice for the cooling fans.
+    """
+    key = {ZA: "hall", ZB: "office"}[zone]
+    for eid in E[key]:
+        ctrl.hass.states.set(eid, "heat", {"current_temperature": temp})
+
+
+def hall_temp(ctrl, temp):
+    zone_temp(ctrl, ZA, temp)
+
+
 def motion(ctrl, area):
     """Record recent motion in an area (hall/office/kitchen/gents/female).
 

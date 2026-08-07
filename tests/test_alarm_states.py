@@ -9,6 +9,7 @@ their pre-1.12 behaviour.
 
 from scout_testkit import (
     E,
+    PRESET_COMFORT,
     PRESET_ECO,
     PRESET_ICE,
     ZA,
@@ -34,7 +35,7 @@ def test_armed_night_keeps_heating_an_occupied_zone():
     ctrl, hass = make_controller()
     _set(hass, E["alarm_main"], "armed_night")  # sleepover: people inside
     motion(ctrl, "hall")
-    assert ctrl._desired_zone(ZA) == PRESET_ECO  # not iced by the alarm
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT  # not iced by the alarm
 
 
 def test_armed_vacation_suppresses_like_away():
@@ -48,14 +49,14 @@ def test_disarmed_does_not_suppress():
     ctrl, hass = make_controller()
     _set(hass, E["alarm_main"], "disarmed")
     motion(ctrl, "hall")
-    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
 
 
 def test_triggered_leaves_heating_unchanged():
     ctrl, hass = make_controller()
     _set(hass, E["alarm_main"], "triggered")  # alarm going off, not "empty"
     motion(ctrl, "hall")
-    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
 
 
 def test_legacy_binary_on_still_means_armed_away():

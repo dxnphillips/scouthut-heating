@@ -17,8 +17,12 @@ from .entity import ScoutEntity
 
 # key -> (name, icon, state getter)
 SENSORS: dict[str, tuple[str, str, Callable[[ScoutController], bool]]] = {
+    # The season flag no longer gates heating (that is fully occupancy/booking
+    # driven now); it only tells the condensation watch whether it is the cold
+    # season. On = warm season (watch paused). Entity key kept stable so existing
+    # dashboards/history do not break.
     "seasonal_lockout_active": (
-        "Seasonal lockout active",
+        "Warm season (condensation watch paused)",
         "mdi:leaf",
         lambda c: c.seasonal_lockout,
     ),

@@ -71,11 +71,14 @@ def test_motion_anywhere_makes_shared_eco():
     assert ctrl._desired_shared() == PRESET_ECO
 
 
-def test_seasonal_lockout_is_ice():
+def test_season_does_not_ice_shared():
+    # The season no longer gates heating: shared follows a hall booking to eco
+    # whatever the warm-season flag says.
     ctrl, _ = make_controller()
     ctrl.seasonal_lockout = True
     booking(ctrl, ZA)
-    assert ctrl._desired_shared() == PRESET_ICE
+    assert ctrl._desired_shared() == PRESET_ECO
+    assert ctrl._preset_reason["shared"] == "booking"
 
 
 def test_shared_opening_ice_is_ice():

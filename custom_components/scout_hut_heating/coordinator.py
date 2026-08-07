@@ -158,13 +158,7 @@ SEASONAL_SNAP_BAND = 2.0  # °C
 # the release hysteresis: once the bypass has warmed the room, it keeps heating
 # until the room sits this far ABOVE target, so the pierce cannot flap on/off
 # around the setpoint.
-COLD_BOOKING_RELEASE_BAND = 0.5  # °C above target before the bypass releases
-
-# The audit reason tag for the state-based summer setback rung. Named as a
-# constant because both the ladder (which sets it) and the eco-value router
-# (which reads it to pick the setback floor over the ordinary eco number) must
-# agree on the string.
-REASON_SUMMER_SETBACK = "summer_setback"
+COLD_BOOKING_RELEASE_BAND = 0.5  # °C above target before the heat gate releases
 
 # Coast predictor (coast.py) measurement window. The rolling idle-room samples
 # span at most PASSIVE_RISE_WINDOW_MIN and a rate is only computed once at least
@@ -1476,11 +1470,12 @@ class ScoutController:
             persistent_notification.async_create(
                 self.hass,
                 (
-                    f"The next 3 days average {avg:.1f}°C (lockout threshold "
-                    f"{threshold:.0f}°C). Heating is locked out for the season. "
-                    "A Boost still works if it is genuinely needed."
+                    f"The next 3 days average {avg:.1f}°C (warm-season threshold "
+                    f"{threshold:.0f}°C), so the hut is in its warm season and the "
+                    "condensation watch is paused. Heating is unaffected — it still "
+                    "follows bookings and occupancy whenever a room is genuinely cold."
                 ),
-                title="🏕 Scout Hut – Seasonal lockout engaged",
+                title="🏕 Scout Hut – Warm season",
                 notification_id=NOTIFY_SEASONAL,
             )
         elif cold and self.seasonal_lockout:
@@ -1940,34 +1935,35 @@ class ScoutController:
             return self.number("hall_eco_low_temp")
         return self._zone_target(zone)
 
-    def _cold_booking_bypass(self, zone: str) -> bool:
-        """True when a booked / pre-heating zone should pierce the seasonal lockout.
+    def _room_wants_heat(self, zone: str, target: float) -> bool:
+        """True when an occupied / booked zone is genuinely below ``target`` and
+        so wants heat — the single, season-independent heating gate.
 
-        The summer lockout freezes heating for the season, but a genuinely cold
-        booked session must still be warmed. "Cold" is read from the room's own
-        coldest heater probe against the target the booking asks for
-        (self-calibrating — no weather threshold to guess), so a warm-fabric
-        summer booking already at target stays locked out. Covers the pre-heat
-        window too (via ``_cal_active``), so a cold booked morning is warm from
-        the first minute. Release hysteresis keyed off the applied preset
-        (``COLD_BOOKING_RELEASE_BAND``) keeps the pierce from flapping around the
-        setpoint. An unreadable room does NOT bypass: under the summer regime the
-        fail-safe is to stay locked (a manual Boost is still the escape hatch).
-        Always on (was the `cold_booking_heats` switch): freezing a genuinely
-        cold booked room is never wanted, so this is permanent behaviour — a
-        manual Boost pierces the lockout the same way if ever needed.
+        "Cold" is read from the room's own coldest heater probe (the far end of
+        the 20 m hall) against ``target``, self-calibrating with no weather
+        threshold to guess: a warm room never wants heat whatever the calendar
+        says, so the fans are free to cool it, while a genuinely cold present or
+        booked room always heats. Release hysteresis keyed off the applied preset
+        (``COLD_BOOKING_RELEASE_BAND``) keeps the decision from flapping around
+        the setpoint. A frozen Rointe reading is rejected (``stale_min``).
+
+        An UNREADABLE room errs WARM (heat) — the heating fail-safe direction,
+        and benign here: the Rointe governs the actual firing against its own
+        probe, so a room that is really warm will not fire anyway, while a cold
+        one that lost our floor sensor is not left to arrive cold. (The old
+        cold-booking bypass erred off, but only because the summer lockout it
+        pierced made err-off the season's fail-safe; with no lockout the heating
+        convention — err warm — applies.)
         """
-        if not self._cal_active(zone):
-            return False
         room = self._zone_room_temp(zone, coldest=True, stale_min=self._rointe_stale_min())
         if room is None:
-            return False
+            return True
         margin = (
             COLD_BOOKING_RELEASE_BAND
             if self.applied[zone] in (PRESET_COMFORT, PRESET_ECO)
             else 0.0
         )
-        return room < self._booking_target(zone) + margin
+        return room < target + margin
 
     def _update_passive_rise(self) -> None:
         """Accumulate idle-room readings for the coast predictor.
@@ -2063,35 +2059,6 @@ class ScoutController:
             gap_min=gap_min,
         )
 
-    def _summer_setback_wants_heat(self) -> bool:
-        """True when the state-based summer setback should warm the hall.
-
-        The seasonal lockout freezes heating for the season, but with summer
-        setback on an *occupied* hall that is genuinely cool is gently warmed
-        to a low setback floor instead of frozen solid — heat follows the
-        building's state, not just a booking. "Occupied" = a booking / pre-heat
-        window, recent hall motion, or the manual occupied override. The
-        temperature test reads the hall's averaged floor (not the coldest end
-        the cold-booking pierce uses): the setback is a low-priority comfort
-        floor, so it should not over-fire on one cool end. An unreadable room
-        does NOT heat (summer fail-safe: err off, the same convention the
-        cold-booking bypass and the summer fans follow). Release hysteresis
-        keyed off the applied preset keeps it from flapping around the floor.
-        """
-        timeout = self.number("motion_timeout_minutes")
-        occupied = (
-            self._cal_active(ZONE_A)
-            or self._motion_recent(ZONE_MOTION_AREA[ZONE_A], timeout)
-            or self.switch_on(f"{ZONE_A}_occupied_override")
-        )
-        if not occupied:
-            return False
-        room = self._zone_room_temp(ZONE_A, stale_min=self._rointe_stale_min())
-        if room is None:
-            return False
-        margin = COLD_BOOKING_RELEASE_BAND if self.applied[ZONE_A] == PRESET_ECO else 0.0
-        return room < self.number("hall_summer_comfort_temp") + margin
-
     def _reason(self, zone: str, reason: str, preset: str | None) -> str | None:
         """Stash why a zone's desired preset is what it is (for the audit)."""
         self._preset_reason[zone] = reason
@@ -2112,26 +2079,6 @@ class ScoutController:
             return self._reason(zone, "opening", PRESET_ICE)
         if self.boost_active(zone):
             return self._reason(zone, "boost", PRESET_COMFORT)
-        # Seasonal lockout freezes heating — unless a booked (or pre-heating)
-        # session is genuinely below the target it is asking for, in which case
-        # the cold booking pierces the lockout and falls through to the booking
-        # rungs below. A warm-fabric summer booking (room already at target)
-        # does not bypass, so this stays a cold-snap escape hatch, not a
-        # season-long defeat of the lockout.
-        if self.seasonal_lockout and not self._cold_booking_bypass(zone):
-            # State-based summer setback (hall only): rather than freeze an
-            # occupied hall solid for the season, warm it to a low setback floor
-            # (eco carrying the setback number, below) when it is genuinely
-            # cool. An empty or already-warm hall still lands on ice, so the
-            # summer cooling fans keep the room. Off by default — the owner
-            # enables it consciously.
-            if (
-                zone == ZONE_A
-                and self.switch_on("summer_setback_mode", default=False)
-                and self._summer_setback_wants_heat()
-            ):
-                return self._reason(zone, REASON_SUMMER_SETBACK, PRESET_ECO)
-            return self._reason(zone, "seasonal_lockout", PRESET_ICE)
 
         cal_on = self._cal_active(zone)
         alarm_on = self._alarm_armed(self.config.get(ZONE_ALARM[zone]))
@@ -2147,20 +2094,24 @@ class ScoutController:
 
         timeout = self.number("motion_timeout_minutes")
         area = ZONE_MOTION_AREA[zone]
+
+        # --- Booking / pre-heat ------------------------------------------------
+        # A booking is occupancy we know about IN ADVANCE, so it gets the two
+        # things bare presence cannot: a pre-heat lead (warm from minute one) and
+        # persistence — it holds the target through the whole slot. Otherwise it
+        # heats on exactly the same test as occupancy below: only when the room
+        # is genuinely below the target the booking asked for
+        # (`_room_wants_heat`, self-calibrating and season-independent). A warm
+        # booking lands on ice, freeing the cooling fans if the hall is hot.
         if cal_on:
-            # Reaching the booking rungs while the lockout is engaged means a
-            # cold booking pierced it (above): tag the audit reason so a
-            # lockout-piercing session is greppable in the trail, distinct from
-            # an ordinary in-season booking.
-            tag = "lockout_" if self.seasonal_lockout else ""
             base = PRESET_ECO if self._eco_keyword_active(zone) else PRESET_COMFORT
-            # Drop an unoccupied booking to eco only once the event has
-            # actually started. During the pre-heat window the room is empty
-            # by definition — demoting there would heat toward eco while the
-            # optimum-start lead was sized to reach comfort, so hirers would
-            # always arrive to a shortfall.
             event_running = self._is_on(self.config.get(ZONE_CALENDAR[zone]))
             occupied = self._motion_recent(area, timeout)
+            if not self._room_wants_heat(zone, self._booking_target(zone)):
+                # Already warm enough for what this booking asked — no heat, and
+                # ice lets the cooling fans run if the room is genuinely hot.
+                self._note_coasting(zone, False)
+                return self._reason(zone, "booking_warm", PRESET_ICE)
             # "Will it get there / stay there on its own?" Hold at eco instead of
             # firing the radiators when free gain (sun on the roof, occupancy,
             # warm fabric) is doing the work — comfort kept, delivered free:
@@ -2181,25 +2132,37 @@ class ScoutController:
                 if self._should_coast(zone, self._zone_target(zone), gap):
                     self._note_coasting(zone, True)
                     reason = "preheat_coast" if not event_running else "booking_coast"
-                    return self._reason(zone, f"{tag}{reason}", PRESET_ECO)
+                    return self._reason(zone, reason, PRESET_ECO)
                 self._note_coasting(zone, False)
             else:
                 # Not a coast-eligible tick (unoccupied running booking, or an
                 # eco-keyword pre-heat): clear any stale latch so the next
                 # eligible session audits its engaging edge afresh.
                 self._note_coasting(zone, False)
+            # Drop an unoccupied booking to eco only once the event has actually
+            # started (persistence stops at the empty room). During the pre-heat
+            # window the room is empty by definition — demoting there would heat
+            # toward eco while the optimum-start lead was sized to reach comfort,
+            # so hirers would always arrive to a shortfall.
             if base == PRESET_COMFORT and event_running and not occupied:
-                return self._reason(zone, f"{tag}booking_quiet", PRESET_ECO)
+                return self._reason(zone, "booking_quiet", PRESET_ECO)
             if base == PRESET_ECO:
-                return self._reason(zone, f"{tag}booking_eco", base)
-            return self._reason(
-                zone, f"{tag}{'booking' if event_running else 'preheat'}", base
-            )
+                return self._reason(zone, "booking_eco", base)
+            return self._reason(zone, "booking" if event_running else "preheat", base)
 
-        if self.switch_on(f"{zone}_occupied_override"):
-            return self._reason(zone, "occupied_override", PRESET_ECO)
-        if self._motion_recent(area, timeout):
-            return self._reason(zone, "motion", PRESET_ECO)
+        # --- Occupancy ---------------------------------------------------------
+        # Someone is in the zone right now (recent motion or the manual override).
+        # Heat toward the SAME comfort target a booking would — occupancy and a
+        # booking are not different behaviours, they only differ in foreknowledge
+        # and persistence. It heats only while presence is confirmed (no advance,
+        # no hold once they leave) and only when the room is genuinely below
+        # comfort; a warm occupied hall lands on ice so the cooling fans run.
+        occupied_override = self.switch_on(f"{zone}_occupied_override")
+        if occupied_override or self._motion_recent(area, timeout):
+            if self._room_wants_heat(zone, self._zone_target(zone)):
+                reason = "occupied_override" if occupied_override else "motion"
+                return self._reason(zone, reason, PRESET_COMFORT)
+            return self._reason(zone, "occupied_warm", PRESET_ICE)
         if not self._motion_recent_any(timeout):
             return self._reason(zone, "building_empty", PRESET_ICE)
         # Zone quiet but someone is elsewhere in the building: rest at eco rather
@@ -2210,14 +2173,10 @@ class ScoutController:
     def _desired_shared(self) -> str | None:
         if not self.config.get(CONF_SHARED_CLIMATES):
             return None
-        # The shared kitchen/toilets/stores follow a booked room through the
-        # seasonal lockout: if a cold hall or office booking pierced it, people
-        # are using the shared rooms too, so warm them (to eco, below).
-        shared_bypass = self._cold_booking_bypass(ZONE_A) or self._cold_booking_bypass(
-            ZONE_B
-        )
-        if self.seasonal_lockout and not shared_bypass:
-            return self._reason("shared", "seasonal_lockout", PRESET_ICE)
+        # The shared kitchen/toilets/stores rest at a low eco floor whenever a
+        # hall or office booking is on, or anyone is in the building — the tank
+        # lives here and the rooms are transient-use, so eco (not comfort) is the
+        # right idle warmth. No seasonal gate: the season no longer blocks heat.
         if self.opening_ice["shared"]:
             return self._reason("shared", "opening", PRESET_ICE)
         if self.boost_active(ZONE_A) or self.boost_active(ZONE_B):
@@ -2227,8 +2186,7 @@ class ScoutController:
         ):
             return self._reason("shared", "alarm", PRESET_ICE)
         if self._cal_active(ZONE_A) or self._cal_active(ZONE_B):
-            tag = "lockout_" if self.seasonal_lockout else ""
-            return self._reason("shared", f"{tag}booking", PRESET_ECO)
+            return self._reason("shared", "booking", PRESET_ECO)
         if self._motion_recent_any(self.number("motion_timeout_minutes")):
             return self._reason("shared", "motion", PRESET_ECO)
         return self._reason("shared", "building_empty", PRESET_ICE)
@@ -2565,25 +2523,10 @@ class ScoutController:
     def _hall_eco_target(self, eco_low: bool) -> float:
         """The eco setpoint to push for the hall.
 
-        Eco-keyword bookings get the low setpoint. When the state-based summer
-        setback is the reason the hall is on eco (occupied, cool, under the
-        seasonal lockout), eco carries the setback floor
-        (``hall_summer_comfort_temp``, ~17.5) instead of the ordinary winter
-        eco number, so an occupied summer hall drifts up to the setback rather
-        than the lower eco value. Every other eco path keeps the ordinary eco
-        number. Read off the freshly-computed preset reason: the ladder runs in
-        ``_reconcile_zones`` immediately before every eco push, so the reason
-        reflects the preset being applied this tick.
-
-        The summer-setback reason is checked BEFORE eco-low: the setback rung
-        fires on non-booking occupancy, but ``cal_title`` (hence ``eco_low``)
-        can still carry an eco keyword from a prior/upcoming event in the
-        look-ahead — without this ordering the setback's ~17.5 floor would be
-        undercut to the 14 eco-low value, leaving an occupied cool hall barely
-        heated.
+        Eco-keyword bookings get the low setpoint; every other eco path (an
+        unoccupied running booking gone quiet, a coast hold, someone elsewhere
+        in the building) keeps the ordinary eco number.
         """
-        if self._preset_reason.get(ZONE_A) == REASON_SUMMER_SETBACK:
-            return self.number("hall_summer_comfort_temp")
         if eco_low:
             return self.number("hall_eco_low_temp")
         return self.number("hall_eco_temp")
@@ -2595,9 +2538,10 @@ class ScoutController:
 
         The per-preset push in `_async_set_preset` only fires on a preset
         CHANGE. So an eco-keyword booking that starts while the hall is already
-        `eco` (e.g. early arrivals set motion->eco 16 first, or a prior booking
-        went quiet->eco) never gets eco-low (14) written and heats the whole
-        session at 16. This backstop compares the intended (comfort, eco) pair
+        `eco` (e.g. a prior booking went quiet->eco, a coast hold, or someone
+        elsewhere in the building left it at others-present eco) never gets
+        eco-low (14) written and heats the whole session at 16. This backstop
+        compares the intended (comfort, eco) pair
         against what was last pushed and re-pushes only on a genuine change, so
         it costs nothing per tick when nothing moved.
         """

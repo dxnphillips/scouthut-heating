@@ -50,7 +50,7 @@ _HOME_STATUS = [
     ("hall_heating_paused", "Hall heating paused"),
     ("zone_a_boost_active", "Hall boost active"),
     ("zone_b_boost_active", "Office boost active"),
-    ("seasonal_lockout_active", "Seasonal lockout"),
+    ("seasonal_lockout_active", "Warm season"),
 ]
 _HOME_ACTIONS = [
     ("boost_zone_a", "Boost hall heating"),
@@ -66,7 +66,7 @@ _NOW = [
     ("zone_b_status", "Office preset"),
     ("shared_status", "Shared zone preset"),
     ("water_status", "Water heater"),
-    ("seasonal_lockout_active", "Seasonal lockout"),
+    ("seasonal_lockout_active", "Warm season"),
     ("hall_temp_spread", "Hall temperature spread"),
     ("fan_delta_t", "Ceiling-floor ΔT"),
 ]
@@ -86,11 +86,9 @@ _TEMPERATURES = [
     ("hall_comfort_temp", "Hall comfort"),
     ("hall_eco_temp", "Hall eco"),
     ("hall_eco_low_temp", "Hall eco-low (ECO bookings)"),
-    ("hall_summer_comfort_temp", "Hall summer setback"),
-    ("summer_setback_mode", "Summer setback (state-based) mode"),
     ("office_comfort_temp", "Office comfort"),
     ("shared_comfort_temp", "Shared comfort"),
-    ("seasonal_lockout_temp", "Seasonal lockout threshold"),
+    ("seasonal_lockout_temp", "Warm-season threshold (condensation watch)"),
     ("drive_to_target", "Drive heaters to target"),
     ("drive_max_offset", "Drive: max setpoint boost"),
 ]
