@@ -258,7 +258,11 @@ this priority (highest wins):
    winter fans off. See *Pause hall heating* below.
 3. **Door or window held open** past its delay → `ice` (the internal door only
    counts when an exterior opening is also open).
-4. **Boost active** → `comfort`.
+4. **Boost active** → `comfort`, and the drive aims the room at **comfort + the
+   Boost offset** (`boost_offset`, default +2 °C) for the boost duration. A boost
+   is someone saying "still too cold", so it must reach *above* the standing
+   comfort setpoint — otherwise pressing it while already at comfort would do
+   nothing. Reverts to plain comfort when the boost expires.
 5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a

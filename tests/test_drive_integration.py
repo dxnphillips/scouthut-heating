@@ -91,6 +91,23 @@ def test_drive_reasserts_the_comfort_preset_so_the_setpoint_lands():
     assert reasserts  # the driven heater had comfort re-applied after the push
 
 
+def test_boost_drives_the_room_above_comfort():
+    # A boost of a room ALREADY AT comfort must still do something: the drive
+    # aims at comfort + boost_offset, so the pushed setpoint exceeds comfort.
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    comfort = ctrl.number("hall_comfort_temp")
+    run(ctrl.async_boost(ZA))
+    hass.states.set(E["weather"], "cloudy", {"temperature": 15.0})
+    for c in ("climate.hall_back", "climate.hall_front"):
+        hass.states.set(c, "heat", {"current_temperature": comfort})  # already at comfort
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZA] == PRESET_COMFORT
+    # The drive pushed a setpoint above the plain comfort number (it is chasing
+    # comfort + the boost offset), not just re-asserting comfort.
+    assert _pushed(hass, _comfort_number("climate.hall_back")) > comfort
+
+
 def test_reentering_comfort_does_not_false_reject_readback():
     # Regression from the v1.22.0 shared-comfort field export (2026-08-07):
     # a heater withdrawn to its comfort NUMBER while on ice, then re-entering

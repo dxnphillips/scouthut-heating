@@ -271,6 +271,14 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # which the device otherwise kept to itself.
     "office_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
     "shared_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
+    # How much ABOVE the comfort target a Boost drives the room. A boost is an
+    # occupant saying "still too cold" — so it must aim higher than the standing
+    # comfort setpoint, or pressing it while already at comfort would do nothing
+    # (the drive is already targeting comfort). The drive chases comfort + this
+    # offset for the boost duration, then reverts. Clamped to the 30 °C Rointe
+    # max downstream. 2 °C is a measured bump; raise it for a more aggressive
+    # boost (Q19: felt-cold at a satisfied 19.5 is real in this cold-radiant hall).
+    "boost_offset": (1, 5, 0.5, 2.0, "°C"),
 }
 
 NUMBER_ICONS: dict[str, str] = {
@@ -301,6 +309,7 @@ NUMBER_ICONS: dict[str, str] = {
     "drive_max_offset": "mdi:thermometer-chevron-up",
     "office_comfort_temp": "mdi:thermometer-high",
     "shared_comfort_temp": "mdi:thermometer-high",
+    "boost_offset": "mdi:thermometer-plus",
 }
 
 BOOST_OPTIONS = ["30 min", "60 min", "90 min"]

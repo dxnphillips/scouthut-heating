@@ -88,6 +88,7 @@ _TEMPERATURES = [
     ("hall_eco_low_temp", "Hall eco-low (ECO bookings)"),
     ("office_comfort_temp", "Office comfort"),
     ("shared_comfort_temp", "Shared comfort"),
+    ("boost_offset", "Boost offset (above comfort)"),
     ("seasonal_lockout_temp", "Warm-season threshold (condensation watch)"),
     ("drive_to_target", "Drive heaters to target"),
     ("drive_max_offset", "Drive: max setpoint boost"),
