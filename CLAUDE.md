@@ -596,6 +596,16 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     above comfort" alarm was a false read — the above-comfort push *does* land, it
     was just the post-boot cloud lag; the v1.24.2 comfort-number diagnostic is kept
     to confirm should a genuine non-adoption ever recur mid-run (not at startup).
+    **Settle window widened 10 → 30 min (v1.24.4, 2026-08-08 comfort-number
+    export).** The diagnostic proved the mechanism: the `comfort_number` entities
+    all held the pushed 20.0–21.0 (max 30, no clamp) and one heater was actively
+    *heating* to 21.0 — but the climate's **live setpoint** (what the read-back
+    reads) lagged the number by **10–27 min** through the cloud (a heater flagged at
+    10 min was matched + heating by the 27-min export). So the device adopts, just
+    slowly; the 10-min settle window was simply too short for this cloud. 30 min
+    clears the observed lag; a genuine never-adopt stays mismatched past it and is
+    still caught. This — not the startup grace — is what stops the routine flags on
+    the hold's ice↔comfort re-engagements (each re-push restarts the settle clock).
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*

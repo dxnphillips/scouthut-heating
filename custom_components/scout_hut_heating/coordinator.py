@@ -237,10 +237,14 @@ DRIVE_CAP_ALARM_MINUTES = 60.0
 # setpoint should match what we pushed; a persistent divergence is "the heater
 # isn't accepting our setpoint" (the v1.14.2 phantom-push class), a distinct
 # fault from "can't reach target" (the cap alarm above). The settle window is
-# set well above the real Rointe cloud lag (seconds to ~a minute) so ordinary
-# lag can never trip it — the deliberately generous margin the original Q20
-# note asked for, rather than a tight guess that would false-alarm.
-DRIVE_SETTLE_MINUTES = 10.0
+# set well above the real Rointe cloud lag so ordinary lag can never trip it.
+# Raised 10 -> 30 (v1.24.4, field): two booked-evening exports showed the *number*
+# entity adopting our push instantly but the climate's *live setpoint* — what the
+# read-back reads — taking 10-27 min to catch up through the cloud (a heater
+# flagged at 10 min was matched and heating to 21.0 by the 27-min export). The
+# device IS adopting, just slowly, so 30 min clears the observed lag while a
+# genuine never-adopt stays mismatched past it and is still caught.
+DRIVE_SETTLE_MINUTES = 30.0
 DRIVE_SETPOINT_TOL = 0.3  # °C; our pushes and the Rointe are 0.5-quantised
 # Grace after (re)start before the drive self-checks may fire. The Rointe cloud
 # is much slower to reflect a pushed setpoint just after a restart than in
