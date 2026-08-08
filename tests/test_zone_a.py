@@ -28,9 +28,29 @@ def test_booking_with_motion_is_comfort():
 
 
 def test_booking_without_motion_drops_to_eco():
+    # Genuinely empty booking (no motion, no override, not night-armed) -> eco.
     ctrl, _ = make_controller()
     booking(ctrl, ZA)
     assert ctrl._desired_zone(ZA) == PRESET_ECO
+
+
+def test_sleepover_override_holds_a_booking_at_comfort():
+    # A sleepover: people present but STILL, so the hall PIR sees no motion. The
+    # occupied override is the "we're here" signal -> booking_quiet must NOT demote.
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA)
+    hall_temp(ctrl, 17.0)  # cold, genuinely wants heat
+    ctrl._switches["zone_a_occupied_override"].is_on = True
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "booking"
+
+
+def test_sleepover_night_alarm_holds_a_booking_at_comfort():
+    ctrl, hass = make_controller()
+    booking(ctrl, ZA)
+    hall_temp(ctrl, 17.0)
+    hass.states.set(E["alarm_main"], "armed_night")  # people sleeping inside
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
 
 
 def test_eco_keyword_booking_stays_eco_even_with_motion():

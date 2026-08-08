@@ -278,6 +278,10 @@ ZONE_ALARM = {ZONE_A: CONF_ALARM_MAIN, ZONE_B: CONF_ALARM_OFFICE}
 # on — and `triggered`/`arming`/`pending`/`disarmed` never suppress. A legacy
 # binary_sensor/input_boolean mapping is handled separately (its "on" = armed).
 ALARM_AWAY_STATES = frozenset({"armed_away", "armed_vacation"})
+# The opposite: an arm that says people are INSIDE (a sleepover / present but
+# still), which the hall PIR cannot see. A positive "occupied" signal that keeps
+# a running booking at comfort instead of demoting to eco on motion-silence.
+ALARM_PRESENT_STATES = frozenset({"armed_night", "armed_home"})
 # Zones whose heaters the drive-to-target loop controls, and where their
 # climate entities are mapped. The shared zone is included so every heated room
 # is driven to its comfort target, not just the hall.
@@ -705,6 +709,15 @@ class ScoutController:
         if state is None:
             return False
         return state.state == "on" or state.state in ALARM_AWAY_STATES
+
+    def _alarm_present(self, entity_id: str | None) -> bool:
+        """True when the mapped alarm is *night*/*home* armed — people are inside
+        (a sleepover), which the PIR cannot see when they are still. A positive
+        presence signal, distinct from the empty-building away-arm."""
+        if not entity_id:
+            return False
+        state = self.hass.states.get(entity_id)
+        return state is not None and state.state in ALARM_PRESENT_STATES
 
     def _any_on(self, entity_ids: list[str]) -> bool:
         return any(self._is_on(e) for e in entity_ids)
@@ -2139,7 +2152,17 @@ class ScoutController:
         if cal_on:
             base = PRESET_ECO if self._eco_keyword_active(zone) else PRESET_COMFORT
             event_running = self._is_on(self.config.get(ZONE_CALENDAR[zone]))
-            occupied = self._motion_recent(area, timeout)
+            # "Occupied" for a running booking counts positive presence signals the
+            # PIR can't see, so a booking is not demoted to eco (`booking_quiet`)
+            # while people are present but STILL — a sleepover. Recent hall motion,
+            # the manual occupied-override switch, or a Night/Home alarm arm (people
+            # sleeping inside) all hold comfort; a genuinely empty booking (no
+            # motion, no override, not night-armed) still drops to eco.
+            occupied = (
+                self._motion_recent(area, timeout)
+                or self.switch_on(f"{zone}_occupied_override")
+                or self._alarm_present(self.config.get(ZONE_ALARM[zone]))
+            )
             # A running comfort booking holds the room a little ABOVE comfort (the
             # booking hold) so a cooling evening cannot drop it below comfort while
             # the slow drive catches up. The gate engages at that raised target so
