@@ -606,6 +606,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     clears the observed lag; a genuine never-adopt stays mismatched past it and is
     still caught. This — not the startup grace — is what stops the routine flags on
     the hold's ice↔comfort re-engagements (each re-push restarts the settle clock).
+    **Action-gated (v1.25.1, 2026-08-08 morning export).** With 1.25.0 deployed and
+    the hall driving hard on a booked morning, the read-back still flagged heaters
+    that were *actively heating* — live setpoint one 0.5 step behind the pushed
+    value while the drive staircased *upward* (the cloud is perpetually a quantum
+    behind a moving target). But a heater reporting `hvac_action == heating` has
+    demonstrably accepted the command — its setpoint IS landing, just late. The
+    phantom-push fault this check is for looks different: a heater sitting **idle**
+    at a stale-low setpoint. So the read-back now only flags a mismatch when the
+    heater is **not heating** (idle) — using the `action` already in diagnostics.
+    This is the more fundamental fix: live-setpoint-vs-pushed was the laggiest
+    possible signal; `action` reflects the real response. A stuck heater still gets
+    caught (it goes idle at its stale setpoint → flagged).
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*

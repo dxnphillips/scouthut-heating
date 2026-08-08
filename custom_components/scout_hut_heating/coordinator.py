@@ -3290,9 +3290,17 @@ class ScoutController:
         through the Rointe cloud, AND once past the post-restart startup grace
         (the cloud lags much longer just after boot); before either, or when the
         setpoint is unreadable, the check abstains (drops the heater from the
-        rejected set) so ordinary lag never false-flags. A divergence beyond
-        tolerance once settled is "the heater isn't accepting our setpoint" — the
-        phantom-push failure, invisible to the cap alarm.
+        rejected set) so ordinary lag never false-flags.
+
+        A divergence once settled is only flagged when the heater is NOT actively
+        heating. The phantom-push failure (v1.14.2) is "the command never reached
+        the radiator", whose signature is a heater sitting IDLE at a stale-low
+        setpoint. A heater that reports `hvac_action == heating` has demonstrably
+        accepted a command and is working toward it — its live setpoint merely
+        lagging our push by a quantum through the slow cloud while the drive
+        staircases upward (2026-08-08 export: all four hall heaters flagged while
+        actively heating, live setpoint one 0.5 step behind the pushed value). Its
+        setpoint IS landing, just late, so it is not the fault this check is for.
         """
         at = self._drive_pushed_at.get(climate)
         if (
@@ -3303,13 +3311,18 @@ class ScoutController:
             self._drive_rejected.discard(climate)
             return
         reported = self._heater_setpoint(climate)
-        if reported is None:
+        if reported is None or abs(reported - pushed) <= DRIVE_SETPOINT_TOL:
             self._drive_rejected.discard(climate)
             return
-        if abs(reported - pushed) > DRIVE_SETPOINT_TOL:
-            self._drive_rejected.add(climate)
-        else:
+        # Short of the pushed setpoint — but a heater actively heating has clearly
+        # accepted the command (it is producing heat toward target); only a heater
+        # that has gone IDLE while still short is genuinely not accepting it.
+        st = self.hass.states.get(climate)
+        action = st.attributes.get("hvac_action") if st else None
+        if action == "heating":
             self._drive_rejected.discard(climate)
+        else:
+            self._drive_rejected.add(climate)
 
     def _update_drive_reject_alarm(self) -> None:
         rejected = bool(self._drive_rejected)
