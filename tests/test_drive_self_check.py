@@ -74,6 +74,21 @@ def test_startup_grace_abstains_even_after_settle():
     assert CLIMATE in ctrl._drive_rejected
 
 
+def test_actively_heating_mismatch_is_not_flagged():
+    # A heater short of the pushed setpoint but actively HEATING has accepted the
+    # command (its live setpoint just lags our push through the cloud while the
+    # drive staircases up). Only an IDLE short heater is the phantom-push fault.
+    ctrl, hass = make_controller()
+    now = _settled_push(ctrl, hass, pushed=22.0, reported=21.5)  # 0.5 short
+    hass.states.set(CLIMATE, "heat", {"temperature": 21.5, "hvac_action": "heating"})
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
+    assert CLIMATE not in ctrl._drive_rejected
+    # Same mismatch but IDLE -> genuinely not accepting -> flagged.
+    hass.states.set(CLIMATE, "heat", {"temperature": 21.5, "hvac_action": "idle"})
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, now)
+    assert CLIMATE in ctrl._drive_rejected
+
+
 def test_divergence_within_settle_window_abstains():
     ctrl, hass = make_controller()
     now = ctrl._now()
