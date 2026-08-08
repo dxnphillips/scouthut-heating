@@ -282,7 +282,11 @@ this priority (highest wins):
    the cooling fans are free to run — heating is **not** gated by the season, only
    by whether the room is actually cold. An unoccupied room drops to `eco` only
    once the event has actually started (the pre-heat window always heats at
-   comfort, since its whole purpose is reaching the target by event start).
+   comfort, since its whole purpose is reaching the target by event start) — and
+   "unoccupied" here counts the things a motion sensor can't see: as well as
+   recent motion, the **occupied-override** switch or a **Night/Home alarm arm**
+   hold a booking at comfort, so a **sleepover** of still, sleeping occupants
+   isn't demoted to eco and left to cool.
    Events matching an ECO keyword aim at the lower `eco` setpoint throughout. The
    shared kitchen/toilets/stores heat toward their own comfort target when the
    block is in use — a running hall/office booking, or motion in the shared PIRs

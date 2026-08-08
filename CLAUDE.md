@@ -810,9 +810,16 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   cold occupied hall heats to the *same* comfort target a booking does. Booking
   uniquely adds **foreknowledge** (a pre-heat lead, warm from minute one) and
   **persistence** (it holds the target through the slot; an unoccupied *running*
-  booking still drops to eco via `booking_quiet`). Bare occupancy heats only while
-  presence is confirmed (recent motion / the occupied override) and stops when it
-  lapses. Reason strings: `booking` / `preheat` / `booking_warm` / `booking_eco` /
+  booking still drops to eco via `booking_quiet`). **`booking_quiet` counts
+  positive presence the PIR can't see (2026-08-08, sleepover field incident):**
+  its "occupied" test is recent hall motion OR the manual occupied-override switch
+  OR a **Night/Home alarm arm** (`_alarm_present` — people sleeping inside), so a
+  sleepover full of *still* sleepers is not demoted to eco and left to cool (the
+  05:33 export caught the hall at 17.5 °C on a cold night because the sleeping
+  scouts tripped no PIR → `booking_quiet` → eco). A genuinely empty booking (no
+  motion, no override, not night-armed) still drops to eco. Bare occupancy heats
+  only while presence is confirmed (recent motion / the occupied override) and
+  stops when it lapses. Reason strings: `booking` / `preheat` / `booking_warm` / `booking_eco` /
   `booking_quiet` / `preheat_coast` / `booking_coast` for bookings; `motion` /
   `occupied_override` (heating) and `occupied_warm` (warm → ice) for occupancy; the
   `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
