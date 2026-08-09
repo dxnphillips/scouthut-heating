@@ -3189,7 +3189,7 @@ class ScoutController:
                 await self._drive_push(
                     climate, number, pushed, reassert=True, force=entering
                 )
-                self._check_setpoint_readback(climate, pushed, now)
+                self._check_setpoint_readback(climate, pushed, probe, now)
                 # Cap-pinned watch: at the cap AND still a full step short.
                 if pushed >= cap - 1e-9 and (target - probe) >= DRIVE_STEP:
                     if self._drive_cap_since.get(climate) is None:
@@ -3286,7 +3286,7 @@ class ScoutController:
         )
 
     def _check_setpoint_readback(
-        self, climate: str, pushed: float, now: datetime
+        self, climate: str, pushed: float, probe: float | None, now: datetime
     ) -> None:
         """Track whether a driven heater has adopted the setpoint we pushed (Q20a).
 
@@ -3296,15 +3296,26 @@ class ScoutController:
         setpoint is unreadable, the check abstains (drops the heater from the
         rejected set) so ordinary lag never false-flags.
 
-        A divergence once settled is only flagged when the heater is NOT actively
-        heating. The phantom-push failure (v1.14.2) is "the command never reached
-        the radiator", whose signature is a heater sitting IDLE at a stale-low
-        setpoint. A heater that reports `hvac_action == heating` has demonstrably
-        accepted a command and is working toward it — its live setpoint merely
-        lagging our push by a quantum through the slow cloud while the drive
-        staircases upward (2026-08-08 export: all four hall heaters flagged while
-        actively heating, live setpoint one 0.5 step behind the pushed value). Its
-        setpoint IS landing, just late, so it is not the fault this check is for.
+        A divergence once settled is only genuine when the heater is BOTH short of
+        target AND idle. The phantom-push failure (v1.14.2) is "the command never
+        reached the radiator", whose signature is a heater sitting idle at a
+        stale-low setpoint *while the room is still cold*. Two independent proofs
+        that the command DID land, either of which clears the flag:
+
+          * the heater's own probe has reached the pushed target (``probe >=
+            pushed - tol``): it is idle because it is SATISFIED, not because it
+            rejected us — reaching the target could only happen if the setpoint was
+            adopted (2026-08-09 export: three hall heaters flagged while idle at
+            the 20.0 target the room had reached, their live setpoint merely
+            lagging through the cloud — the action gate can't catch a *satisfied*
+            heater because a satisfied heater is idle, not heating);
+          * the heater reports ``hvac_action == heating``: it is demonstrably
+            working toward target, its live setpoint just lagging our push by a
+            quantum while the drive staircases upward (2026-08-08 export: all four
+            hall heaters flagged mid-climb, live setpoint one 0.5 step behind).
+
+        Only a heater that is short of the pushed target AND has gone idle AND is
+        not reporting our setpoint is genuinely not accepting it.
         """
         at = self._drive_pushed_at.get(climate)
         if (
@@ -3316,6 +3327,11 @@ class ScoutController:
             return
         reported = self._heater_setpoint(climate)
         if reported is None or abs(reported - pushed) <= DRIVE_SETPOINT_TOL:
+            self._drive_rejected.discard(climate)
+            return
+        # Reached the pushed target -> idle because satisfied, and the room could
+        # not have got there unless the setpoint landed. Not the fault this is for.
+        if probe is not None and probe >= pushed - DRIVE_SETPOINT_TOL:
             self._drive_rejected.discard(climate)
             return
         # Short of the pushed setpoint — but a heater actively heating has clearly

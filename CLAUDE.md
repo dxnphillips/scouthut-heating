@@ -630,6 +630,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     This is the more fundamental fix: live-setpoint-vs-pushed was the laggiest
     possible signal; `action` reflects the real response. A stuck heater still gets
     caught (it goes idle at its stale setpoint → flagged).
+    **Satisfied-target guard (v1.25.3, 2026-08-09 daytime export).** The action gate
+    left one false-positive class uncaught: three hall heaters flagged while **idle
+    at the 20.0 target the room had already reached** (`demand` false, coldest 20.0),
+    their live setpoint merely lagging through the cloud. The action gate can't
+    rescue a *satisfied* heater because a satisfied heater is idle, not heating — yet
+    reaching the target could only happen if the pushed setpoint was **adopted**. So
+    the read-back now clears on a second independent proof-of-adoption: the heater's
+    own probe having reached the pushed target (`probe >= pushed − tol`). It flags
+    only a heater that is **short of target AND idle AND not reporting our setpoint**
+    — the genuine phantom-push signature (idle at a stale-low setpoint *while the room
+    is still cold*). Between them, the two proofs (probe reached target, or actively
+    heating) cover every way a landed command looks, leaving only real non-adoption.
+    The residual single-heater active-climb flag (one heater short+idle mid-climb as
+    the cloud lag brushes the 30-min window) stays a *widen the settle window* call
+    per the decision rule, not a tolerance change.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
