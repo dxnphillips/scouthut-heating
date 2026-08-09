@@ -591,12 +591,16 @@ class ScoutController:
             if self.config.get(key)
         }
 
+        fan_master = self.config.get(CONF_FAN_MASTER)
+
         @callback
         def _handle_state_event(event: Event) -> None:
             entity_id = event.data.get("entity_id")
             new_state = event.data.get("new_state")
             if entity_id in motion_entities and new_state is not None and new_state.state == "on":
                 self._feed_motion(motion_entities[entity_id], dt_util.utcnow())
+            if entity_id == fan_master:
+                self._note_fan_master_state(new_state.state if new_state else None)
             self.async_request_reconcile()
 
         if watched:
@@ -3769,6 +3773,24 @@ class ScoutController:
         """
         return self._mapped_fault() or self.fan_fault_latched
 
+    @callback
+    def _note_fan_master_state(self, state: str | None) -> None:
+        """Record a fan-master state seen between reconcile ticks.
+
+        The master can reboot (wall switch, power blip) faster than the 30 s
+        reconcile poll: the Shelly goes unavailable then defaults its output
+        off in ~1 s (field-observed 2026-08-08: `unavailable` at 00:32:08,
+        `off` at 00:32:09), so a poll tick lands after the blip and sees only
+        a straight available->off — which would latch a false `master_off`
+        fault. The state-change event fires for the transient unavailability
+        even when no reconcile coincides with it, so recording it here lets the
+        next reconcile recognise the reboot and re-command instead of latching.
+        Mirrors the `not master_known` branch in `_fan_fault`, which catches the
+        same reboot when a poll *does* happen to see the unavailable state.
+        """
+        if state in ("unavailable", "unknown"):
+            self._fan_master_seen_unavailable = True
+
     def _fan_fault(self) -> bool:
         """Evaluate (and, for the inferred case, latch) the fan fault.
 
@@ -3780,7 +3802,10 @@ class ScoutController:
         reboot (wall switch, power cut) with outputs defaulting off: the
         expectation is reset so the reconciler simply re-establishes the wanted
         state on this same tick, instead of latching or deadlocking. The
-        inferred latch never auto-rearms; it clears only via async_fan_rearm.
+        unavailability is caught either by a poll landing on it (the
+        `not master_known` branch here) or, for a reboot too brief for a poll,
+        by `_note_fan_master_state` off the state-change event. The inferred
+        latch never auto-rearms; it clears only via async_fan_rearm.
         """
         now = self._now()
         in_grace = (

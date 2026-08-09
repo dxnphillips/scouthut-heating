@@ -67,7 +67,19 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   the blades take ~5 min to stop, so `DWELL_MS` must cover that, not 45 s; stall
   latch). HA must **never** re-command an unexpectedly-off fan master (that
   re-arms the Shelly's own latch) and only writes the direction relay while
-  the master is off.
+  the master is off. **A device reboot is exempt from the master-off fault**
+  (v1.25.2): a wall-switch flick or power blip takes the master `unavailable`
+  then `off` (outputs default off), which is not a manual kill — `_fan_fault`
+  resets the expectation and re-commands from scratch instead of latching. A
+  reconcile poll landing on the `unavailable` catches it, but a reboot briefer
+  than the 30 s poll would slip through as a straight available→off and latch a
+  false `master_off` (field 2026-08-08: master `unavailable` 00:32:08 → `off`
+  00:32:09, ~1 s, latched a phantom fault while the Shelly itself reported none —
+  the tell the owner spotted). `_note_fan_master_state`, called off the
+  master's state-change event (which fires even when no reconcile coincides with
+  the blip), records the transient unavailability so the next tick recognises the
+  reboot. A genuine stall-latch (the Shelly script opening the relay) leaves the
+  device online — no `unavailable` — so it still latches correctly.
 
 ## Open questions awaiting field data (with pre-agreed decision rules)
 
