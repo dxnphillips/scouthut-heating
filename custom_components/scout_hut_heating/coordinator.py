@@ -3755,6 +3755,20 @@ class ScoutController:
         preset. A power sensor that is offline or has stopped updating (frozen
         cloud) is ignored rather than trusted at its last value.
         """
+        # A heater on the ice (7 °C anti-frost) preset cannot be producing useful
+        # heat — its setpoint sits below any occupied room — so a nonzero
+        # effective-power reading there is the Rointe's MODELLED power (Q17), not
+        # real demand. If no zone is being driven to heat, there is no demand
+        # however the (often modelled) sensors read. Without this, a phantom
+        # reading on a frost-protected heater asserts demand and, coinciding with
+        # a brief ceiling-sensor `dt None`, flips the summer cooling fans to
+        # reverse for a full reversal — the wrong direction on a hot afternoon
+        # (field 2026-08-11: 4 spurious reversals, all heaters idle on ice).
+        if not any(
+            self.applied[z] in (PRESET_COMFORT, PRESET_ECO)
+            for z in (ZONE_A, ZONE_B, "shared")
+        ):
+            return False
         threshold = self.number("heat_demand_watts")
         stale_min = self.number("fan_sensor_stale_minutes")
         seen_value = False

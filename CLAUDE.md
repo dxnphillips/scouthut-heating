@@ -733,7 +733,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   thresholds get tuned from.
 - **Sensor-loss fail directions differ by season on purpose**: winter fans
   keep running on loss while demand holds (fail-warm, heat is being made);
-  summer fans stop (fail-safe for people).
+  summer fans stop (fail-safe for people). **`_heat_demand` ignores phantom power
+  on frost-protected heaters (v1.26.1).** Demand reads the Rointe *effective
+  power*, which is **modelled** (100/50 % of nominal) when a device reports no
+  real value (Q17), so an idle heater on the 7 °C ice preset can briefly read
+  >20 W — not real heat. If no zone is on a heating preset (comfort/eco), demand
+  is False whatever the sensors say. Without this, a phantom reading on an ice
+  heater asserted demand and, coinciding with a brief ceiling/floor `dt None`,
+  took the *winter* sensor-loss path (keep running → **reverse**) instead of the
+  intended *summer* one (stop) — flipping the cooling fans to a full reversal on a
+  hot afternoon (field 2026-08-11: 4 spurious reversals, every heater idle on ice
+  in a 24 °C hall). The fix restores the documented summer-stop behaviour.
 - **Active hall heating forces the reverse/destrat regime, even under summer
   lockout.** Forward = down-air = wind-chill, so blowing it on a hall that is
   being *heated* (a boost or booking sets comfort/eco) would chill the people

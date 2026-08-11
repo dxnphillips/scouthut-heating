@@ -407,15 +407,36 @@ def test_stale_zero_power_reading_is_still_no_demand():
 
 
 def test_fresh_power_above_threshold_is_demand():
+    from scout_testkit import PRESET_COMFORT, ZA
+
     ctrl, hass = _power_ctrl()
+    ctrl.applied[ZA] = PRESET_COMFORT  # a zone is being driven to heat
     hass.states.set("sensor.rointe_power", "450")
     assert ctrl._heat_demand() is True
 
 
 def test_frozen_high_reading_cannot_assert_demand():
+    from scout_testkit import PRESET_COMFORT, ZA
+
     ctrl, hass = _power_ctrl()
+    ctrl.applied[ZA] = PRESET_COMFORT
     hass.states.set("sensor.rointe_power", "450")
     _age(hass, "sensor.rointe_power", 600)  # frozen mid-heating weeks ago
+    assert ctrl._heat_demand() is False
+
+
+def test_phantom_power_on_all_ice_is_not_demand():
+    # Field 2026-08-11: every heater idle on ice (7 °C) in a 24 °C room, yet a
+    # sensor read >20 W (the Rointe's MODELLED power). With no zone driven to
+    # heat there is no real demand — else it flips the summer cooling fans to
+    # reverse for a full reversal on a hot afternoon.
+    from scout_testkit import PRESET_ICE, ZA, ZB
+
+    ctrl, hass = _power_ctrl()
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl.applied[ZB] = PRESET_ICE
+    ctrl.applied["shared"] = PRESET_ICE
+    hass.states.set("sensor.rointe_power", "450")  # modelled/phantom
     assert ctrl._heat_demand() is False
 
 
