@@ -13,14 +13,59 @@ from scout_testkit import (
     PRESET_ECO,
     PRESET_ICE,
     ZA,
+    ZB,
+    hall_temp,
     make_controller,
     motion,
     on,
+    zone_temp,
 )
 
 
 def _set(hass, entity, state):
     hass.states.set(entity, state)
+
+
+# --- Night arm heats a still sleepover with NO booking and NO motion --------
+def test_armed_night_heats_a_still_sleepover_without_motion():
+    # People asleep inside (Night-armed), nothing on the calendar, no PIR trips:
+    # the alarm is the only presence signal, and a cold hall must still heat
+    # rather than frost-protecting a room full of sleepers.
+    ctrl, hass = make_controller()
+    _set(hass, E["alarm_main"], "armed_night")
+    hall_temp(ctrl, 16.0)  # genuinely cold
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "sleepover"
+
+
+def test_armed_night_warm_room_still_ices():
+    # The room-wants-heat gate still applies: a warm night-armed hall lands on
+    # ice (frees the cooling fans), it is not force-heated by presence alone.
+    ctrl, hass = make_controller()
+    _set(hass, E["alarm_main"], "armed_night")
+    hall_temp(ctrl, 21.0)  # already warm
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "occupied_warm"
+
+
+def test_armed_away_without_motion_ices_not_a_sleepover():
+    # Away arm is an EMPTY building — it must never read as a sleepover.
+    ctrl, hass = make_controller()
+    _set(hass, E["alarm_main"], "armed_away")
+    hall_temp(ctrl, 16.0)
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+
+
+def test_night_arm_is_per_zone_office_does_not_heat_hall():
+    # Only the office panel is night-armed (someone sleeping in the office):
+    # the hall, on the main panel, is not heated by it.
+    ctrl, hass = make_controller()
+    _set(hass, E["alarm_office"], "armed_night")
+    hall_temp(ctrl, 16.0)
+    zone_temp(ctrl, ZB, 16.0)  # office cold too
+    assert ctrl._desired_zone(ZA) == PRESET_ICE  # hall not night-present
+    assert ctrl._desired_zone(ZB) == PRESET_COMFORT  # office sleepover heats
+    assert ctrl._preset_reason[ZB] == "sleepover"
 
 
 # --- Per-zone ---------------------------------------------------------------

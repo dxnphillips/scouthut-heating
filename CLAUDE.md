@@ -908,11 +908,25 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   05:33 export caught the hall at 17.5 °C on a cold night because the sleeping
   scouts tripped no PIR → `booking_quiet` → eco). A genuinely empty booking (no
   motion, no override, not night-armed) still drops to eco. Bare occupancy heats
-  only while presence is confirmed (recent motion / the occupied override) and
-  stops when it lapses. Reason strings: `booking` / `preheat` / `booking_warm` / `booking_eco` /
+  only while presence is confirmed (recent motion, the occupied override, **or a
+  Night/Home alarm arm** — v1.26.0) and stops when it lapses. **The night-arm
+  presence now heats WITHOUT a booking too** (v1.26.0, field 2026-08-11): a
+  sleepover with nothing on the calendar used to frost-protect a room full of
+  sleepers, because `_alarm_present` was only consulted inside the booking branch
+  (`booking_quiet`) — bare occupancy checked only motion/override. A Night/Home
+  arm is the same positive-presence signal the PIR can't see when everyone is
+  still, so it now drives the bare-occupancy heat trigger as well: a night-armed
+  cold zone heats to comfort (reason `sleepover`), a warm one still lands on ice
+  (`occupied_warm` — the `_room_wants_heat` gate is unchanged), and an *away* arm
+  is still an empty building (iced upstream, never a sleepover). Per-zone via
+  `ZONE_ALARM`: the hall/shared read the main panel, the office its own — so a
+  night arm heats only the zones whose panel is armed. Shared is deliberately
+  unchanged (it still needs a booking or shared-area motion — a sleepover warms
+  the toilets when someone actually gets up, not all night). Reason strings:
+  `booking` / `preheat` / `booking_warm` / `booking_eco` /
   `booking_quiet` / `preheat_coast` / `booking_coast` for bookings; `motion` /
-  `occupied_override` (heating) and `occupied_warm` (warm → ice) for occupancy; the
-  `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
+  `occupied_override` / `sleepover` (heating) and `occupied_warm` (warm → ice) for
+  occupancy; the `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
   comfort too now** (2026-08-07): `_desired_shared` warms the block to
   `shared_comfort_temp` (via `_shared_wants_heat`, the shared analog of the gate —
   coldest shared probe below target, err-warm on unreadable) whenever it is
@@ -1123,7 +1137,7 @@ exactly as `zone_a_doors` protects the hall). **Reset `zone_b_heatloss_pct` to
 
 - `coordinator.py` — single 30 s reconciler; priority ladder in
   `_desired_zone` (disabled/hold → heating-paused → opening → boost → alarm →
-  booking/pre-heat → override/motion → empty). Booking and occupancy both heat
+  booking/pre-heat → override/motion/night-arm → empty). Booking and occupancy both heat
   only when `_room_wants_heat(zone, target)` (room below target); a warm room
   lands on ice. No seasonal rung — the season no longer gates heat.
 - `preheat.py` — pure optimum-start maths (learned min/°C rates, Newton
