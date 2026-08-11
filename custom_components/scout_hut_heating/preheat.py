@@ -29,6 +29,24 @@ MAX_RATE = 60.0
 # estimate settles after a handful of bookings but still tracks the seasons.
 ALPHA = 0.3
 
+# Warm-up self-protection (2026-08-11), the fail-safe mirror of the cool-off
+# guards. The dangerous corruption here is the OPPOSITE direction: a warm-up
+# implying the room heats too FAST (low min/°C) shortens the pre-heat lead and
+# risks a COLD ARRIVAL — the exact failure pre-heat exists to prevent. A rise
+# faster than the radiators can deliver is free gain (solar on the big roof,
+# occupancy, unattributed fan delivery of stored ceiling heat), most likely in
+# the summer in which these rates are first being learned.
+#   * Robust EWMA: no single sample may move the rate more than this fraction of
+#     its value, so one solar-boosted climb can only nudge it, never yank it to
+#     the floor. Symmetric; no seed problem (it only slows the learn-down).
+MAX_RATE_STEP_FRAC = 0.25
+#   * Out-of-family FAST reject: a sample implying heating >3x faster than the
+#     LEARNED rate is free gain, not the radiators — reject it whole. Gated to an
+#     established rate (learned meaningfully below the seed) so it never blocks
+#     the initial learn-down from the seed, where the real rates (25-46) sit.
+RATE_OUTLIER_RATIO = 3.0
+WARMUP_ESTABLISHED_FRAC = 0.9  # "established" once pulled >10% below the MAX_RATE seed
+
 # Ignore warm-up samples with less rise than this (°C): the Rointe room
 # readings are coarse and cloud-lagged, so small rises are mostly noise.
 MIN_SAMPLE_RISE = 1.0
@@ -97,6 +115,29 @@ MIN_COOL_SAMPLE_GAP = 4.0
 # high-loss reading down (which would shorten the lead and risk a cold
 # arrival).
 MAX_COOL_TICK_DROP = 1.5
+
+# Out-of-family guard (2026-08-11). Once the EWMA has been learned down to a real
+# baseline, a sample implying a loss rate a large multiple ABOVE it is not the
+# fabric — the fabric cannot suddenly lose 3x faster — it is an unsensored opening
+# (a window/door with no contact to raise the opening guard, the office's standing
+# problem) or a probe glitch. Reject the whole sample rather than let one event
+# corrupt the constant, and let the caller surface it ("a window is probably
+# open"). Self-gating: at the coarse 25 seed a 3x multiple (0.75) exceeds MAX_COOL_K
+# (0.5) so it can never fire, so this only bites once there IS a trustworthy low
+# baseline to be out-of-family against — exactly when it is safe. The ratio is kept
+# generous so a genuine winter doubling (wind/infiltration, ~2x) still folds in, and
+# only a physically-impossible reading is rejected; the leaky hall, which CAN lose
+# fast and has real contact sensors anyway, rarely trips it.
+COOL_OUTLIER_RATIO = 3.0
+
+# Robust update: no single sample may move the learned constant more than this
+# fraction of its current value. A genuine sustained change (many consistent
+# samples) still gets there over a handful of folds, but one anomalous reading that
+# slips the outlier test can only nudge the baseline, never yank it. Bounds
+# corruption in BOTH directions — including the dangerous one (a spuriously-low
+# reading shortening the lead toward a cold arrival), which the outlier ratio,
+# being one-sided (high only), does not.
+MAX_COOL_STEP_FRAC = 0.25
 
 # When the weather entity is unreadable, predict idle-gap cooling against a
 # cold-ish outdoor rather than skipping the prediction: err warm, the
@@ -204,8 +245,41 @@ def updated_rate(rate: float, minutes_elapsed: float, temp_rise: float) -> float
         return rate
     observed = minutes_elapsed / temp_rise
     observed = max(MIN_RATE, min(MAX_RATE, observed))
+    # Out-of-family FAST: heating far quicker than the learned rate is free gain
+    # (solar/occupancy/unattributed fan), not the radiators -> reject the sample
+    # so it can't shorten the pre-heat lead toward a cold arrival.
+    if warmup_rate_is_outlier(rate, observed):
+        return rate
     new = rate + ALPHA * (observed - rate)
+    # Robust: cap how far one sample can move the rate, either direction.
+    new = max(rate * (1 - MAX_RATE_STEP_FRAC), min(rate * (1 + MAX_RATE_STEP_FRAC), new))
     return max(MIN_RATE, min(MAX_RATE, new))
+
+
+def warmup_observed_rate(minutes_elapsed: float, temp_rise: float) -> float | None:
+    """The observed minutes-per-°C for a warm-up, clamped, or None if unusable.
+
+    Mirrors what ``updated_rate`` folds, so the coordinator can flag the same
+    out-of-family sample for the audit without re-deriving the arithmetic.
+    """
+    if minutes_elapsed <= 0 or temp_rise <= 0:
+        return None
+    return max(MIN_RATE, min(MAX_RATE, minutes_elapsed / temp_rise))
+
+
+def warmup_rate_is_outlier(rate: float, observed: float) -> bool:
+    """Whether a warm-up is implausibly faster than the established learned rate.
+
+    True means "the room rose faster than the radiators can drive it" — free gain
+    (solar, occupancy, fan-delivered ceiling heat), which would corrupt the rate
+    LOW and shorten the lead toward a cold arrival. Judged only once the rate is
+    established (``< WARMUP_ESTABLISHED_FRAC`` of the seed): during the initial
+    learn-down the seed sits close to the real rates, so an early reject would
+    block legitimate learning; the robust step cap protects that phase instead.
+    """
+    if rate >= MAX_RATE * WARMUP_ESTABLISHED_FRAC:
+        return False  # still at the seed — not yet a trustworthy baseline
+    return observed > 0 and observed < rate / RATE_OUTLIER_RATIO
 
 
 def updated_cooling_k(
@@ -236,5 +310,34 @@ def updated_cooling_k(
         return k
     observed = temp_drop / (hours_elapsed * avg_gap)
     observed = max(MIN_COOL_K, min(MAX_COOL_K, observed))
+    # Out-of-family: implausibly high vs the established baseline -> an opening or
+    # glitch, not the fabric. Reject the whole sample (leave k untouched).
+    if cooling_sample_is_outlier(k, observed):
+        return k
     new = k + ALPHA * (observed - k)
+    # Robust: cap how far one fold can move the baseline, so no single reading can
+    # yank it (only a sustained run of consistent samples moves it far).
+    new = max(k * (1 - MAX_COOL_STEP_FRAC), min(k * (1 + MAX_COOL_STEP_FRAC), new))
     return max(MIN_COOL_K, min(MAX_COOL_K, new))
+
+
+def cooling_observed_k(hours_elapsed: float, temp_drop: float, avg_gap: float) -> float | None:
+    """The raw observed loss fraction for a cool-off, or None if unusable.
+
+    Kept separate so the coordinator can judge the same value the EWMA fold sees
+    (for the out-of-family notification) without duplicating the arithmetic.
+    """
+    if hours_elapsed <= 0 or avg_gap <= 0:
+        return None
+    return max(MIN_COOL_K, min(MAX_COOL_K, temp_drop / (hours_elapsed * avg_gap)))
+
+
+def cooling_sample_is_outlier(k: float, observed: float) -> bool:
+    """Whether an observed loss fraction is implausibly far above the baseline k.
+
+    True means "the fabric cannot lose this fast — something (an unsensored
+    opening, a glitch) changed": reject the sample and surface it. Only meaningful
+    once k is a real learned baseline; at the coarse seed the MAX_COOL_K clamp
+    keeps any observed below the ratio, so it cannot fire there.
+    """
+    return k > 0 and observed > COOL_OUTLIER_RATIO * k

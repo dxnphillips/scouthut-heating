@@ -54,9 +54,9 @@ def test_rate_update_ignores_tiny_rises():
 
 
 def test_rate_update_clamps_wild_observations():
-    # 300 min for 1 °C would be 300 min/°C; clamped observation (60) pulls
-    # the estimate up by at most alpha * (60 - 20).
-    assert updated_rate(20, 300, 1) == 32
+    # 300 min for 1 °C would be 300 min/°C; the observation clamps to 60, and
+    # alpha would pull 20 -> 32, but the 25 % robust step cap holds it to 25.
+    assert updated_rate(20, 300, 1) == pytest.approx(25.0)
 
 
 # --- Coordinator wiring ----------------------------------------------------------
@@ -243,6 +243,73 @@ def test_updated_cooling_k_thresholds():
     assert updated_cooling_k(0.2, 0.2, 2, 8) == 0.2  # duration too short
     assert updated_cooling_k(0.2, 2, 2, 2) == 0.2  # gap too small to normalise
     assert updated_cooling_k(0.2, 2, 2, 10) == pytest.approx(0.17)  # observed 0.1/h
+
+
+def test_out_of_family_sample_is_rejected_whole():
+    # An insulated office at a learned 5 %/h can't suddenly lose 33 %/h — that's an
+    # open window, not the fabric. The sample must be rejected, k left untouched.
+    from custom_components.scout_hut_heating.preheat import (
+        cooling_sample_is_outlier,
+        cooling_observed_k,
+        updated_cooling_k,
+    )
+
+    # drop 1.0 over 0.5 h at gap 6 -> observed 0.333 (33 %/h), 6.7x the 0.05 baseline.
+    assert cooling_observed_k(0.5, 1.0, 6.0) == pytest.approx(0.3333, abs=1e-3)
+    assert cooling_sample_is_outlier(0.05, 0.3333) is True
+    assert updated_cooling_k(0.05, 0.5, 1.0, 6.0) == 0.05  # rejected, unchanged
+
+    # A genuine winter doubling (~2x) is NOT an outlier and still folds in.
+    assert cooling_sample_is_outlier(0.05, 0.10) is False
+    # At the coarse seed the MAX_COOL_K clamp keeps observed below the ratio, so
+    # the guard can never fire before a real low baseline exists.
+    assert cooling_sample_is_outlier(0.25, 0.5) is False
+
+
+def test_single_sample_cannot_yank_the_baseline():
+    # In-family but large: one sample may only nudge the EWMA a bounded fraction,
+    # never leap it. k 0.10, observed 0.25 (2.5x, under the 3x outlier line) would
+    # fold to 0.145 unclamped; the 25 % step cap holds it to 0.125.
+    from custom_components.scout_hut_heating.preheat import updated_cooling_k
+
+    assert updated_cooling_k(0.10, 0.5, 1.25, 10.0) == pytest.approx(0.125)
+
+
+def test_warmup_fast_outlier_is_rejected_once_established():
+    # A learned 40 min/°C hall that suddenly reads 8 min/°C (5x faster) is free
+    # gain (solar/occupancy), not the radiators: reject rather than corrupt the
+    # rate LOW and shorten the lead toward a cold arrival.
+    from custom_components.scout_hut_heating.preheat import (
+        updated_rate,
+        warmup_rate_is_outlier,
+    )
+
+    # 2 °C in 16 min -> 8 min/°C, 5x faster than the 40 baseline.
+    assert warmup_rate_is_outlier(40.0, 8.0) is True
+    assert updated_rate(40.0, 16.0, 2.0) == 40.0  # rejected, unchanged
+    # A genuinely brisk-but-plausible warm-up (2x) still folds in.
+    assert warmup_rate_is_outlier(40.0, 20.0) is False
+
+
+def test_warmup_outlier_does_not_fire_at_the_seed():
+    # At the 60 seed the real rates (25-46) sit close, so an early fast reject
+    # would block legitimate learning-down: the guard stays off until established.
+    from custom_components.scout_hut_heating.preheat import (
+        updated_rate,
+        warmup_rate_is_outlier,
+    )
+
+    assert warmup_rate_is_outlier(60.0, 18.0) is False  # not established -> allowed
+    assert updated_rate(60.0, 18.0, 1.0) == pytest.approx(60 + 0.3 * (18 - 60) * 1, abs=2)
+
+
+def test_warmup_single_sample_cannot_yank_the_rate():
+    # A low learned rate (10) must not be yanked up by one anomalously slow
+    # sample: observed 40 would fold to 19 unclamped; the 25 % step cap holds it
+    # to 12.5 (a slow sample is fail-safe, but still shouldn't leap the rate).
+    from custom_components.scout_hut_heating.preheat import updated_rate
+
+    assert updated_rate(10.0, 40.0, 1.0) == pytest.approx(12.5)
 
 
 def test_cooling_prediction_never_goes_below_the_frost_floor():

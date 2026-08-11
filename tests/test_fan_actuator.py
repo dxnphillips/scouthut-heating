@@ -320,6 +320,36 @@ def test_wall_switch_power_cycle_recovers_automatically():
     assert hass.states.get(MASTER).state == "on"  # re-commanded
 
 
+def test_fast_reboot_blip_between_ticks_does_not_latch():
+    # Field 2026-08-08: the master went `unavailable` at 00:32:08 then `off` at
+    # 00:32:09 — a ~1 s power blip too brief for the 30 s reconcile poll to catch
+    # the unavailable state. The poll saw a straight available->off and latched a
+    # false master_off fault. The state-change event fires for the transient
+    # unavailability even with no coincident reconcile, so the event handler's
+    # _note_fan_master_state must capture it and let the next tick recover.
+    from scout_testkit import PRESET_COMFORT, ZA, advance
+
+    ctrl, hass = fan_controller()
+    ctrl.applied[ZA] = PRESET_COMFORT  # heat demand via the fallback path
+    run(ctrl._reconcile_fans())  # fans commanded on
+    assert ctrl.fan_master_expected is True
+
+    # The reboot blip: the event handler sees `unavailable` (then `off`), but no
+    # reconcile coincides with the unavailable window — the poll only ever sees
+    # the master already back and off.
+    ctrl._note_fan_master_state("unavailable")
+    ctrl._note_fan_master_state("off")
+    off(hass, MASTER)  # power back, output defaulted off
+
+    run(ctrl._reconcile_fans())  # same-tick recovery, not a latch
+    assert ctrl.fan_fault_latched is False
+    assert hass.states.get(MASTER).state == "on"  # re-commanded
+
+    advance(ctrl, 2)  # past FAN_FAULT_GRACE: still healthy, no delayed latch
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_fault_latched is False
+
+
 def test_manual_master_kill_still_latches_with_fault_boolean_mapped():
     # A mapped-but-clear fault boolean must not disable the unexpected-off
     # inference: the Shelly's script cannot see a manual master kill.

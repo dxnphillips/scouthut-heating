@@ -57,10 +57,14 @@ from .preheat import (
     MIN_COOL_SAMPLE_HOURS,
     MIN_SAMPLE_MINUTES,
     MIN_SAMPLE_RISE,
+    cooling_observed_k,
+    cooling_sample_is_outlier,
     hold_margin,
     required_lead_minutes,
     updated_cooling_k,
     updated_rate,
+    warmup_observed_rate,
+    warmup_rate_is_outlier,
 )
 from .const import (
     COOLING_DIRECTION_HYST,
@@ -107,6 +111,7 @@ from .const import (
     NOTIFY_FAN_SENSOR_LOST,
     NOTIFY_FAN_TOO_HOT,
     NOTIFY_INTERNAL_DOOR,
+    NOTIFY_OPENING_INFERRED,
     NOTIFY_SEASONAL,
     NOTIFY_SHARED_OPENING,
     NOTIFY_ZONE_HOLD,
@@ -298,6 +303,7 @@ DRIVE_COMFORT_TARGET_KEY = {
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
+ZONE_LABEL = {ZONE_A: "hall", ZONE_B: "office"}
 
 MOTION_AREAS = {
     "hall": CONF_MOTION_HALL,
@@ -431,6 +437,10 @@ class ScoutController:
             ZONE_B: None,
         }
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
+        # Latch per zone: an out-of-family cool-off (loss implausibly above the
+        # learned fabric baseline) means an unsensored opening — push once on the
+        # rising edge, clear on the next in-family sample (window closed).
+        self._opening_inferred: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
 
         # Rolling (timestamp, coldest-hall-reading) samples for the "will it get
         # there on its own?" coast predictor (coast.py). Only accumulated while
@@ -495,6 +505,7 @@ class ScoutController:
         self._drive_driven: set[str] = set()
         self._drive_rejected: set[str] = set()
         self._drive_reject_notified = False
+        self._opening_notified: set[str] = set()
         self._drive_response_ref: tuple[datetime, float | None, float | None] | None = None
         self._drive_noresp_notified = False
 
@@ -591,12 +602,16 @@ class ScoutController:
             if self.config.get(key)
         }
 
+        fan_master = self.config.get(CONF_FAN_MASTER)
+
         @callback
         def _handle_state_event(event: Event) -> None:
             entity_id = event.data.get("entity_id")
             new_state = event.data.get("new_state")
             if entity_id in motion_entities and new_state is not None and new_state.state == "on":
                 self._feed_motion(motion_entities[entity_id], dt_util.utcnow())
+            if entity_id == fan_master:
+                self._note_fan_master_state(new_state.state if new_state else None)
             self.async_request_reconcile()
 
         if watched:
@@ -1252,6 +1267,18 @@ class ScoutController:
             rate_key = self._warmup_rate_key(zone, assisted=assisted)
             old_rate = self.number(rate_key)
             new_rate = updated_rate(old_rate, minutes, rise)
+            # Free gain (solar/occupancy/fan-delivered ceiling heat) makes a
+            # warm-up read implausibly fast; folding it would corrupt the rate
+            # LOW and shorten the lead toward a cold arrival. Rejected by
+            # updated_rate; flagged here for the audit (no push — the sun helping
+            # is not something to act on).
+            quality = rise >= MIN_SAMPLE_RISE and minutes >= MIN_SAMPLE_MINUTES
+            observed = warmup_observed_rate(minutes, rise) if quality else None
+            outlier = (
+                quality
+                and observed is not None
+                and warmup_rate_is_outlier(old_rate, observed)
+            )
             self.audit.record(
                 "warmup_sample",
                 now,
@@ -1265,7 +1292,8 @@ class ScoutController:
                 ticks=ticks,
                 o1_avg_w=(watt_sum / watt_n) if watt_n else None,
                 reached_target=done,
-                accepted=rise >= MIN_SAMPLE_RISE and minutes >= MIN_SAMPLE_MINUTES,
+                accepted=quality and not outlier,
+                outlier=outlier,
                 old_rate=old_rate,
                 new_rate=new_rate,
             )
@@ -1435,6 +1463,21 @@ class ScoutController:
         k = current / 100
         new_k = updated_cooling_k(k, hours, drop, gap, max_tick_drop)
         new = current if new_k == k else new_k * 100
+        # A quality sample whose raw loss is implausibly above the learned baseline
+        # is an unsensored opening (or a probe glitch), not the fabric — it was NOT
+        # folded in (updated_cooling_k rejected it), and the latch drives the
+        # "window/door open?" push. A quality, in-family sample clears the latch
+        # (the opening closed); a poor-quality/noise sample leaves it untouched.
+        quality_ok = (
+            drop >= MIN_COOL_SAMPLE_DROP
+            and hours >= MIN_COOL_SAMPLE_HOURS
+            and gap >= MIN_COOL_SAMPLE_GAP
+            and max_tick_drop < MAX_COOL_TICK_DROP
+        )
+        observed = cooling_observed_k(hours, drop, gap)
+        outlier = quality_ok and observed is not None and cooling_sample_is_outlier(k, observed)
+        if quality_ok:
+            self._opening_inferred[zone] = outlier
         self.audit.record(
             "cooloff_sample",
             self._now(),
@@ -1442,12 +1485,8 @@ class ScoutController:
             hours=hours,
             drop=drop,
             gap=gap,
-            accepted=(
-                drop >= MIN_COOL_SAMPLE_DROP
-                and hours >= MIN_COOL_SAMPLE_HOURS
-                and gap >= MIN_COOL_SAMPLE_GAP
-                and max_tick_drop < MAX_COOL_TICK_DROP
-            ),
+            accepted=quality_ok and not outlier,
+            outlier=outlier,
             old_pct=current,
             new_pct=new,
             fan_ticks=fan_ticks,
@@ -1459,6 +1498,70 @@ class ScoutController:
         write = getattr(entity, "write_value", None)
         if write is not None and new != current:
             write(new)
+
+    async def _update_opening_inferred_alarm(self) -> None:
+        """Surface an inferred unsensored opening (rising edge), clear on close.
+
+        The learning already protected itself (the out-of-family sample was not
+        folded); this tells a human WHY a zone is bleeding heat, on the zones we
+        cannot sense directly (the office has no contact). Fires a persistent
+        notification AND a push to every companion-app device, once per episode.
+        """
+        for zone in (ZONE_A, ZONE_B):
+            inferred = self._opening_inferred.get(zone, False)
+            notified = zone in self._opening_notified
+            if inferred and not notified:
+                self._opening_notified.add(zone)
+                self.audit.record(
+                    "opening_inferred",
+                    self._now(),
+                    zone=zone,
+                    heatloss_pct=self.number(f"{zone}_heatloss_pct"),
+                )
+                title = "🏕 Scout Hut – window or door open?"
+                message = (
+                    f"The {ZONE_LABEL[zone]} is losing heat far faster than its "
+                    "fabric can — a window or door has probably been left open. "
+                    "The reading was ignored so it can't corrupt the learned "
+                    "heat-loss, but it's worth a check."
+                )
+                persistent_notification.async_create(
+                    self.hass,
+                    message,
+                    title=title,
+                    notification_id=NOTIFY_OPENING_INFERRED[zone],
+                )
+                await self._push_companion(title, message)
+            elif not inferred and notified:
+                self._opening_notified.discard(zone)
+                persistent_notification.async_dismiss(
+                    self.hass, NOTIFY_OPENING_INFERRED[zone]
+                )
+
+    async def _push_companion(self, title: str, message: str) -> None:
+        """Push to every device with the Home Assistant companion app installed.
+
+        Enumerates the ``notify.mobile_app_*`` services the companion app
+        registers per device and calls each. No-op when none are installed (the
+        persistent notification still shows). Best-effort: a failing or missing
+        target never breaks the reconcile.
+        """
+        try:
+            services = self.hass.services.async_services().get("notify", {})
+        except Exception:  # noqa: BLE001
+            return
+        for service in list(services):
+            if not str(service).startswith("mobile_app_"):
+                continue
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service,
+                    {"title": title, "message": message},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("companion push to %s failed: %s", service, err)
 
     async def _async_seasonal_check(self) -> None:
         weather = self.config.get(CONF_WEATHER)
@@ -1799,6 +1902,7 @@ class ScoutController:
                     zone: _iso(sample[0]) if sample else None
                     for zone, sample in self._cooloff_start.items()
                 },
+                "opening_inferred": dict(self._opening_inferred),
                 "last_lead_calc": self._last_lead_calc,
             },
             "state": {
@@ -2418,6 +2522,7 @@ class ScoutController:
             await self._reconcile_hall_temps()
             self._update_warmup_learning()
             self._update_cooloff_learning()
+            await self._update_opening_inferred_alarm()
             await self._reconcile_shared()
             await self._reconcile_drive()
             await self._reconcile_water()
@@ -3185,7 +3290,7 @@ class ScoutController:
                 await self._drive_push(
                     climate, number, pushed, reassert=True, force=entering
                 )
-                self._check_setpoint_readback(climate, pushed, now)
+                self._check_setpoint_readback(climate, pushed, probe, now)
                 # Cap-pinned watch: at the cap AND still a full step short.
                 if pushed >= cap - 1e-9 and (target - probe) >= DRIVE_STEP:
                     if self._drive_cap_since.get(climate) is None:
@@ -3282,7 +3387,7 @@ class ScoutController:
         )
 
     def _check_setpoint_readback(
-        self, climate: str, pushed: float, now: datetime
+        self, climate: str, pushed: float, probe: float | None, now: datetime
     ) -> None:
         """Track whether a driven heater has adopted the setpoint we pushed (Q20a).
 
@@ -3292,15 +3397,26 @@ class ScoutController:
         setpoint is unreadable, the check abstains (drops the heater from the
         rejected set) so ordinary lag never false-flags.
 
-        A divergence once settled is only flagged when the heater is NOT actively
-        heating. The phantom-push failure (v1.14.2) is "the command never reached
-        the radiator", whose signature is a heater sitting IDLE at a stale-low
-        setpoint. A heater that reports `hvac_action == heating` has demonstrably
-        accepted a command and is working toward it — its live setpoint merely
-        lagging our push by a quantum through the slow cloud while the drive
-        staircases upward (2026-08-08 export: all four hall heaters flagged while
-        actively heating, live setpoint one 0.5 step behind the pushed value). Its
-        setpoint IS landing, just late, so it is not the fault this check is for.
+        A divergence once settled is only genuine when the heater is BOTH short of
+        target AND idle. The phantom-push failure (v1.14.2) is "the command never
+        reached the radiator", whose signature is a heater sitting idle at a
+        stale-low setpoint *while the room is still cold*. Two independent proofs
+        that the command DID land, either of which clears the flag:
+
+          * the heater's own probe has reached the pushed target (``probe >=
+            pushed - tol``): it is idle because it is SATISFIED, not because it
+            rejected us — reaching the target could only happen if the setpoint was
+            adopted (2026-08-09 export: three hall heaters flagged while idle at
+            the 20.0 target the room had reached, their live setpoint merely
+            lagging through the cloud — the action gate can't catch a *satisfied*
+            heater because a satisfied heater is idle, not heating);
+          * the heater reports ``hvac_action == heating``: it is demonstrably
+            working toward target, its live setpoint just lagging our push by a
+            quantum while the drive staircases upward (2026-08-08 export: all four
+            hall heaters flagged mid-climb, live setpoint one 0.5 step behind).
+
+        Only a heater that is short of the pushed target AND has gone idle AND is
+        not reporting our setpoint is genuinely not accepting it.
         """
         at = self._drive_pushed_at.get(climate)
         if (
@@ -3312,6 +3428,11 @@ class ScoutController:
             return
         reported = self._heater_setpoint(climate)
         if reported is None or abs(reported - pushed) <= DRIVE_SETPOINT_TOL:
+            self._drive_rejected.discard(climate)
+            return
+        # Reached the pushed target -> idle because satisfied, and the room could
+        # not have got there unless the setpoint landed. Not the fault this is for.
+        if probe is not None and probe >= pushed - DRIVE_SETPOINT_TOL:
             self._drive_rejected.discard(climate)
             return
         # Short of the pushed setpoint — but a heater actively heating has clearly
@@ -3769,6 +3890,24 @@ class ScoutController:
         """
         return self._mapped_fault() or self.fan_fault_latched
 
+    @callback
+    def _note_fan_master_state(self, state: str | None) -> None:
+        """Record a fan-master state seen between reconcile ticks.
+
+        The master can reboot (wall switch, power blip) faster than the 30 s
+        reconcile poll: the Shelly goes unavailable then defaults its output
+        off in ~1 s (field-observed 2026-08-08: `unavailable` at 00:32:08,
+        `off` at 00:32:09), so a poll tick lands after the blip and sees only
+        a straight available->off — which would latch a false `master_off`
+        fault. The state-change event fires for the transient unavailability
+        even when no reconcile coincides with it, so recording it here lets the
+        next reconcile recognise the reboot and re-command instead of latching.
+        Mirrors the `not master_known` branch in `_fan_fault`, which catches the
+        same reboot when a poll *does* happen to see the unavailable state.
+        """
+        if state in ("unavailable", "unknown"):
+            self._fan_master_seen_unavailable = True
+
     def _fan_fault(self) -> bool:
         """Evaluate (and, for the inferred case, latch) the fan fault.
 
@@ -3780,7 +3919,10 @@ class ScoutController:
         reboot (wall switch, power cut) with outputs defaulting off: the
         expectation is reset so the reconciler simply re-establishes the wanted
         state on this same tick, instead of latching or deadlocking. The
-        inferred latch never auto-rearms; it clears only via async_fan_rearm.
+        unavailability is caught either by a poll landing on it (the
+        `not master_known` branch here) or, for a reboot too brief for a poll,
+        by `_note_fan_master_state` off the state-change event. The inferred
+        latch never auto-rearms; it clears only via async_fan_rearm.
         """
         now = self._now()
         in_grace = (

@@ -56,6 +56,51 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   rejected, with inputs), pre-heat decision, booking start/end outcome,
   preset change (with reason), fan change (with occupied/warm/ΔT/watts),
   seasonal/water/fault event is recorded.
+- **The cool-off learning is self-protecting against unsensored openings
+  (v1.25.4).** Two layers on top of the gap/tick guards. (1) *Robust EWMA*
+  (`MAX_COOL_STEP_FRAC` = 0.25): no single cool-off may move a zone's
+  `heatloss_pct` more than 25 % of its current value, so one anomalous reading
+  can only nudge the baseline, never yank it (the office was repeatedly leaping
+  5→16 %/h off one open-window sample). Bounds BOTH directions, including the
+  dangerous low one (a spuriously-tight reading shortening the lead → cold
+  arrival). (2) *Out-of-family reject + alert* (`COOL_OUTLIER_RATIO` = 3.0):
+  once the EWMA is a real learned baseline, a sample implying a loss rate >3× it
+  is physically impossible for the fabric — it is an open window/door with no
+  contact (the office has none) or a probe glitch, so the whole sample is
+  rejected (`updated_cooling_k` returns k unchanged) and `_opening_inferred[zone]`
+  latches. `_update_opening_inferred_alarm` pushes a *"window or door open?"*
+  notification to every companion-app device (`_push_companion` → every
+  `notify.mobile_app_*`) plus a persistent notification, once per episode,
+  cleared on the next in-family cool-off. Self-gating: at the coarse 25 seed a 3×
+  multiple (0.75) exceeds `MAX_COOL_K` (0.5), so it cannot fire until a
+  trustworthy low baseline exists — exactly when it is safe. The ratio is
+  generous (a genuine winter ~2× doubling still folds in), and the leaky hall
+  (which can lose fast and has real contacts) rarely trips it. `cooloff_sample`
+  now carries `outlier`; a new `opening_inferred` event records the edge. This
+  does NOT retire the office contact sensor — inference is after-the-fact and
+  can't tell a window from a probe unfreeze — it is the backstop for surfaces
+  that will never be wired.
+- **The warm-up learning is self-protecting too, in the OPPOSITE (dangerous)
+  direction (v1.25.5).** Cool-off corruption inflates loss = err warm = wasteful;
+  warm-up corruption makes the room look like it heats too FAST (low min/°C),
+  which *shortens* the pre-heat lead and risks a **cold arrival** — the exact
+  failure pre-heat exists to prevent, and most likely now because these rates are
+  first being learned in summer when solar gain on the big roof (plus occupancy,
+  plus fan-delivered ceiling heat) can make a warm-up read far faster than the
+  radiators alone. Two layers in `updated_rate`, mirroring cool-off: (1) *Robust
+  EWMA* (`MAX_RATE_STEP_FRAC` = 0.25) caps how far one sample moves the rate either
+  way — no seed problem, it only slows the legit learn-down. (2) *Out-of-family
+  FAST reject* (`RATE_OUTLIER_RATIO` = 3.0): a sample implying heating >3× faster
+  than the learned rate is free gain, not the radiators, so it is rejected whole.
+  Gated to an **established** rate (`WARMUP_ESTABLISHED_FRAC` = 0.9 — pulled >10 %
+  below the `MAX_RATE` 60 seed): at the seed the real rates (25–46) sit close
+  enough that an early reject would block legitimate learning-down, so during that
+  phase only the robust cap protects it. `warmup_sample` carries `outlier`;
+  **audit-only, no push** (the fan-attribution split already routes fan-assisted
+  climbs to the fan rate, and "the sun helped" is nothing to act on). The
+  model-derived values (booking-hold margin, drive feedforward) inherit this via
+  their learned inputs; the coast passive-rise predictor stays as-is (idle-only,
+  margin-guarded, transient, default-off).
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
@@ -67,7 +112,19 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   the blades take ~5 min to stop, so `DWELL_MS` must cover that, not 45 s; stall
   latch). HA must **never** re-command an unexpectedly-off fan master (that
   re-arms the Shelly's own latch) and only writes the direction relay while
-  the master is off.
+  the master is off. **A device reboot is exempt from the master-off fault**
+  (v1.25.2): a wall-switch flick or power blip takes the master `unavailable`
+  then `off` (outputs default off), which is not a manual kill — `_fan_fault`
+  resets the expectation and re-commands from scratch instead of latching. A
+  reconcile poll landing on the `unavailable` catches it, but a reboot briefer
+  than the 30 s poll would slip through as a straight available→off and latch a
+  false `master_off` (field 2026-08-08: master `unavailable` 00:32:08 → `off`
+  00:32:09, ~1 s, latched a phantom fault while the Shelly itself reported none —
+  the tell the owner spotted). `_note_fan_master_state`, called off the
+  master's state-change event (which fires even when no reconcile coincides with
+  the blip), records the transient unavailability so the next tick recognises the
+  reboot. A genuine stall-latch (the Shelly script opening the relay) leaves the
+  device online — no `unavailable` — so it still latches correctly.
 
 ## Open questions awaiting field data (with pre-agreed decision rules)
 
@@ -154,6 +211,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    cool-offs** (real losses presenting as steps through a coarse-reporting
    probe), raise the threshold — but each such sample has a meaningless rate
    anyway, so rejecting is the correct default.
+   **Backstopped 2026-08-11 (v1.25.4): the robust EWMA + out-of-family reject**
+   (`MAX_COOL_STEP_FRAC`, `COOL_OUTLIER_RATIO`, see the cool-off self-protection
+   bullet above) now stops one open-window sample corrupting the constant AND
+   pushes a "window/door open?" alert to every companion-app device — so the
+   office no longer silently re-inflates between manual resets while the contact
+   is unfitted. The contact (a) is still the proper fix; this is the safety net.
 5. **Calendar entity mid-event blips.** 2026-07-11 forensics: the calendar
    entity read not-running mid-event once (fans stopped 08:53 BST during a
    06:00–11:00 booking). Watch for `booking_end` + fresh `booking_start`
@@ -618,6 +681,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     This is the more fundamental fix: live-setpoint-vs-pushed was the laggiest
     possible signal; `action` reflects the real response. A stuck heater still gets
     caught (it goes idle at its stale setpoint → flagged).
+    **Satisfied-target guard (v1.25.3, 2026-08-09 daytime export).** The action gate
+    left one false-positive class uncaught: three hall heaters flagged while **idle
+    at the 20.0 target the room had already reached** (`demand` false, coldest 20.0),
+    their live setpoint merely lagging through the cloud. The action gate can't
+    rescue a *satisfied* heater because a satisfied heater is idle, not heating — yet
+    reaching the target could only happen if the pushed setpoint was **adopted**. So
+    the read-back now clears on a second independent proof-of-adoption: the heater's
+    own probe having reached the pushed target (`probe >= pushed − tol`). It flags
+    only a heater that is **short of target AND idle AND not reporting our setpoint**
+    — the genuine phantom-push signature (idle at a stale-low setpoint *while the room
+    is still cold*). Between them, the two proofs (probe reached target, or actively
+    heating) cover every way a landed command looks, leaving only real non-adoption.
+    The residual single-heater active-climb flag (one heater short+idle mid-climb as
+    the cloud lag brushes the 30-min window) stays a *widen the settle window* call
+    per the decision rule, not a tolerance change.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
