@@ -29,6 +29,24 @@ MAX_RATE = 60.0
 # estimate settles after a handful of bookings but still tracks the seasons.
 ALPHA = 0.3
 
+# Warm-up self-protection (2026-08-11), the fail-safe mirror of the cool-off
+# guards. The dangerous corruption here is the OPPOSITE direction: a warm-up
+# implying the room heats too FAST (low min/°C) shortens the pre-heat lead and
+# risks a COLD ARRIVAL — the exact failure pre-heat exists to prevent. A rise
+# faster than the radiators can deliver is free gain (solar on the big roof,
+# occupancy, unattributed fan delivery of stored ceiling heat), most likely in
+# the summer in which these rates are first being learned.
+#   * Robust EWMA: no single sample may move the rate more than this fraction of
+#     its value, so one solar-boosted climb can only nudge it, never yank it to
+#     the floor. Symmetric; no seed problem (it only slows the learn-down).
+MAX_RATE_STEP_FRAC = 0.25
+#   * Out-of-family FAST reject: a sample implying heating >3x faster than the
+#     LEARNED rate is free gain, not the radiators — reject it whole. Gated to an
+#     established rate (learned meaningfully below the seed) so it never blocks
+#     the initial learn-down from the seed, where the real rates (25-46) sit.
+RATE_OUTLIER_RATIO = 3.0
+WARMUP_ESTABLISHED_FRAC = 0.9  # "established" once pulled >10% below the MAX_RATE seed
+
 # Ignore warm-up samples with less rise than this (°C): the Rointe room
 # readings are coarse and cloud-lagged, so small rises are mostly noise.
 MIN_SAMPLE_RISE = 1.0
@@ -227,8 +245,41 @@ def updated_rate(rate: float, minutes_elapsed: float, temp_rise: float) -> float
         return rate
     observed = minutes_elapsed / temp_rise
     observed = max(MIN_RATE, min(MAX_RATE, observed))
+    # Out-of-family FAST: heating far quicker than the learned rate is free gain
+    # (solar/occupancy/unattributed fan), not the radiators -> reject the sample
+    # so it can't shorten the pre-heat lead toward a cold arrival.
+    if warmup_rate_is_outlier(rate, observed):
+        return rate
     new = rate + ALPHA * (observed - rate)
+    # Robust: cap how far one sample can move the rate, either direction.
+    new = max(rate * (1 - MAX_RATE_STEP_FRAC), min(rate * (1 + MAX_RATE_STEP_FRAC), new))
     return max(MIN_RATE, min(MAX_RATE, new))
+
+
+def warmup_observed_rate(minutes_elapsed: float, temp_rise: float) -> float | None:
+    """The observed minutes-per-°C for a warm-up, clamped, or None if unusable.
+
+    Mirrors what ``updated_rate`` folds, so the coordinator can flag the same
+    out-of-family sample for the audit without re-deriving the arithmetic.
+    """
+    if minutes_elapsed <= 0 or temp_rise <= 0:
+        return None
+    return max(MIN_RATE, min(MAX_RATE, minutes_elapsed / temp_rise))
+
+
+def warmup_rate_is_outlier(rate: float, observed: float) -> bool:
+    """Whether a warm-up is implausibly faster than the established learned rate.
+
+    True means "the room rose faster than the radiators can drive it" — free gain
+    (solar, occupancy, fan-delivered ceiling heat), which would corrupt the rate
+    LOW and shorten the lead toward a cold arrival. Judged only once the rate is
+    established (``< WARMUP_ESTABLISHED_FRAC`` of the seed): during the initial
+    learn-down the seed sits close to the real rates, so an early reject would
+    block legitimate learning; the robust step cap protects that phase instead.
+    """
+    if rate >= MAX_RATE * WARMUP_ESTABLISHED_FRAC:
+        return False  # still at the seed — not yet a trustworthy baseline
+    return observed > 0 and observed < rate / RATE_OUTLIER_RATIO
 
 
 def updated_cooling_k(

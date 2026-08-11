@@ -63,6 +63,8 @@ from .preheat import (
     required_lead_minutes,
     updated_cooling_k,
     updated_rate,
+    warmup_observed_rate,
+    warmup_rate_is_outlier,
 )
 from .const import (
     COOLING_DIRECTION_HYST,
@@ -1265,6 +1267,18 @@ class ScoutController:
             rate_key = self._warmup_rate_key(zone, assisted=assisted)
             old_rate = self.number(rate_key)
             new_rate = updated_rate(old_rate, minutes, rise)
+            # Free gain (solar/occupancy/fan-delivered ceiling heat) makes a
+            # warm-up read implausibly fast; folding it would corrupt the rate
+            # LOW and shorten the lead toward a cold arrival. Rejected by
+            # updated_rate; flagged here for the audit (no push — the sun helping
+            # is not something to act on).
+            quality = rise >= MIN_SAMPLE_RISE and minutes >= MIN_SAMPLE_MINUTES
+            observed = warmup_observed_rate(minutes, rise) if quality else None
+            outlier = (
+                quality
+                and observed is not None
+                and warmup_rate_is_outlier(old_rate, observed)
+            )
             self.audit.record(
                 "warmup_sample",
                 now,
@@ -1278,7 +1292,8 @@ class ScoutController:
                 ticks=ticks,
                 o1_avg_w=(watt_sum / watt_n) if watt_n else None,
                 reached_target=done,
-                accepted=rise >= MIN_SAMPLE_RISE and minutes >= MIN_SAMPLE_MINUTES,
+                accepted=quality and not outlier,
+                outlier=outlier,
                 old_rate=old_rate,
                 new_rate=new_rate,
             )

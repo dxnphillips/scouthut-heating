@@ -80,6 +80,27 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   does NOT retire the office contact sensor — inference is after-the-fact and
   can't tell a window from a probe unfreeze — it is the backstop for surfaces
   that will never be wired.
+- **The warm-up learning is self-protecting too, in the OPPOSITE (dangerous)
+  direction (v1.25.5).** Cool-off corruption inflates loss = err warm = wasteful;
+  warm-up corruption makes the room look like it heats too FAST (low min/°C),
+  which *shortens* the pre-heat lead and risks a **cold arrival** — the exact
+  failure pre-heat exists to prevent, and most likely now because these rates are
+  first being learned in summer when solar gain on the big roof (plus occupancy,
+  plus fan-delivered ceiling heat) can make a warm-up read far faster than the
+  radiators alone. Two layers in `updated_rate`, mirroring cool-off: (1) *Robust
+  EWMA* (`MAX_RATE_STEP_FRAC` = 0.25) caps how far one sample moves the rate either
+  way — no seed problem, it only slows the legit learn-down. (2) *Out-of-family
+  FAST reject* (`RATE_OUTLIER_RATIO` = 3.0): a sample implying heating >3× faster
+  than the learned rate is free gain, not the radiators, so it is rejected whole.
+  Gated to an **established** rate (`WARMUP_ESTABLISHED_FRAC` = 0.9 — pulled >10 %
+  below the `MAX_RATE` 60 seed): at the seed the real rates (25–46) sit close
+  enough that an early reject would block legitimate learning-down, so during that
+  phase only the robust cap protects it. `warmup_sample` carries `outlier`;
+  **audit-only, no push** (the fan-attribution split already routes fan-assisted
+  climbs to the fan rate, and "the sun helped" is nothing to act on). The
+  model-derived values (booking-hold margin, drive feedforward) inherit this via
+  their learned inputs; the coast passive-rise predictor stays as-is (idle-only,
+  margin-guarded, transient, default-off).
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
