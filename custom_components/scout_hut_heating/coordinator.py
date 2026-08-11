@@ -2317,16 +2317,29 @@ class ScoutController:
             return self._reason(zone, "booking" if event_running else "preheat", base)
 
         # --- Occupancy ---------------------------------------------------------
-        # Someone is in the zone right now (recent motion or the manual override).
-        # Heat toward the SAME comfort target a booking would — occupancy and a
-        # booking are not different behaviours, they only differ in foreknowledge
-        # and persistence. It heats only while presence is confirmed (no advance,
-        # no hold once they leave) and only when the room is genuinely below
-        # comfort; a warm occupied hall lands on ice so the cooling fans run.
+        # Someone is in the zone right now. Heat toward the SAME comfort target a
+        # booking would — occupancy and a booking are not different behaviours,
+        # they only differ in foreknowledge and persistence. Presence is any of:
+        # recent motion, the manual occupied-override switch, or a Night/Home
+        # alarm arm — the last being a sleepover the PIR can't see when everyone
+        # is still and asleep (the same positive-presence signal booking_quiet
+        # trusts, now honoured WITHOUT a booking so a sleepover with nothing on
+        # the calendar still heats instead of frost-protecting a room full of
+        # sleepers). It heats only while presence is confirmed (no advance, no
+        # hold once they leave) and only when the room is genuinely below comfort;
+        # a warm occupied hall lands on ice so the cooling fans run.
         occupied_override = self.switch_on(f"{zone}_occupied_override")
-        if occupied_override or self._motion_recent(area, timeout):
+        motion = self._motion_recent(area, timeout)
+        alarm_present = self._alarm_present(self.config.get(ZONE_ALARM[zone]))
+        if occupied_override or motion or alarm_present:
             if self._room_wants_heat(zone, self._zone_target(zone)):
-                reason = "occupied_override" if occupied_override else "motion"
+                reason = (
+                    "occupied_override"
+                    if occupied_override
+                    else "motion"
+                    if motion
+                    else "sleepover"
+                )
                 return self._reason(zone, reason, PRESET_COMFORT)
             return self._reason(zone, "occupied_warm", PRESET_ICE)
         if not self._motion_recent_any(timeout):
