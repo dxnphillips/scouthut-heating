@@ -56,6 +56,30 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   rejected, with inputs), pre-heat decision, booking start/end outcome,
   preset change (with reason), fan change (with occupied/warm/ΔT/watts),
   seasonal/water/fault event is recorded.
+- **The cool-off learning is self-protecting against unsensored openings
+  (v1.25.4).** Two layers on top of the gap/tick guards. (1) *Robust EWMA*
+  (`MAX_COOL_STEP_FRAC` = 0.25): no single cool-off may move a zone's
+  `heatloss_pct` more than 25 % of its current value, so one anomalous reading
+  can only nudge the baseline, never yank it (the office was repeatedly leaping
+  5→16 %/h off one open-window sample). Bounds BOTH directions, including the
+  dangerous low one (a spuriously-tight reading shortening the lead → cold
+  arrival). (2) *Out-of-family reject + alert* (`COOL_OUTLIER_RATIO` = 3.0):
+  once the EWMA is a real learned baseline, a sample implying a loss rate >3× it
+  is physically impossible for the fabric — it is an open window/door with no
+  contact (the office has none) or a probe glitch, so the whole sample is
+  rejected (`updated_cooling_k` returns k unchanged) and `_opening_inferred[zone]`
+  latches. `_update_opening_inferred_alarm` pushes a *"window or door open?"*
+  notification to every companion-app device (`_push_companion` → every
+  `notify.mobile_app_*`) plus a persistent notification, once per episode,
+  cleared on the next in-family cool-off. Self-gating: at the coarse 25 seed a 3×
+  multiple (0.75) exceeds `MAX_COOL_K` (0.5), so it cannot fire until a
+  trustworthy low baseline exists — exactly when it is safe. The ratio is
+  generous (a genuine winter ~2× doubling still folds in), and the leaky hall
+  (which can lose fast and has real contacts) rarely trips it. `cooloff_sample`
+  now carries `outlier`; a new `opening_inferred` event records the edge. This
+  does NOT retire the office contact sensor — inference is after-the-fact and
+  can't tell a window from a probe unfreeze — it is the backstop for surfaces
+  that will never be wired.
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
@@ -166,6 +190,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    cool-offs** (real losses presenting as steps through a coarse-reporting
    probe), raise the threshold — but each such sample has a meaningless rate
    anyway, so rejecting is the correct default.
+   **Backstopped 2026-08-11 (v1.25.4): the robust EWMA + out-of-family reject**
+   (`MAX_COOL_STEP_FRAC`, `COOL_OUTLIER_RATIO`, see the cool-off self-protection
+   bullet above) now stops one open-window sample corrupting the constant AND
+   pushes a "window/door open?" alert to every companion-app device — so the
+   office no longer silently re-inflates between manual resets while the contact
+   is unfitted. The contact (a) is still the proper fix; this is the safety net.
 5. **Calendar entity mid-event blips.** 2026-07-11 forensics: the calendar
    entity read not-running mid-event once (fans stopped 08:53 BST during a
    06:00–11:00 booking). Watch for `booking_end` + fresh `booking_start`

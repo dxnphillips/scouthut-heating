@@ -245,6 +245,36 @@ def test_updated_cooling_k_thresholds():
     assert updated_cooling_k(0.2, 2, 2, 10) == pytest.approx(0.17)  # observed 0.1/h
 
 
+def test_out_of_family_sample_is_rejected_whole():
+    # An insulated office at a learned 5 %/h can't suddenly lose 33 %/h — that's an
+    # open window, not the fabric. The sample must be rejected, k left untouched.
+    from custom_components.scout_hut_heating.preheat import (
+        cooling_sample_is_outlier,
+        cooling_observed_k,
+        updated_cooling_k,
+    )
+
+    # drop 1.0 over 0.5 h at gap 6 -> observed 0.333 (33 %/h), 6.7x the 0.05 baseline.
+    assert cooling_observed_k(0.5, 1.0, 6.0) == pytest.approx(0.3333, abs=1e-3)
+    assert cooling_sample_is_outlier(0.05, 0.3333) is True
+    assert updated_cooling_k(0.05, 0.5, 1.0, 6.0) == 0.05  # rejected, unchanged
+
+    # A genuine winter doubling (~2x) is NOT an outlier and still folds in.
+    assert cooling_sample_is_outlier(0.05, 0.10) is False
+    # At the coarse seed the MAX_COOL_K clamp keeps observed below the ratio, so
+    # the guard can never fire before a real low baseline exists.
+    assert cooling_sample_is_outlier(0.25, 0.5) is False
+
+
+def test_single_sample_cannot_yank_the_baseline():
+    # In-family but large: one sample may only nudge the EWMA a bounded fraction,
+    # never leap it. k 0.10, observed 0.25 (2.5x, under the 3x outlier line) would
+    # fold to 0.145 unclamped; the 25 % step cap holds it to 0.125.
+    from custom_components.scout_hut_heating.preheat import updated_cooling_k
+
+    assert updated_cooling_k(0.10, 0.5, 1.25, 10.0) == pytest.approx(0.125)
+
+
 def test_cooling_prediction_never_goes_below_the_frost_floor():
     # A booking days away in freezing weather must not predict the room below
     # the anti-frost 7 °C the heating holds even when "off".

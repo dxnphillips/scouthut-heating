@@ -57,6 +57,8 @@ from .preheat import (
     MIN_COOL_SAMPLE_HOURS,
     MIN_SAMPLE_MINUTES,
     MIN_SAMPLE_RISE,
+    cooling_observed_k,
+    cooling_sample_is_outlier,
     hold_margin,
     required_lead_minutes,
     updated_cooling_k,
@@ -107,6 +109,7 @@ from .const import (
     NOTIFY_FAN_SENSOR_LOST,
     NOTIFY_FAN_TOO_HOT,
     NOTIFY_INTERNAL_DOOR,
+    NOTIFY_OPENING_INFERRED,
     NOTIFY_SEASONAL,
     NOTIFY_SHARED_OPENING,
     NOTIFY_ZONE_HOLD,
@@ -298,6 +301,7 @@ DRIVE_COMFORT_TARGET_KEY = {
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
+ZONE_LABEL = {ZONE_A: "hall", ZONE_B: "office"}
 
 MOTION_AREAS = {
     "hall": CONF_MOTION_HALL,
@@ -431,6 +435,10 @@ class ScoutController:
             ZONE_B: None,
         }
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
+        # Latch per zone: an out-of-family cool-off (loss implausibly above the
+        # learned fabric baseline) means an unsensored opening — push once on the
+        # rising edge, clear on the next in-family sample (window closed).
+        self._opening_inferred: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
 
         # Rolling (timestamp, coldest-hall-reading) samples for the "will it get
         # there on its own?" coast predictor (coast.py). Only accumulated while
@@ -495,6 +503,7 @@ class ScoutController:
         self._drive_driven: set[str] = set()
         self._drive_rejected: set[str] = set()
         self._drive_reject_notified = False
+        self._opening_notified: set[str] = set()
         self._drive_response_ref: tuple[datetime, float | None, float | None] | None = None
         self._drive_noresp_notified = False
 
@@ -1439,6 +1448,21 @@ class ScoutController:
         k = current / 100
         new_k = updated_cooling_k(k, hours, drop, gap, max_tick_drop)
         new = current if new_k == k else new_k * 100
+        # A quality sample whose raw loss is implausibly above the learned baseline
+        # is an unsensored opening (or a probe glitch), not the fabric — it was NOT
+        # folded in (updated_cooling_k rejected it), and the latch drives the
+        # "window/door open?" push. A quality, in-family sample clears the latch
+        # (the opening closed); a poor-quality/noise sample leaves it untouched.
+        quality_ok = (
+            drop >= MIN_COOL_SAMPLE_DROP
+            and hours >= MIN_COOL_SAMPLE_HOURS
+            and gap >= MIN_COOL_SAMPLE_GAP
+            and max_tick_drop < MAX_COOL_TICK_DROP
+        )
+        observed = cooling_observed_k(hours, drop, gap)
+        outlier = quality_ok and observed is not None and cooling_sample_is_outlier(k, observed)
+        if quality_ok:
+            self._opening_inferred[zone] = outlier
         self.audit.record(
             "cooloff_sample",
             self._now(),
@@ -1446,12 +1470,8 @@ class ScoutController:
             hours=hours,
             drop=drop,
             gap=gap,
-            accepted=(
-                drop >= MIN_COOL_SAMPLE_DROP
-                and hours >= MIN_COOL_SAMPLE_HOURS
-                and gap >= MIN_COOL_SAMPLE_GAP
-                and max_tick_drop < MAX_COOL_TICK_DROP
-            ),
+            accepted=quality_ok and not outlier,
+            outlier=outlier,
             old_pct=current,
             new_pct=new,
             fan_ticks=fan_ticks,
@@ -1463,6 +1483,70 @@ class ScoutController:
         write = getattr(entity, "write_value", None)
         if write is not None and new != current:
             write(new)
+
+    async def _update_opening_inferred_alarm(self) -> None:
+        """Surface an inferred unsensored opening (rising edge), clear on close.
+
+        The learning already protected itself (the out-of-family sample was not
+        folded); this tells a human WHY a zone is bleeding heat, on the zones we
+        cannot sense directly (the office has no contact). Fires a persistent
+        notification AND a push to every companion-app device, once per episode.
+        """
+        for zone in (ZONE_A, ZONE_B):
+            inferred = self._opening_inferred.get(zone, False)
+            notified = zone in self._opening_notified
+            if inferred and not notified:
+                self._opening_notified.add(zone)
+                self.audit.record(
+                    "opening_inferred",
+                    self._now(),
+                    zone=zone,
+                    heatloss_pct=self.number(f"{zone}_heatloss_pct"),
+                )
+                title = "🏕 Scout Hut – window or door open?"
+                message = (
+                    f"The {ZONE_LABEL[zone]} is losing heat far faster than its "
+                    "fabric can — a window or door has probably been left open. "
+                    "The reading was ignored so it can't corrupt the learned "
+                    "heat-loss, but it's worth a check."
+                )
+                persistent_notification.async_create(
+                    self.hass,
+                    message,
+                    title=title,
+                    notification_id=NOTIFY_OPENING_INFERRED[zone],
+                )
+                await self._push_companion(title, message)
+            elif not inferred and notified:
+                self._opening_notified.discard(zone)
+                persistent_notification.async_dismiss(
+                    self.hass, NOTIFY_OPENING_INFERRED[zone]
+                )
+
+    async def _push_companion(self, title: str, message: str) -> None:
+        """Push to every device with the Home Assistant companion app installed.
+
+        Enumerates the ``notify.mobile_app_*`` services the companion app
+        registers per device and calls each. No-op when none are installed (the
+        persistent notification still shows). Best-effort: a failing or missing
+        target never breaks the reconcile.
+        """
+        try:
+            services = self.hass.services.async_services().get("notify", {})
+        except Exception:  # noqa: BLE001
+            return
+        for service in list(services):
+            if not str(service).startswith("mobile_app_"):
+                continue
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service,
+                    {"title": title, "message": message},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("companion push to %s failed: %s", service, err)
 
     async def _async_seasonal_check(self) -> None:
         weather = self.config.get(CONF_WEATHER)
@@ -1803,6 +1887,7 @@ class ScoutController:
                     zone: _iso(sample[0]) if sample else None
                     for zone, sample in self._cooloff_start.items()
                 },
+                "opening_inferred": dict(self._opening_inferred),
                 "last_lead_calc": self._last_lead_calc,
             },
             "state": {
@@ -2422,6 +2507,7 @@ class ScoutController:
             await self._reconcile_hall_temps()
             self._update_warmup_learning()
             self._update_cooloff_learning()
+            await self._update_opening_inferred_alarm()
             await self._reconcile_shared()
             await self._reconcile_drive()
             await self._reconcile_water()

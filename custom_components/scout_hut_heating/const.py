@@ -426,3 +426,7 @@ NOTIFY_DRIVE_CAPPED = "scout_drive_capped"
 NOTIFY_DRIVE_REJECTED = "scout_drive_setpoint_rejected"
 NOTIFY_DRIVE_NO_RESPONSE = "scout_drive_no_response"
 NOTIFY_DASHBOARDS = "scout_dashboards"
+NOTIFY_OPENING_INFERRED = {
+    ZONE_A: "scout_zone_a_opening_inferred",
+    ZONE_B: "scout_zone_b_opening_inferred",
+}

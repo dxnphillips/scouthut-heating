@@ -98,6 +98,15 @@ class FakeServices:
     def __init__(self, states=None):
         self.calls = []
         self._states = states
+        # domain -> {service_name: None}; tests can register e.g. a companion-app
+        # notify service to exercise the mobile push path.
+        self._registry = {}
+
+    def register(self, domain, service):
+        self._registry.setdefault(domain, {})[service] = None
+
+    def async_services(self):
+        return self._registry
 
     async def async_call(
         self, domain, service, data=None, blocking=False, target=None, return_response=False, **kw
