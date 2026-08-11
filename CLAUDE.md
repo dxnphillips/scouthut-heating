@@ -1042,6 +1042,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   under-led a cold start into a cold arrival; it now reads as None → fail-warm
   (the pre-heat falls back to the cap). The fan ΔT reference and the diagnostic
   spread deliberately omit `stale_min` (a frozen value is harmless there).
+- **A transient room-reading drop-out doesn't flip a warm room to heat
+  (v1.26.2).** `_room_wants_heat`'s err-warm fail-safe is right for a *sustained*
+  loss but wrong on a *blip*: a ~17 s Rointe hall-probe drop-out on a hot
+  afternoon (field 2026-08-11) made a genuinely warm hall read None → err warm →
+  flip ice→comfort→ice, and the comfort preset reversed the cooling fans (one
+  spurious reversal per blip). Two layers before err-warm: **(A)** the zone's own
+  last good reading is cached (`_last_room_temp`) and held for `ROOM_READING_GRACE_MIN`
+  (2) — the most reliable "other reading", only seconds stale, safe in every
+  season, so a blip changes nothing; **(C)** past that grace, on a *sustained*
+  loss, the independent ceiling (hall only) can withhold heat — but only when the
+  **outdoor is also at/above target**, which rules out the winter-stratification
+  trap (a warm ceiling capping a cold floor with residual roof heat → a cold
+  arrival). Both conditions must say warm, else it still errs warm. This is the
+  root fix for the fan-reversal flapping; v1.26.1 (phantom demand on ice) was a
+  real but different path that did not cover the transient-comfort cascade.
 - **State-based summer setback — SUBSUMED and removed (2026-08-07).** This was a
   default-off switch (`summer_setback_mode`) that softened the seasonal lockout
   from a block into a setback: an occupied cool hall warmed to a low floor
