@@ -165,6 +165,10 @@ SEASONAL_SNAP_BAND = 2.0  # °C
 # until the room sits this far ABOVE target, so the pierce cannot flap on/off
 # around the setpoint.
 COLD_BOOKING_RELEASE_BAND = 0.5  # °C above target before the heat gate releases
+# A transient Rointe reading drop-out must not flip a warm room to "wants heat":
+# hold the room's own last good reading for this long before falling back to the
+# err-warm fail-safe. A cloud blip is seconds; a real outage is far longer.
+ROOM_READING_GRACE_MIN = 2.0
 
 # Coast predictor (coast.py) measurement window. The rolling idle-room samples
 # span at most PASSIVE_RISE_WINDOW_MIN and a rate is only computed once at least
@@ -437,6 +441,12 @@ class ScoutController:
             ZONE_B: None,
         }
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
+        # Last good room reading per zone (time, temp), so a transient Rointe
+        # drop-out holds the recent truth instead of erring warm on a blip.
+        self._last_room_temp: dict[str, tuple[datetime, float] | None] = {
+            ZONE_A: None,
+            ZONE_B: None,
+        }
         # Latch per zone: an out-of-family cool-off (loss implausibly above the
         # learned fabric baseline) means an unsensored opening — push once on the
         # rising edge, clear on the next in-family sample (window closed).
@@ -2097,17 +2107,47 @@ class ScoutController:
         (``COLD_BOOKING_RELEASE_BAND``) keeps the decision from flapping around
         the setpoint. A frozen Rointe reading is rejected (``stale_min``).
 
-        An UNREADABLE room errs WARM (heat) — the heating fail-safe direction,
-        and benign here: the Rointe governs the actual firing against its own
-        probe, so a room that is really warm will not fire anyway, while a cold
-        one that lost our floor sensor is not left to arrive cold. (The old
-        cold-booking bypass erred off, but only because the summer lockout it
-        pierced made err-off the season's fail-safe; with no lockout the heating
-        convention — err warm — applies.)
+        An UNREADABLE room errs WARM (heat) — the heating fail-safe direction —
+        but only after two cheaper answers are exhausted, so a transient Rointe
+        drop-out cannot flip a genuinely warm hall to comfort (and reverse the
+        cooling fans) on a hot afternoon (field 2026-08-11: a ~17 s hall-probe
+        blip flipped ice→comfort→ice, one spurious fan reversal per blip):
+          (A) hold the room's OWN last good reading through a brief blip
+              (`ROOM_READING_GRACE_MIN`) — the most reliable "other reading",
+              only seconds stale and safe in every season;
+          (C) on a SUSTAINED loss, consult the independent ceiling (hall only)
+              before erring warm. A warm ceiling only reliably implies a warm
+              floor when stratification cannot have decoupled them — i.e. when it
+              is also warm OUTSIDE (this bug's hot day), not a cold day with
+              residual roof heat pooled over a cooling floor. So heat is withheld
+              only when BOTH the ceiling and the outdoor sit at/above target;
+              anything else falls through to err-warm.
+        The Rointe still governs the actual firing against its own probe, so a
+        room that is really warm will not fire anyway.
         """
         room = self._zone_room_temp(zone, coldest=True, stale_min=self._rointe_stale_min())
-        if room is None:
-            return True
+        now = self._now()
+        if room is not None:
+            self._last_room_temp[zone] = (now, room)
+        else:
+            last = self._last_room_temp.get(zone)
+            if (
+                last is not None
+                and (now - last[0]).total_seconds() <= ROOM_READING_GRACE_MIN * 60
+            ):
+                room = last[1]  # (A) hold the recent reading through the blip
+            else:
+                # (C) sustained loss: independent evidence, or err warm.
+                ceiling = self._ceiling_temp() if zone == ZONE_A else None
+                outdoor = self._outdoor_temp()
+                if (
+                    ceiling is not None
+                    and ceiling >= target
+                    and outdoor is not None
+                    and outdoor >= target
+                ):
+                    return False  # confirmed warm inside and out — no heat
+                return True  # err warm — the heating fail-safe
         margin = (
             COLD_BOOKING_RELEASE_BAND
             if self.applied[zone] in (PRESET_COMFORT, PRESET_ECO)
