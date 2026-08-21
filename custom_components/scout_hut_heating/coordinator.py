@@ -2410,9 +2410,28 @@ class ScoutController:
         ):
             return self._reason("shared", "alarm", PRESET_ICE)
         timeout = self.number("motion_timeout_minutes")
-        booking = self._cal_active(ZONE_A) or self._cal_active(ZONE_B)
+        cal_a = self._cal_active(ZONE_A)
+        cal_b = self._cal_active(ZONE_B)
+        booking = cal_a or cal_b
+        # The shared block serves whoever is booked, so the WARMEST active booking
+        # wins: a real comfort session (hall or office) heats the toilets/kitchen
+        # to comfort, but when EVERY active booking is an eco-keyword (low-key
+        # cleaning) one the shared follows the eco floor, matching the hall. This
+        # stops a sal-vation session driving the toilets to full comfort — heat the
+        # room did not need (it was already above eco) — whose demand then spun the
+        # hall fans with nothing to reclaim (field 2026-08-21). A concurrent
+        # non-eco office booking still wins, so an eco hall booking can never
+        # downgrade the shared below what a real office session needs.
+        eco_booking = booking and not (
+            (cal_a and not self._eco_keyword_active(ZONE_A))
+            or (cal_b and not self._eco_keyword_active(ZONE_B))
+        )
         shared_motion = any(self._motion_recent(a, timeout) for a in WATER_MOTION_AREAS)
         if booking or shared_motion:
+            if eco_booking:
+                # Low-key session (the cleaner IS the motion): rest at eco, which
+                # the Rointe idles at once warm enough, so no demand is created.
+                return self._reason("shared", "booking_eco", PRESET_ECO)
             if self._shared_wants_heat():
                 reason = "booking" if booking else "shared_motion"
                 return self._reason("shared", reason, PRESET_COMFORT)
@@ -4199,7 +4218,7 @@ class ScoutController:
         occupied = self._cooling_occupied()
         self._fan_occupied = occupied
         demand = self._heat_demand()
-        self.heat_demand = demand
+        self.heat_demand = demand  # building-wide, kept for diagnostics
         currently_winter = bool(self.fan_on) and self.fan_mode == "winter"
         # The hall is being heated (a boost or booking has set comfort/eco): a
         # forward cooling draught would chill the people we are warming, so this
@@ -4207,6 +4226,16 @@ class ScoutController:
         # off the applied preset, not demand, so the fan direction cannot flap as
         # the radiator thermostat cycles.
         heating = self.applied[ZONE_A] in (PRESET_COMFORT, PRESET_ECO)
+        # Hall destrat runs on demand only when the HALL ITSELF is being heated —
+        # never because another zone (office/shared) is making heat. `_heat_demand`
+        # is building-wide (it catches office/shared heat leaking INTO the hall),
+        # but when the hall is warm and on ice there is nothing to reclaim, so
+        # spinning its fans on a neighbour's demand is pure cost — the Q15 leak
+        # (field 2026-08-21: a sal-vation eco session drove the shared to comfort,
+        # whose demand ran the hall fans while the hall sat idle on ice). Gating on
+        # `heating` ties the hall fans to the hall's own heating, and the recirc
+        # path already covers "the hall wants more heat delivered".
+        hall_demand = demand and heating
         cooling_wanted = self._fan_cooling_regime(warm, heating)
         self._fan_cooling_wanted = cooling_wanted
 
@@ -4221,7 +4250,7 @@ class ScoutController:
             dt=dt,
             dt_on=self.number("fan_dt_on"),
             dt_off=self.number("fan_dt_off"),
-            demand=demand,
+            demand=hall_demand,
             recirc_ok=recirc_ok,
             # Always require occupancy for the no-demand recirc path (was the
             # `winter_fans_need_occupancy` switch): the field cool-off samples
