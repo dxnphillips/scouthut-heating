@@ -100,6 +100,40 @@ def test_hall_only_motion_keeps_shared_at_eco():
     assert ctrl._preset_reason["shared"] == "motion"
 
 
+def test_eco_keyword_hall_booking_keeps_shared_at_eco():
+    # A sal-vation (eco-keyword) cleaning session should NOT drive the toilets to
+    # full comfort — the hall follows eco-low, and so should the shared block.
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA, "sal-vation cleaning")
+    shared_temp(ctrl, 15.0)  # even cold, an eco session rests at the eco floor
+    assert ctrl._desired_shared() == PRESET_ECO
+    assert ctrl._preset_reason["shared"] == "booking_eco"
+
+
+def test_regular_hall_booking_still_warms_shared_to_comfort():
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA)  # no eco keyword -> a real session
+    shared_temp(ctrl, 15.0)
+    assert ctrl._desired_shared() == PRESET_COMFORT
+
+
+def test_conflict_eco_hall_and_comfort_office_gives_comfort():
+    # Eco hall booking + regular office booking together: the office session wins,
+    # so the shared warms to comfort (people are in for real, will use the toilets).
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA, "sal-vation")  # eco
+    booking(ctrl, ZB)  # comfort
+    shared_temp(ctrl, 15.0)
+    assert ctrl._desired_shared() == PRESET_COMFORT
+
+
+def test_eco_hall_booking_warm_shared_stays_eco():
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA, "sal-vation")
+    shared_temp(ctrl, 20.0)  # already warm
+    assert ctrl._desired_shared() == PRESET_ECO
+
+
 def test_season_does_not_ice_shared():
     # The season no longer gates heating: shared warms whatever the flag says.
     ctrl, _ = make_controller()

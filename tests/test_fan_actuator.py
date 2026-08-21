@@ -190,6 +190,43 @@ def test_boost_during_summer_lockout_reverses_the_fans_not_forward():
     assert ctrl._fan_target() == (True, "reverse", "winter")
 
 
+def test_hall_fans_ignore_a_neighbours_demand_while_hall_is_iced():
+    # Field 2026-08-21: hall warm and on ICE (nothing to reclaim), but the SHARED
+    # zone was being heated for a sal-vation booking -> building-wide demand ->
+    # the hall fans ran reverse for no benefit (the Q15 leak). Hall destrat must
+    # key off the HALL's own heating, not a neighbour's.
+    from custom_components.scout_hut_heating.const import (
+        CONF_CEILING_TEMP,
+        CONF_ROINTE_POWER,
+    )
+    from scout_testkit import E, PRESET_COMFORT, PRESET_ICE, ZA, make_controller, motion
+
+    ctrl, hass = make_controller(
+        config_overrides={
+            CONF_FAN_MASTER: MASTER,
+            CONF_CEILING_TEMP: "sensor.ceiling",
+            CONF_ROINTE_POWER: ["sensor.rointe_power"],
+        }
+    )
+    off(hass, MASTER)
+    ctrl.seasonal_lockout = False  # winter regime
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 20.0})  # warm floor
+    hass.states.set("sensor.ceiling", "23.0")  # dt 3.0 > dt_on (stratified)
+    hass.states.set("sensor.rointe_power", "450")  # a heater is firing
+    motion(ctrl, "hall")  # occupied
+    ctrl.applied["shared"] = PRESET_COMFORT  # the neighbour (shared) is heating
+
+    # Hall on ice (warm, no heat request): the shared's demand must NOT spin the
+    # hall fans — there is nothing to reclaim for the hall.
+    ctrl.applied[ZA] = PRESET_ICE
+    assert ctrl._fan_target() == (False, None, "off")
+
+    # But when the HALL ITSELF is being heated, demand runs the destrat fans.
+    ctrl.applied[ZA] = PRESET_COMFORT
+    assert ctrl._fan_target() == (True, "reverse", "winter")
+
+
 # --- Fan awareness in the optimum-start learning --------------------------------
 
 def test_warmup_rate_key_follows_fan_availability():

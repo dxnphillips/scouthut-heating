@@ -393,6 +393,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     spillover), make the hall-fan `demand` hall-specific; if Q12 shows real
     spillover, leave it. Do not "fix" it blind — it rides intended design and
     the unverified Q12.
+    **RESOLVED (v1.26.3, field 2026-08-21).** The leak fired: a sal-vation eco
+    booking drove the *shared* zone to comfort (its own over-heating bug, also
+    fixed — see the shared eco-keyword note), and its demand ran the *hall* fans
+    reverse while the hall sat warm on ice — "nothing to reclaim". Verdict: pure
+    cost (the hall was already warm; pre-heat/heating warms the rooms on their own,
+    fans deliver nothing cross-zone). Fix: the hall destrat `demand` is now
+    hall-specific — `hall_demand = demand and heating` (heating = hall in
+    comfort/eco), so a neighbour's demand never spins the hall fans; the hall
+    fans run on the hall's own heating, and the `recirc` path already covers
+    "the hall wants more heat delivered". `_heat_demand` stays building-wide for
+    diagnostics. If a future co-heating test proves real office→hall spillover
+    (Q12), revisit — but the room is warm-enough-on-ice case makes delivery moot.
 16. **Seasonal lockout threshold (`seasonal_lockout_temp` = 15). MOSTLY MOOT
     (2026-08-07): the season no longer gates heating** (unified `_room_wants_heat`
     gate — a cold booked/occupied room heats whatever the season, a warm one does
@@ -946,8 +958,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   shared rooms) keeps the lighter eco floor (`motion`), so a cleaner in the hall
   doesn't drive the toilets to comfort. The drive-to-target loop already owns the
   shared comfort setpoint, so no new wiring. Reasons: `booking` / `shared_motion`
-  (→ comfort), `shared_warm` / `motion` (→ eco), `building_empty` (→ ice). No
-  seasonal gate. **First-shoulder-season watch:** confirm bare motion heating
+  (→ comfort), `booking_eco` / `shared_warm` / `motion` (→ eco), `building_empty`
+  (→ ice). No seasonal gate. **The shared follows the eco-keyword too (v1.26.3).**
+  Originally *any* running booking drove the shared to comfort, so a sal-vation
+  eco-keyword session heated the toilets to 19.5 while the hall correctly sat at
+  eco-low — heat the shared did not need (it was already above eco), whose demand
+  then spun the hall fans with nothing to reclaim (field 2026-08-21). Now the
+  shared follows the **warmest active booking**: `eco_booking = a booking is active
+  AND no active hall/office booking is non-eco` → the block rests at the eco floor
+  (`booking_eco`), the Rointe idling once warm enough so no demand is created. A
+  concurrent **non-eco** office/hall booking still wins (→ comfort), so an eco
+  booking can never downgrade the shared below what a real session needs. **First-shoulder-season watch:** confirm bare motion heating
   to comfort is wanted (it is eager — any drift below 19.5 while occupied heats;
   present-only bounds the cost) and that a warm occupied hall correctly gets the
   cooling breeze rather than heat; if motion proves too eager, an engage-side
