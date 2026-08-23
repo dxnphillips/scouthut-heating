@@ -21,6 +21,7 @@ BUTTONS: dict[str, tuple[str, str, str, str]] = {
     "resume_hall_heating": ("Resume hall heating", "mdi:radiator", "resume", ZONE_A),
     "reset_tunables": ("Reset tunables to defaults", "mdi:backup-restore", "reset", ""),
     "create_dashboards": ("Create dashboards", "mdi:view-dashboard-outline", "dashboards", ""),
+    "clear_fire_hold": ("Clear fire hold", "mdi:fire-alert", "clear_fire", ""),
 }
 
 
@@ -52,5 +53,7 @@ class ScoutButton(ScoutEntity, ButtonEntity):
             await self._controller.async_resume_hall_heating()
         elif self._action == "reset":
             await self._controller.async_reset_tunables()
+        elif self._action == "clear_fire":
+            await self._controller.async_clear_fire_hold()
         else:
             await self._controller.async_create_dashboards()

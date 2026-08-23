@@ -60,12 +60,14 @@ _HOME_ACTIONS = [
     ("cancel_boost_zone_b", "Cancel office boost"),
     ("pause_hall_heating", "Pause hall heating"),
     ("resume_hall_heating", "Resume hall heating"),
+    ("clear_fire_hold", "Clear fire hold"),
 ]
 _NOW = [
     ("zone_a_status", "Hall preset"),
     ("zone_b_status", "Office preset"),
     ("shared_status", "Shared zone preset"),
     ("water_status", "Water heater"),
+    ("fire_hold", "Fire hold (everything off)"),
     ("seasonal_lockout_active", "Warm season"),
     ("hall_temp_spread", "Hall temperature spread"),
     ("fan_delta_t", "Ceiling-floor ΔT"),

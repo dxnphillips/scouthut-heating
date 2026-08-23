@@ -426,6 +426,18 @@ NOTIFY_DRIVE_CAPPED = "scout_drive_capped"
 NOTIFY_DRIVE_REJECTED = "scout_drive_setpoint_rejected"
 NOTIFY_DRIVE_NO_RESPONSE = "scout_drive_no_response"
 NOTIFY_DASHBOARDS = "scout_dashboards"
+NOTIFY_FIRE = "scout_fire_hold"
+
+# Fire fallback: the scouthut-alarmnotification (Texecom Alerts) integration
+# fires this bus event for every classified panel event; a fire carries an
+# `event_type` in FIRE_EVENT_TYPES. The 230 V fan supply is hardware-cut on a
+# fire output (the real safety), but HA does not otherwise know a fire happened
+# — so it listens for this as a software fallback and holds EVERYTHING off
+# (heating -> ice, water off, fans off) until a person clears it. No-op if the
+# alarm integration is not installed (the event simply never fires).
+FIRE_EVENT = "texecom_alerts_event"
+FIRE_EVENT_TYPES = frozenset({"Fire", "KeypadFire"})
+
 NOTIFY_OPENING_INFERRED = {
     ZONE_A: "scout_zone_a_opening_inferred",
     ZONE_B: "scout_zone_b_opening_inferred",

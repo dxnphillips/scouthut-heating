@@ -58,6 +58,11 @@ SENSORS: dict[str, tuple[str, str, Callable[[ScoutController], bool]]] = {
         "mdi:radiator-off",
         lambda c: c.hall_heating_paused,
     ),
+    "fire_hold": (
+        "Fire hold (everything off)",
+        "mdi:fire-alert",
+        lambda c: c._fire_hold,
+    ),
     "fan_running": ("Ceiling fan running", "mdi:ceiling-fan", lambda c: bool(c.fan_on)),
     "fan_fault_effective": (
         "Ceiling fan fault",
