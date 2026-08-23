@@ -1150,6 +1150,24 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   owner maps which panel to which (main = hall + shared/kitchen/toilets/stores,
   office = office). The zone→conf-key pairing stays fixed (hall→`alarm_main`,
   office→`alarm_office`); only the entity is selectable.
+- **Fire fallback holds EVERYTHING off, manual-clear (v1.27.0).** The fans' 230 V
+  supply is hardware-cut on the panel's fire output (the real safety — a cut line
+  HA can never override; wire the *Shelly's own supply* so the device power-cycles
+  cleanly). But HA does not otherwise know a fire happened, so on the next power
+  blip it would re-arm the fans. `_handle_fire_event` listens on the HA bus for
+  the `scouthut-alarmnotification` (Texecom Alerts) integration's
+  `texecom_alerts_event` with an `event_type` in `FIRE_EVENT_TYPES` (`Fire`,
+  `KeypadFire`) and latches `_fire_hold`: `_desired_zone`/`_desired_shared` return
+  **ice** (frost-protect), `_desired_water` returns **off**, and `_fan_target`
+  returns **off** — and because the *wanted* fan state is off, a Shelly reboot
+  mid-fire re-establishes off, never the fans. The latch beats everything
+  (automation-disabled, manual hold), is **persisted** (survives a restart mid-
+  fire), audits `fire`/`fire_cleared`, and pushes a persistent + companion-app
+  alert. There is **no auto-clear** (no clean "fire over" signal, and the hut
+  should stay off until checked): only the **Clear fire hold** button
+  (`async_clear_fire_hold`) releases it. Rising-edge only (repeat fire events are
+  a no-op). No-op if the alarm integration is not installed (the event never
+  fires). Diagnostics carry `state.fire_hold`.
 
 **Owner-side outstanding** (not code): set `MIN_RUN_W ≈ 20` in the Shelly
 fan script — the stall threshold must sit *below the lowest running draw*, and

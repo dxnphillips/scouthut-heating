@@ -101,6 +101,8 @@ from .const import (
     CONF_ZONE_B_WINDOWS,
     DOMAIN,
     FAN_COOLING_MAX_TEMP,
+    FIRE_EVENT,
+    FIRE_EVENT_TYPES,
     NOTIFY_CONDENSATION,
     NOTIFY_DRIVE_CAPPED,
     NOTIFY_DRIVE_NO_RESPONSE,
@@ -111,6 +113,7 @@ from .const import (
     NOTIFY_FAN_SENSOR_LOST,
     NOTIFY_FAN_TOO_HOT,
     NOTIFY_INTERNAL_DOOR,
+    NOTIFY_FIRE,
     NOTIFY_OPENING_INFERRED,
     NOTIFY_SEASONAL,
     NOTIFY_SHARED_OPENING,
@@ -516,6 +519,12 @@ class ScoutController:
         self._drive_rejected: set[str] = set()
         self._drive_reject_notified = False
         self._opening_notified: set[str] = set()
+        # Fire fallback latch: on a panel fire the fans are hardware-cut, but this
+        # holds ALL of it off in software (heating -> ice, water off, fans off)
+        # until a person clears it — so a power blip cannot re-arm the fans mid-
+        # fire, and the whole hut stays off until someone confirms it is safe.
+        self._fire_hold: bool = False
+        self._fire_notified: bool = False
         self._drive_response_ref: tuple[datetime, float | None, float | None] | None = None
         self._drive_noresp_notified = False
 
@@ -628,6 +637,12 @@ class ScoutController:
             self._unsubs.append(
                 async_track_state_change_event(self.hass, watched, _handle_state_event)
             )
+
+        # Fire fallback: listen for the alarm integration's bus event. No-op if
+        # that integration is not installed (the event simply never fires).
+        self._unsubs.append(
+            self.hass.bus.async_listen(FIRE_EVENT, self._handle_fire_event)
+        )
 
         # Periodic reconcile handles timers (openings, boost expiry, motion timeout).
         self._unsubs.append(
@@ -1759,6 +1774,9 @@ class ScoutController:
             },
             "manual_hold": dict(self.manual_hold),
             "hall_heating_paused": self.hall_heating_paused,
+            # A fire hold must survive a restart: if HA reboots mid-fire the hut
+            # must come back still holding everything off, not resume heating.
+            "fire_hold": self._fire_hold,
             # Persisted so a restart mid-booking does not read a phantom
             # idle->session (False->True) edge and clear the hall pause: the
             # window's pre-restart value is restored, so a running booking
@@ -1800,6 +1818,7 @@ class ScoutController:
             if (data.get("manual_hold") or {}).get(zone):
                 self.manual_hold[zone] = True
         self.hall_heating_paused = bool(data.get("hall_heating_paused", False))
+        self._fire_hold = bool(data.get("fire_hold", False))
         saved_window = data.get("cal_window") or {}
         for zone in (ZONE_A, ZONE_B):
             if zone in saved_window:
@@ -1923,6 +1942,7 @@ class ScoutController:
                 "openings": openings,
                 "boost_until": {z: _iso(t) for z, t in self.boost_until.items()},
                 "hall_heating_paused": self.hall_heating_paused,
+                "fire_hold": self._fire_hold,
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
                 "cal_title": dict(self.cal_title),
@@ -2072,6 +2092,63 @@ class ScoutController:
         self._fan_fault_notified = False
         persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_FAULT)
         await self.async_reconcile()
+
+    @callback
+    def _handle_fire_event(self, event: Event) -> None:
+        """Latch the fire hold on a panel fire (the alarm integration's event).
+
+        The 230 V fan supply is hardware-cut on a fire output — the real safety —
+        but HA does not otherwise know a fire happened, so it would re-arm the
+        fans on the next power blip. Latching here forces EVERYTHING off (heating
+        -> ice, water off, fans off) and, crucially, makes the wanted fan state
+        `off`, so a Shelly reboot mid-fire re-establishes OFF, not the fans. The
+        latch clears only on the deliberate `async_clear_fire_hold` (a human
+        confirming it is safe). Rising-edge only: repeat fire events while already
+        held are a no-op.
+        """
+        if event.data.get("event_type") not in FIRE_EVENT_TYPES:
+            return
+        if self._fire_hold:
+            return
+        self._fire_hold = True
+        self.audit.record(
+            "fire",
+            self._now(),
+            zone_name=event.data.get("zone_name"),
+            description=event.data.get("description"),
+        )
+        self.async_request_reconcile()
+
+    async def async_clear_fire_hold(self) -> None:
+        """Clear the fire hold — the deliberate human "it is safe" gesture.
+
+        Nothing auto-clears it: there is no clean "fire over" signal from the
+        panel, and after a fire the whole hut should stay off until someone has
+        checked. Only this (the *Clear fire hold* button) releases it.
+        """
+        if not self._fire_hold:
+            return
+        self._fire_hold = False
+        self._fire_notified = False
+        self.audit.record("fire_cleared", self._now())
+        persistent_notification.async_dismiss(self.hass, NOTIFY_FIRE)
+        await self.async_reconcile()
+
+    async def _update_fire_alarm(self) -> None:
+        """Surface the fire hold (rising edge): persistent + companion push."""
+        if self._fire_hold and not self._fire_notified:
+            self._fire_notified = True
+            title = "🔥 Scout Hut – FIRE: everything held OFF"
+            message = (
+                "A fire was signalled by the alarm panel. Heating, the water "
+                "heater and the fans are all held OFF and will NOT resume on "
+                "their own — not even after a power cut. Once it is confirmed "
+                "safe, press 'Clear fire hold' to return to normal."
+            )
+            persistent_notification.async_create(
+                self.hass, message, title=title, notification_id=NOTIFY_FIRE
+            )
+            await self._push_companion(title, message)
 
     # ------------------------------------------------------------------
     # Desired-state computation
@@ -2255,6 +2332,11 @@ class ScoutController:
         return preset
 
     def _desired_zone(self, zone: str) -> str | None:
+        # Fire fallback beats everything, including automation-disabled and a
+        # manual hold: on a signalled fire the whole hut goes to frost-protect ice
+        # and stays there until a person clears the hold.
+        if self._fire_hold:
+            return self._reason(zone, "fire", PRESET_ICE)
         enabled_key = f"{zone}_automation_enabled"
         if not self.switch_on(enabled_key, default=True):
             return None
@@ -2392,6 +2474,8 @@ class ScoutController:
     def _desired_shared(self) -> str | None:
         if not self.config.get(CONF_SHARED_CLIMATES):
             return None
+        if self._fire_hold:
+            return self._reason("shared", "fire", PRESET_ICE)
         # The shared kitchen/toilets/stores heat toward `shared_comfort_temp`
         # (like the hall/office zones) when the block is genuinely in use — a
         # hall/office booking is running (people are in for a session and will
@@ -2498,6 +2582,8 @@ class ScoutController:
         switch = self.config.get(CONF_WATER_SWITCH)
         if not switch:
             return None
+        if self._fire_hold:
+            return False  # fire: water heater off with everything else
         now = self._now()
 
         # Track the REAL powered stretch (the physical switch, not our last
@@ -2595,6 +2681,7 @@ class ScoutController:
             self._update_warmup_learning()
             self._update_cooloff_learning()
             await self._update_opening_inferred_alarm()
+            await self._update_fire_alarm()
             await self._reconcile_shared()
             await self._reconcile_drive()
             await self._reconcile_water()
@@ -4097,6 +4184,11 @@ class ScoutController:
 
     def _fan_target(self) -> tuple[bool, str | None, str]:
         """Resolve the desired fan state with fail-safe precedence on top."""
+        if self._fire_hold:
+            # Fire: fans OFF and the WANTED state is off, so a Shelly reboot
+            # (power restored mid-fire) re-establishes off, never the fans.
+            self._reset_fan_flags()
+            return False, None, "off"
         if not self.switch_on("fans_enabled", default=True):
             self._reset_fan_flags()
             return False, None, "off"
