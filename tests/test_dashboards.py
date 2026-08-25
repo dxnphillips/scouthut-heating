@@ -1,11 +1,13 @@
 """The generated dashboard config and its graceful failure path."""
 
 from custom_components.scout_hut_heating.dashboards import (
+    _add_alarm_card,
+    _alarm_card,
     _existing_views,
     _preserve_foreign,
     build_config,
 )
-from scout_testkit import make_controller, run
+from scout_testkit import add_texecom_alarm, make_controller, run
 
 
 def _titles(view):
@@ -139,3 +141,56 @@ def test_existing_views_handles_no_arg_signature():
 def test_existing_views_empty_when_never_saved():
     dash = _FakeDashboard(None, raises=ValueError("no config saved yet"))
     assert run(_existing_views(dash)) == []
+
+
+# --- Alarm summary on the Home view (Texecom Alerts, optional) ---------------
+def test_alarm_card_built_when_texecom_installed():
+    ctrl, hass = make_controller()
+    add_texecom_alarm(hass)
+    card = _alarm_card(hass)
+    assert card["type"] == "entities" and card["title"] == "Alarm"
+    assert [r["name"] for r in card["entities"]] == [
+        "Alarm system",
+        "Any area armed",
+        "Escalation",
+        "Panel in contact",
+        "Site reachable",
+    ]
+    assert card["entities"][0]["entity"] == "binary_sensor.alarm_system_state"
+
+
+def test_alarm_card_shows_only_present_keys():
+    ctrl, hass = make_controller()
+    add_texecom_alarm(hass, keys=["system_state", "any_armed"])
+    card = _alarm_card(hass)
+    assert [r["name"] for r in card["entities"]] == ["Alarm system", "Any area armed"]
+
+
+def test_alarm_card_none_without_texecom():
+    ctrl, hass = make_controller()  # alarm integration not installed
+    assert _alarm_card(hass) is None
+
+
+def test_alarm_card_added_to_home_view():
+    ctrl, hass = make_controller()
+    add_texecom_alarm(hass)
+    config = {
+        "views": [{"title": "Home", "path": "home", "cards": [{"title": "Right now"}]}]
+    }
+    _add_alarm_card(hass, config)
+    assert config["views"][0]["cards"][-1]["title"] == "Alarm"
+
+
+def test_add_alarm_card_noop_without_home_view():
+    ctrl, hass = make_controller()
+    add_texecom_alarm(hass)
+    config = {"views": [{"title": "Heating", "path": "heating", "cards": []}]}
+    _add_alarm_card(hass, config)  # no Home view -> nothing added, no crash
+    assert all(c.get("title") != "Alarm" for v in config["views"] for c in v["cards"])
+
+
+def test_add_alarm_card_noop_without_texecom():
+    ctrl, hass = make_controller()
+    config = {"views": [{"title": "Home", "path": "home", "cards": []}]}
+    _add_alarm_card(hass, config)
+    assert config["views"][0]["cards"] == []

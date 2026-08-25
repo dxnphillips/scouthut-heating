@@ -296,6 +296,48 @@ def _entity_map(hass: HomeAssistant, entry_id: str) -> dict[str, str]:
     return emap
 
 
+# The Texecom Alerts integration registers its entities with the same
+# "{entry_id}_{key}" unique-id scheme this integration uses, so _entity_map
+# resolves them from *its* config entry. Rows shown on the Home view:
+_ALARM_ROWS = [
+    ("system_state", "Alarm system"),
+    ("any_armed", "Any area armed"),
+    ("escalation", "Escalation"),
+    ("panel_reachable", "Panel in contact"),
+    ("site_reachable", "Site reachable"),
+]
+
+
+def _alarm_card(hass: HomeAssistant) -> dict[str, Any] | None:
+    """A compact alarm summary for the Home view, if texecom_alerts is present.
+
+    Returns None (add nothing) when the alarm integration is not installed — the
+    empty async_entries lookup is the "not installed" path, so there is no
+    manifest dependency on it.
+    """
+    for entry in hass.config_entries.async_entries("texecom_alerts"):
+        rows = _rows(_entity_map(hass, entry.entry_id), _ALARM_ROWS)
+        if rows:
+            return _card("Alarm", rows)
+    return None
+
+
+def _add_alarm_card(hass: HomeAssistant, config: dict[str, Any]) -> None:
+    """Append the alarm summary to the Home view in place, when available.
+
+    Home is rebuilt from scratch on every recreate, so re-adding the card each
+    time keeps it fresh. No-op when the alarm integration is absent or the
+    config has no Home view.
+    """
+    alarm = _alarm_card(hass)
+    if alarm is None:
+        return
+    for view in config.get("views", []):
+        if view.get("path") == "home":
+            view.setdefault("cards", []).append(alarm)
+            break
+
+
 async def async_create_or_update(hass: HomeAssistant, controller: Any) -> str | None:
     """Create (or refresh) the Scout Hut dashboard. Returns an error string.
 
@@ -307,6 +349,7 @@ async def async_create_or_update(hass: HomeAssistant, controller: Any) -> str | 
     config = build_config(
         _entity_map(hass, controller.entry.entry_id), controller.config
     )
+    _add_alarm_card(hass, config)
 
     lovelace = hass.data.get("lovelace")
     if lovelace is None:
