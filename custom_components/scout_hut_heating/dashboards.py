@@ -268,7 +268,11 @@ def build_config(emap: dict[str, str], mapped: dict[str, Any]) -> dict[str, Any]
     ]
     if hardware:
         fan_cards.append(
-            {"type": "entities", "title": "Shelly (manual / diagnostics)", "entities": hardware}
+            {
+                "type": "entities",
+                "title": "Shelly (manual / diagnostics)",
+                "entities": hardware,
+            }
         )
 
     views: list[dict[str, Any]] = []
@@ -326,7 +330,9 @@ async def async_create_or_update(hass: HomeAssistant, controller: Any) -> str | 
             # Modern HA (2025.2+) keeps the running collection private. Load
             # our own instance over the same storage: the item persists and
             # the sidebar picks it up on the next restart.
-            from homeassistant.components.lovelace import dashboard as lovelace_dashboard
+            from homeassistant.components.lovelace import (
+                dashboard as lovelace_dashboard,
+            )
 
             collection = lovelace_dashboard.DashboardsCollection(hass)
             await collection.async_load()
@@ -358,5 +364,47 @@ async def async_create_or_update(hass: HomeAssistant, controller: Any) -> str | 
         dashboard = lovelace_dashboard.LovelaceStorage(hass, item)
     if dashboard is None:
         return "the dashboard was created but did not register"
-    await dashboard.async_save(config)
+    await dashboard.async_save(
+        _preserve_foreign(await _existing_views(dashboard), config)
+    )
     return RESTART_REQUIRED if created_offline else None
+
+
+# Paths of the views this integration owns. Any other view on the shared
+# dashboard, such as an Alarm view added by the texecom_alerts integration,
+# belongs to another integration and must survive a recreate.
+_OWNED_PATHS = frozenset({"home", "heating", "fans"})
+
+
+async def _existing_views(dashboard: Any) -> list[dict[str, Any]]:
+    """Return the dashboard's currently stored views, or an empty list.
+
+    async_load has taken both a required and an optional force argument across
+    Home Assistant versions, and raises when nothing has been saved yet, so both
+    shapes are tried and any failure is treated as an empty dashboard.
+    """
+    for args in ((False,), ()):
+        try:
+            existing = await dashboard.async_load(*args)
+        except TypeError:
+            continue
+        except Exception:  # noqa: BLE001 - no config yet, treat as empty
+            return []
+        if isinstance(existing, dict):
+            return [v for v in existing.get("views", []) if isinstance(v, dict)]
+        return []
+    return []
+
+
+def _preserve_foreign(
+    existing_views: list[dict[str, Any]], config: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep views owned by other integrations when saving our own.
+
+    The recreate would otherwise replace every view, wiping a tab another
+    integration added to the shared dashboard.
+    """
+    foreign = [v for v in existing_views if v.get("path") not in _OWNED_PATHS]
+    merged = dict(config)
+    merged["views"] = list(config.get("views", [])) + foreign
+    return merged

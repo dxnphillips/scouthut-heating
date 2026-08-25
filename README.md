@@ -62,7 +62,11 @@ restart needed to change them. The easiest way is the **Create dashboards**
 button (created with the boost buttons): one press builds a "Scout Hut"
 sidebar dashboard with your *real* entity ids — including the mapped Rointe
 and Shelly entities — and pressing it again regenerates it after new hardware
-is mapped. The first tab is a deliberately simple **Home** view (status at a
+is mapped. Regenerating **merges** rather than replaces: it refreshes the three
+tabs this integration owns (Home, Heating, Fans) and leaves any other view on
+the shared `scout-hut` dashboard untouched, so a tab another integration added
+(e.g. the Texecom alarm's Alarm tab) survives a recreate. The first tab is a
+deliberately simple **Home** view (status at a
 glance plus the day-to-day buttons — boost, boost duration, pause/resume — and
 no tuning sliders, so nothing gets nudged out of calibration by accident), plus
 a **Temperatures (24 h)** graph that trends the head-height feels-like against
