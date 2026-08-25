@@ -1556,21 +1556,47 @@ class ScoutController:
                     title=title,
                     notification_id=NOTIFY_OPENING_INFERRED[zone],
                 )
-                await self._push_companion(title, message)
+                await self._push_companion(
+                    title, message, icon="mdi:door-open", channel="Scout Hut Openings"
+                )
             elif not inferred and notified:
                 self._opening_notified.discard(zone)
                 persistent_notification.async_dismiss(
                     self.hass, NOTIFY_OPENING_INFERRED[zone]
                 )
 
-    async def _push_companion(self, title: str, message: str) -> None:
+    async def _push_companion(
+        self,
+        title: str,
+        message: str,
+        *,
+        icon: str = "mdi:home-alert",
+        channel: str = "Scout Hut alerts",
+    ) -> None:
         """Push to every device with the Home Assistant companion app installed.
 
         Enumerates the ``notify.mobile_app_*`` services the companion app
         registers per device and calls each. No-op when none are installed (the
         persistent notification still shows). Best-effort: a failing or missing
         target never breaks the reconcile.
+
+        Only genuinely urgent alerts reach this path (a fire hold, a window/door
+        left open), so every push is flagged for **Android Auto** — ``car_ui``
+        surfaces it on the car display so it's seen while driving, and ``ttl``/
+        ``priority`` force immediate delivery even if the phone is dozing. The
+        per-alert ``channel`` lets the owner tune each one (set it to pop up on
+        the phone, which is what makes it appear on top of the car screen). The
+        companion app must stay in the Android Auto launcher for ``car_ui`` to
+        work.
         """
+        data = {
+            "car_ui": True,
+            "notification_icon": icon,
+            "channel": channel,
+            "importance": "high",
+            "ttl": 0,
+            "priority": "high",
+        }
         try:
             services = self.hass.services.async_services().get("notify", {})
         except Exception:  # noqa: BLE001
@@ -1582,7 +1608,7 @@ class ScoutController:
                 await self.hass.services.async_call(
                     "notify",
                     service,
-                    {"title": title, "message": message},
+                    {"title": title, "message": message, "data": data},
                     blocking=False,
                 )
             except Exception as err:  # noqa: BLE001
@@ -2148,7 +2174,9 @@ class ScoutController:
             persistent_notification.async_create(
                 self.hass, message, title=title, notification_id=NOTIFY_FIRE
             )
-            await self._push_companion(title, message)
+            await self._push_companion(
+                title, message, icon="mdi:fire", channel="Scout Hut Fire"
+            )
 
     # ------------------------------------------------------------------
     # Desired-state computation
