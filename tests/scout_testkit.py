@@ -109,12 +109,25 @@ class FakeServices:
         return self._registry
 
     async def async_call(
-        self, domain, service, data=None, blocking=False, target=None, return_response=False, **kw
+        self,
+        domain,
+        service,
+        data=None,
+        blocking=False,
+        target=None,
+        return_response=False,
+        **kw,
     ):
-        self.calls.append({"domain": domain, "service": service, "data": data or {}, "target": target})
+        self.calls.append(
+            {"domain": domain, "service": service, "data": data or {}, "target": target}
+        )
         # Echo switch commands into the fake state machine, like a real switch
         # would: the coordinator now reconciles against actual states.
-        if self._states is not None and domain == "switch" and service in ("turn_on", "turn_off"):
+        if (
+            self._states is not None
+            and domain == "switch"
+            and service in ("turn_on", "turn_off")
+        ):
             ids = (data or {}).get("entity_id")
             for eid in ids if isinstance(ids, list) else [ids]:
                 if eid:
@@ -122,10 +135,27 @@ class FakeServices:
         return {} if return_response else None
 
 
+class FakeConfigEntry:
+    def __init__(self, entry_id):
+        self.entry_id = entry_id
+
+
+class FakeConfigEntries:
+    def __init__(self):
+        self._by_domain = {}
+
+    def async_entries(self, domain):
+        return list(self._by_domain.get(domain, []))
+
+    def add(self, domain, entry):
+        self._by_domain.setdefault(domain, []).append(entry)
+
+
 class FakeHass:
     def __init__(self):
         self.states = FakeStates()
         self.services = FakeServices(self.states)
+        self.config_entries = FakeConfigEntries()
         self.data = {}
 
 
@@ -215,10 +245,22 @@ def make_controller(config_overrides=None, started=True):
 
     # Everything closed / off by default.
     for eid in (
-        E["cal_hall"], E["cal_office"], E["alarm_main"], E["alarm_office"],
-        E["m_hall"], E["m_office"], E["m_kitchen"], E["m_gents"], E["m_female"],
-        E["a_door"], E["a_window"], E["b_door"], E["b_window"],
-        E["shared_window"], E["internal"], E["water"],
+        E["cal_hall"],
+        E["cal_office"],
+        E["alarm_main"],
+        E["alarm_office"],
+        E["m_hall"],
+        E["m_office"],
+        E["m_kitchen"],
+        E["m_gents"],
+        E["m_female"],
+        E["a_door"],
+        E["a_window"],
+        E["b_door"],
+        E["b_window"],
+        E["shared_window"],
+        E["internal"],
+        E["water"],
     ):
         hass.states.set(eid, "off")
 
@@ -355,7 +397,11 @@ def run(coro):
 
 
 def service_calls(hass, domain, service):
-    return [c for c in hass.services.calls if c["domain"] == domain and c["service"] == service]
+    return [
+        c
+        for c in hass.services.calls
+        if c["domain"] == domain and c["service"] == service
+    ]
 
 
 def preset_for(hass, entity_id):
@@ -372,10 +418,30 @@ def preset_for(hass, entity_id):
 def set_registry(entries_by_device, entity_devices):
     """Populate the entity-registry stub for auto-discovery tests."""
     reg = er._REG
-    reg.by_id = {
-        eid: er._RegEntry(eid, dev) for eid, dev in entity_devices.items()
-    }
+    reg.by_id = {eid: er._RegEntry(eid, dev) for eid, dev in entity_devices.items()}
     reg.by_device = {
         dev: [er._RegEntry(e, dev) for e in ents]
         for dev, ents in entries_by_device.items()
     }
+
+
+def add_texecom_alarm(hass, entry_id="alarm_entry", keys=None):
+    """Register a fake texecom_alerts config entry and its registry entities.
+
+    Mirrors the alarm integration's "{entry_id}_{key}" unique-id scheme so the
+    dashboards' _entity_map resolves the keys from its config entry.
+    """
+    keys = keys or [
+        "system_state",
+        "any_armed",
+        "escalation",
+        "panel_reachable",
+        "site_reachable",
+    ]
+    hass.config_entries.add("texecom_alerts", FakeConfigEntry(entry_id))
+    for key in keys:
+        eid = f"binary_sensor.alarm_{key}"
+        er._REG.by_id[eid] = er._RegEntry(
+            eid, None, unique_id=f"{entry_id}_{key}", config_entry_id=entry_id
+        )
+    return entry_id

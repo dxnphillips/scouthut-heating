@@ -72,6 +72,9 @@ no tuning sliders, so nothing gets nudged out of calibration by accident), plus
 a **Temperatures (24 h)** graph that trends the head-height feels-like against
 the ceiling/roof — the gap between the two lines *is* the stratification the
 fans work on; set it as the app's default dashboard for a clean home screen.
+If the **Texecom Alerts** integration is installed, Home also gains a compact
+**Alarm** summary card (system state, any area armed, escalation, panel/site
+contact); it is omitted when that integration is absent.
 The **Heating** and **Fans** tabs carry the operational controls and the tuning
 sliders (Heating also splits the trends into a **Temperatures** and a separate
 **Stratification** graph so the °C temperatures and the small ΔT/spread
