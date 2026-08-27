@@ -156,11 +156,50 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    start only sits the room at comfort a little early, it cannot overheat past
    setpoint. Then still watch the first cold booked morning's shortfall to
    confirm and to size the learned rate.
+   **Frost-to-comfort is NOT a pre-heat job — the cap can only buy ~3.5 °C
+   (2026-08-27, worked from the first clean cold-fabric rate, Q3).** The lead is
+   linear in the deficit (`lead = rate × (target − predicted)`, `predicted` floored
+   at the 7 °C anti-frost temp the heating holds even when "off"). From a hall that
+   has fallen to **frost 7 °C**, the rise to 19.5 is **12.5 °C**, so at the measured
+   ~44 min/°C the model wants **~550 min (~9 h)**; at the current learned 34.4,
+   **~430 min (~7 h)**; winter's `OUTDOOR_MARGIN` adds ~10 % → **~8–10 h**. But the
+   lead **clamps to `preheat_minutes` (155 now)**, and 155 min ÷ 44 = **~3.5 °C** —
+   a frozen hall would climb 7 → ~10.5 and arrive **~9 °C short**. Even the 240 cap
+   buys only ~5.5 °C. **So the lever is never a bigger cap — it is not letting the
+   hall reach frost before a booking:** an overnight eco *pre-charge* (Q17's
+   fabric-pre-charging) so the morning starts from ~16 °C and a real 3–4 °C climb
+   the pre-heat window *can* deliver (this morning: 18.75 → comfort in 44 min).
+   Caveat on the 9 h figure: it extrapolates a *near-target* 1 °C rate (measured
+   where loss is highest) 4–5× past any observed climb — the early 7→12 climb is
+   faster per °C (smaller gap) but fights cold-mass soak (Q17), so treat 7–10 h as
+   an order of magnitude, and note Q17's open question of whether frost→19.5 in one
+   session is even reachable before the capacity/soak wall.
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the
    success metric. Target 19.5 °C is now reachable (old 22 never was), so
    completed warm-ups finally exist to learn from.
+   **First clean cold-fabric sealed warm-up (2026-08-27, owner-confirmed all
+   external doors + windows shut).** The hall (occupancy-driven, no booking —
+   people arrived to a cold hut) climbed floor **18.75 → 19.75 °C in 44.1 min,
+   fans-assisted (reverse, 219/222 ticks, ~153 W), reached target cleanly** —
+   an observed **44.1 min/°C**, the *slowest accepted* fans sample yet, and
+   notably slower than even the base (no-fan) rate (40.2). That inversion is not
+   the fans hurting: the fans rate had been biased *fast* by the one solar-assisted
+   midday sample (2026-08-22, 15.9 min/°C, an 11:16 climb on a warm roof), and this
+   pre-sunrise cold-fabric climb is the honest cold-start pulling it back —
+   `zone_a_warmup_rate_fans` EWMA'd **30.2 → 34.4**. Base (40.2) and fans (34.4)
+   are converging on the true ~40+ from opposite sides. **The destrat mechanism was
+   visibly working** (Q10): across the climb the ceiling *fell* while the floor
+   *rose* — gap ceiling−floor collapsed **1.85 → ~1.0** — so this was delivery, not
+   heat pooling uselessly at the apex. **Trustworthy baseline** (the point of the
+   sealed condition): overnight `cooloff_sample`s were textbook (~1 °C/2 h, gap ~4,
+   ~12.2 %/h, no outlier, no `opening_inferred`) — nothing leaked. **Caveat: still
+   mild** — outdoor was 15.5–16.7 °C; a real winter cold-start (colder out, colder
+   fabric) will read slower still, so expect the fans rate to keep drifting up past
+   34–40 as winter mornings land (the fail-safe, arrive-warm direction). This was
+   occupancy, not a booking, so there is *still* no `booking_start.shortfall` to read
+   — the next cold *booked* morning remains the pre-heat validation (Q2/Q14).
 4. **Gap-normalised heat-loss constants (`zone_X_heatloss_pct`, seed 25).**
    July measurements: hall ~10 %/h, office ~4.5 %/h. Verify autumn/winter
    `cooloff_sample` events (they carry `gap`) confirm season transfer;
@@ -491,7 +530,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     still *climbing* while the floor sits at 18 → yes → heat is being made and
     pooling (stratification). The 15-min trace already carries
     floor/ceiling/demand/occupied/fans, so (a)–(c) need **no code change** to
-    read. **A sharper discriminator already exists in HA, also code-free** (the
+    read. **First partial read on (a)–(c) (2026-08-27, occupied cold-fabric climb,
+    sealed — see Q3).** This was a *small* climb near target (18.75 → 19.75), not a
+    frost cold-start, so it does not settle the capacity wall — but against the three
+    discriminators it points AWAY from stratification-as-the-limit and toward
+    *delivery working*: (a) the ceiling−floor gap was **small and shrinking** under
+    load (1.85 → ~1.0), not a big stuck 5–6 °C — heat was not pooling; (b) the floor
+    kept **rising** to target and got there (soak/time behaviour, consistent with the
+    44 min/°C being a *rate* limit, not a ceiling); (c) the ceiling **fell** while the
+    floor rose (the reverse fans pulling the apex down — the opposite of "made heat
+    pooling at the roof"). So *at 18.75, mild outdoor, fabric already warm*, the hall
+    is delivery-fine and rate-limited, not stratification-capped. The capacity/soak
+    question is still open for the case that matters — a *deep cold-fabric* winter
+    climb (frost → comfort, Q2), where cold mass soak and a big loss gradient could
+    still expose a wall this gentle climb never approached. **A sharper discriminator
+    already exists in HA, also code-free** (the
     Rointe integration is `JYewman/rointe_integration`): each hall heater exposes
     `heating_status` (`idle` / `heating` / `maintaining`, from `status_warming`
     0/2/1 cross-checked against its own probe), its own `current_temperature`
