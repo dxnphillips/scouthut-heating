@@ -130,6 +130,35 @@ def test_controller_trace_records_the_computed_readings():
     assert snap["trace"] == ctrl.trace.to_list()
 
 
+def test_trace_records_heater_firing_and_drive_offset():
+    # The attribution fields added so a climb can be credited to the radiators
+    # (hall_fire > 0) vs free gain, and the drive's push read through it.
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 18)
+    # One of the two hall heaters actively heating, the other idle.
+    hass.states.set(
+        E["hall"][0], "heat", {"current_temperature": 18, "hvac_action": "heating"}
+    )
+    hass.states.set(
+        E["hall"][1], "heat", {"current_temperature": 18, "hvac_action": "idle"}
+    )
+    ctrl._drive_stair[E["hall"][0]] = 1.5
+    ctrl._drive_stair[E["hall"][1]] = 0.5
+
+    ctrl._sample_trace()
+    (point,) = ctrl.trace.to_list()
+    assert point["hall_fire"] == 1  # only the heating one counts
+    assert point["drive_off"] == 1.5  # the largest overdrive wound on
+
+    # Nothing firing, drive idle -> both zero (the free-gain signature).
+    ctrl2, hass2 = make_controller()
+    _hall_temp(hass2, 18)
+    ctrl2._sample_trace()
+    (p2,) = ctrl2.trace.to_list()
+    assert p2["hall_fire"] == 0
+    assert p2["drive_off"] == 0.0
+
+
 # --- Learning samples -------------------------------------------------------------
 
 def test_accepted_warmup_sample_is_audited_with_its_inputs():
