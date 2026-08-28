@@ -910,6 +910,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   **First-winter watch:** confirm it lands *on* target without hover/overshoot on
   the slow fabric, and read `drive_capped` / the `drive.pushed` trace for which
   heaters need the most boost.
+  **The 15-min trace now carries `hall_fire` and `drive_off` (2026-08-28) so a
+  climb is retrospectively attributable** — `hall_fire` is the count of hall
+  heaters reporting `hvac_action == heating`, `drive_off` the largest overdrive
+  (°C above target) the drive had wound on. Together they answer the question the
+  2026-08-27 export could NOT: was a warm-up the radiators or free gain (a climb
+  with `hall_fire` 0 is fans+occupancy+solar, as the 08-05 heaters-off climb was),
+  and how hard was the drive pushing through it. **What they still do NOT give:**
+  `hvac_action` is two-valued (heating/idle) and cannot see the Rointe's throttled
+  *maintaining* half-power state — so the definitive "drive aggressive enough vs
+  capacity wall" (Q17) signal still needs the device's own `heating_status`
+  sensor, and the kWh saving (Q10) reads from HA long-term statistics (the Rointe
+  `energy` accumulator is `TOTAL_INCREASING`), not from this trace.
 - **Boost drives ABOVE comfort, not just to it (2026-08-07, owner insight).** A
   boost used to return the comfort preset and nothing more — so pressing it while
   the room was already at the comfort setpoint was a *no-op* (the drive was

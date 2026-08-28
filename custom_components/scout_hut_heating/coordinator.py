@@ -2727,6 +2727,38 @@ class ScoutController:
             self._reconcile_pending = False
             await self.async_reconcile()
 
+    def _hall_heaters_firing(self) -> int:
+        """How many hall heaters report ``hvac_action == heating`` right now.
+
+        Recorded in the trace so a later export can attribute a climb: a warm-up
+        that reached target with ``hall_fire`` 0 was free gain (fans + occupancy
+        + solar), not the radiators, while a non-zero count over the climb is the
+        heaters doing the work. Floor temperature alone cannot tell them apart —
+        which is why the 2026-08-27 climb could not be credited to the drive
+        rather than the fans. NB ``hvac_action`` is two-valued here
+        (heating/idle); it does NOT distinguish the Rointe's throttled
+        *maintaining* half-power state — that needs the device's own
+        ``heating_status`` sensor (Q17), which this count is not a substitute for.
+        """
+        n = 0
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
+            st = self.hass.states.get(climate)
+            if st is not None and st.attributes.get("hvac_action") == "heating":
+                n += 1
+        return n
+
+    def _hall_drive_offset(self) -> float:
+        """The largest overdrive the drive has wound onto a hall heater (°C above
+        target), recorded so the trace shows how hard the drive was pushing
+        through a climb — the signal for whether the setpoint drive, rather than
+        the fabric, was ever the limiter. 0 when the drive is off or idle."""
+        stair = self._drive_stair
+        offsets = [
+            stair.get(climate, 0.0)
+            for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A]))
+        ]
+        return round(max(offsets), 2) if offsets else 0.0
+
     def _sample_trace(self) -> None:
         """Append a point to the rolling temperature/wattage trace.
 
@@ -2753,6 +2785,12 @@ class ScoutController:
             # effect, and whether it needs revisiting).
             occupied=self._cooling_occupied(),
             demand=self.heat_demand,
+            # Heater attribution + drive aggression, so a climb can be credited to
+            # the radiators vs free gain and the drive's push read through it (the
+            # 2026-08-27 gap: a warm-up reached target but the trace could not say
+            # whether the drive or the fans got it there).
+            hall_fire=self._hall_heaters_firing(),
+            drive_off=self._hall_drive_offset(),
         )
 
     def _record_booking_edges(self) -> None:
