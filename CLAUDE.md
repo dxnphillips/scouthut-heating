@@ -761,6 +761,82 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     The residual single-heater active-climb flag (one heater short+idle mid-climb as
     the cloud lag brushes the 30-min window) stays a *widen the settle window* call
     per the decision rule, not a tolerance change.
+21. **Fan-direction thrash from a spurious comfort flip (field 2026-08-29, v1.28.1
+    export — candidate debounce, NOT yet built; confirm root on 1.29.2).** On a warm
+    occupied afternoon the ceiling fans reversed **3× in 84 min** (11:49 forward →
+    12:41 reverse → 13:03 forward), each a ~5-min coast/spin sequence. Root: fan
+    *direction* is keyed to the hall heat state (`_fan_cooling_regime`: heating →
+    reverse so it never wind-chills the warmed people; warm + not-heating → forward
+    breeze), and the hall preset **flapped comfort↔ice**. The `COOLING_DIRECTION_HYST`
+    (1 °C) guards the warm/cool line but **nothing debounces the heating→direction
+    coupling**. The flap traced to **one spurious `ice→comfort` at 12:17 on a
+    uniformly ~22 °C hall** (trace coldest 21.5, no probe near the 19.5 gate; reason
+    `motion`). Leading cause — unconfirmed on 1.28.1 — is a **transient Rointe hall-probe
+    drop-out hitting the err-warm heat path**: outdoor was 14.5 °C (< comfort), so the
+    v1.26.2 ceiling+outdoor reinforcement *cannot* withhold and a drop-out past the
+    2-min grace errs warm → comfort → reverse fans; the natural warm→ice at 13:03 then
+    forced it back to forward. All four hall heaters read healthy/warm/idle at export,
+    and the building `demand` keeping things active was the **shared toilets** (600 W
+    each), not the hall. **Candidate fix (two layers):** (a) *fan-direction debounce*
+    — a wanted reversal must persist N min before actuating, so a transient preset blip
+    causes zero physical reversals (mitigation: only fully cures episodes shorter than
+    N; the 12:17 comfort lasted ~46 min so a 15–20 min debounce cuts 3 reversals to ~1,
+    not 0); (b) the real cure is **upstream** — stop the spurious comfort by widening
+    the err-warm grace / holding last-known-warm longer when every *other* reading says
+    warm. **Decision rule:** on 1.29.2, read `hall_fire`/per-heater `heating_status` at
+    the next such flap — if a hall probe is unreadable at the `ice→comfort` edge while
+    the others read warm, it is the err-warm transient (fix (b)); if a probe genuinely
+    dipped, different. Build the debounce (a) as the cheap symptom guard regardless
+    (fire/fault must bypass it; it only *delays* a confirmed-real reversal, never blocks).
+    Pairs with Q16 (the F6 note resolved *season*-driven direction flapping but left the
+    *heat-state*→direction coupling undebounced — this is the first field case of it).
+22. **External evidence review (2026-08-29, standards/literature audit) — triage
+    against the current code.** A thorough external report graded the system near
+    BS EN 15232 Class A and **independently reproduced the frost-deficit arithmetic**
+    (7 °C floor → ~12.5 °C rise → ~8 h needed vs a 155-min cap delivering ~3.9 °C → a
+    cold booking arrives ~8 °C short — same as Q2). Its genuinely useful, actionable
+    items and the ones to reject (it evaluates a ~2–3 week-stale snapshot and misses
+    the fire-hold, drive self-checks, boost-above-comfort, hold-margin, sleepover/
+    night-arm heating, transient-blip guard, per-heater capture, eco-keyword/hall-
+    specific fan demand):
+    - **ACTIONABLE — winter frost fix (needs owner sign-off; the real Q2 lever).**
+      (a) *Winter fabric setback ~9 °C* for the empty hall in the cold season instead of
+      the 7 °C ice floor — shrinks the morning deficit and cuts timber thermal swings /
+      condensation (Historic England, CIBSE church guidance). Cost: standing energy to
+      hold 9 vs 7 in a leaky hall is real; and it re-adds a *season branch on the empty
+      floor only* (not on occupied heating — narrower than the decoupling it doesn't
+      touch). (b) *Overnight pre-charge* — on a forecast-cold night before a morning
+      booking, hold eco ~16 overnight (ideally in the Economy-7 window) so the morning
+      starts warm and the 155-min window's achievable 3–4 °C lift is enough (this
+      morning: 18.75 → comfort in 44 min proves the small lift works). **This is the
+      actual fix**; the cap is a minor lever (even 240 buys only ~5.5 °C). Cost genuinely
+      uncertain (a leaky hall stores little; E7 only wins if the charge abuts the booking)
+      — **run as a measured winter trial, do not switch on faith.**
+    - **ACTIONABLE — cheap.** Seasonal-flag *hysteresis* (separate engage ≥15 / release
+      ≤13.5–14 on the 3-day mean, drop/deadband the RealFeel edge) to stop the ~19-flaps/
+      week — low value (the flag only times the condensation watch now) but a few lines.
+    - **ACTIONABLE — cloud-write chatter (optional, bigger).** *Asymmetric* minimum
+      preset dwell — hold before a *demotion* to a cooler preset, but promote to a warmer
+      preset immediately (never delay heating a cold room). Protects the unofficial Rointe
+      Firebase API (no documented rate limit). Same root as item 21's flap; the fan
+      debounce is the targeted fix, this is the separate cloud-load fix.
+    - **OWNER-SIDE SAFETY (highest consequence, not code).** Dedicated *pipe/tank frost
+      protection* (trace heating / frost stat — the 7 °C air floor does not protect pipe
+      runs in cold voids), and *verify the kitchen water heater meets HSG274 Part 2*
+      (50–60 °C thermal cycle for Legionella on the ≤15 L POU unit). Do before deep winter.
+    - **REJECT — fights the design or already handled.** *Do NOT* make the season gate
+      office/shared heating (reverses the deliberate `_room_wants_heat` decoupling; a warm
+      room already doesn't heat whatever the outdoor). The "shared runs to 21 on warm days"
+      waste is largely gone (eco-keyword v1.26.3 + the room-below-target gate). "k drift
+      8.7→12.5 is contamination" is unproven — winter wind/infiltration can make 12.5 real,
+      and the robust EWMA + outlier + tick-drop guards already reject impossible samples
+      (the office just converged *cleanly* 7.34→3.94, disproving "gates too weak"). Coast/
+      optimum-stop already exists (deliberately off for winter). RLS-vs-EMA and an RC/
+      non-linear preheat rewrite are low return for this plant.
+    - **RE-EVALUATE ON 1.29.2 DATA.** The frost fix's value, the drive-saturation question
+      (`hall_maint` vs floor deficit = capacity wall vs stratification), the destrat kWh
+      saving (`hall_kwh` fans-on/off), and item 21's flap root all read directly from the
+      first cold heated export once upgraded.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
@@ -1275,6 +1351,12 @@ open-window ventilation drops get learned as fabric loss (the 2026-07-22
 now catches the worst of it, but a mapped contact is the proper structural fix,
 exactly as `zone_a_doors` protects the hall). **Reset `zone_b_heatloss_pct` to
 ~5 %/h** — the EWMA does not self-heal fast from that corruption.
+**Safety, before deep winter (2026-08-29 evidence review, Q22):** fit *dedicated
+pipe/tank frost protection* (trace heating or a frost stat) on vulnerable pipe
+runs — the 7 °C Rointe air floor protects room air, not pipes in cold voids; and
+*verify the kitchen water heater meets HSG274 Part 2* (a genuine 50–60 °C thermal
+cycle for Legionella on the ≤15 L point-of-use unit) and that the hygiene clock
+guarantees it.
 
 ## Architecture pointers
 
