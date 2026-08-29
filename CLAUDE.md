@@ -916,12 +916,26 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   (°C above target) the drive had wound on. Together they answer the question the
   2026-08-27 export could NOT: was a warm-up the radiators or free gain (a climb
   with `hall_fire` 0 is fans+occupancy+solar, as the 08-05 heaters-off climb was),
-  and how hard was the drive pushing through it. **What they still do NOT give:**
-  `hvac_action` is two-valued (heating/idle) and cannot see the Rointe's throttled
-  *maintaining* half-power state — so the definitive "drive aggressive enough vs
-  capacity wall" (Q17) signal still needs the device's own `heating_status`
-  sensor, and the kWh saving (Q10) reads from HA long-term statistics (the Rointe
-  `energy` accumulator is `TOTAL_INCREASING`), not from this trace.
+  and how hard was the drive pushing through it.
+  **The saturation + consumption gap is now closed too (2026-08-29).** Field
+  screenshots confirmed each Rointe heater exposes sibling sensors —
+  `sensor.<heater>_heating_status` (idle/heating/**maintaining**),
+  `sensor.<heater>_energy` (kWh, `TOTAL_INCREASING`),
+  `sensor.<heater>_surface_temperature`, `sensor.<heater>_effective_power` —
+  auto-discovered from the heater's device (`_heater_sensor_map`, mirroring the
+  power discovery). The trace now also carries **`hall_maint`** (count of hall
+  heaters throttled to *maintaining*) and **`hall_kwh`** (sum of hall energy, for
+  a within-trace consumption delta); the diagnostics per-heater block (hall,
+  office AND shared) now includes `heating_status` / `energy` / `surface` /
+  `effective`. This is the **definitive Q17 discriminator**: heaters short of
+  target AND pinned at full `heating` (hall_maint 0) = capacity wall (drive can't
+  help); heaters short but at `maintaining` = heat reached the local probe, not
+  the far field = stratification/soak (fans/lead, not more kW). `hall_kwh` deltas
+  give the Q10 duty/saving signal without cross-referencing HA statistics.
+  `hall_fire` stays as the always-available `hvac_action` fallback for installs
+  whose status sensors don't map. **First-winter watch:** on the first cold
+  heated climb read `hall_maint` vs the floor deficit to settle capacity-vs-
+  stratification, and `hall_kwh` fans-on vs fans-off for the destrat saving.
 - **Boost drives ABOVE comfort, not just to it (2026-08-07, owner insight).** A
   boost used to return the comfort preset and nothing more — so pressing it while
   the room was already at the comfort setpoint was a *no-op* (the drive was

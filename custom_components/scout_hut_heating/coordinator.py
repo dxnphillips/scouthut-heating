@@ -396,6 +396,9 @@ class ScoutController:
         self._reverse_attempts = 0  # consecutive reversals with no relay change
         self._fan_fault_notified: bool = False
         self._discovered_power: list[str] | None = None  # auto-found power sensors
+        # climate -> its Rointe sibling sensors (heating_status / energy / surface
+        # / effective power), auto-found from the device once the registry has it.
+        self._heater_sensors: dict[str, dict[str, str]] | None = None
         self._connected_map: dict[str, str] | None = None  # climate -> connected sensor
         # A zone whose last preset was sent while a heater was offline: re-send it
         # once every heater is back online.
@@ -1855,6 +1858,46 @@ class ScoutController:
         self.audit.load(data.get("audit"))
         self.trace.load(data.get("trace"))
 
+    def _heater_detail(self, climate: str) -> dict[str, Any]:
+        """The full per-heater snapshot for the diagnostics export.
+
+        Beyond the climate's own state/preset/setpoint/action, this pulls the
+        Rointe sibling sensors (discovered from the device): ``heating_status``
+        (idle / heating / maintaining — the throttle/saturation signal
+        ``hvac_action`` cannot give, the direct capacity-vs-stratification
+        discriminator), ``energy`` (kWh accumulator, the duty/saving signal),
+        the ``surface`` probe and the (modelled) ``effective_power``. Any that
+        did not resolve on a given install are simply absent.
+        """
+        st = self.hass.states.get(climate)
+        detail: dict[str, Any] = {
+            "state": st.state if st else None,
+            "temp": (st.attributes.get("current_temperature") if st else None),
+            "preset": (st.attributes.get("preset_mode") if st else None),
+            # The device's ACTIVE target setpoint and heating action — the ground
+            # truth for whether a drive push actually landed (drive.pushed is only
+            # what we SENT). Without these the setpoint-not-landing failure looks
+            # identical to a capacity wall in the export.
+            "setpoint": (st.attributes.get("temperature") if st else None),
+            "action": (st.attributes.get("hvac_action") if st else None),
+            "online": self._climate_online(climate),
+            # The comfort-temperature NUMBER the drive writes to, plus its value
+            # and allowed max — so a "setpoint not landing" can be split three
+            # ways: the number accepted our value but the climate setpoint did not
+            # follow (preset-reset), the number clamped it (range too low), or the
+            # write never took.
+            "comfort_number": self._comfort_number_state(climate),
+        }
+        status_eid = self._heater_sensor(climate, "heating_status")
+        if status_eid is not None:
+            status_st = self.hass.states.get(status_eid)
+            detail["heating_status"] = status_st.state if status_st else None
+        for key in ("energy", "surface", "effective"):
+            eid = self._heater_sensor(climate, key)
+            if eid is not None:
+                detail[key] = self._num_state(eid)
+        return detail
+
     def diagnostics_data(self) -> dict[str, Any]:
         """Everything needed to audit the controller offline.
 
@@ -1879,32 +1922,23 @@ class ScoutController:
 
         zones: dict[str, Any] = {}
         for zone in (ZONE_A, ZONE_B):
-            heaters: dict[str, Any] = {}
-            for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
-                st = self.hass.states.get(climate)
-                heaters[climate] = {
-                    "state": st.state if st else None,
-                    "temp": (st.attributes.get("current_temperature") if st else None),
-                    "preset": (st.attributes.get("preset_mode") if st else None),
-                    # The device's ACTIVE target setpoint and heating action —
-                    # the ground truth for whether a drive push actually landed
-                    # (drive.pushed is only what we SENT). Without these the
-                    # setpoint-not-landing failure looks identical to a capacity
-                    # wall in the export.
-                    "setpoint": (st.attributes.get("temperature") if st else None),
-                    "action": (st.attributes.get("hvac_action") if st else None),
-                    "online": self._climate_online(climate),
-                    # The comfort-temperature NUMBER the drive writes to, plus its
-                    # value and allowed max — so a "setpoint not landing" can be
-                    # split three ways: the number accepted our value but the
-                    # climate setpoint did not follow (preset-reset), the number
-                    # clamped our value (range too low), or the write never took.
-                    "comfort_number": self._comfort_number_state(climate),
-                }
+            heaters = {
+                climate: self._heater_detail(climate)
+                for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone]))
+            }
             zones[zone] = {
                 "heaters": heaters,
                 "average": self._zone_room_temp(zone),
                 "coldest": self._zone_room_temp(zone, coldest=True),
+            }
+        # Shared block (kitchen/toilets/stores) — its heaters are driven and
+        # follow bookings/motion now, so their per-heater detail is as relevant
+        # to audit as the hall's.
+        shared_climates = self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+        if shared_climates:
+            zones["shared"] = {
+                "heaters": {c: self._heater_detail(c) for c in shared_climates},
+                "average": self._shared_room_temp(),
             }
 
         stale_min = self.number("fan_sensor_stale_minutes")
@@ -2735,15 +2769,34 @@ class ScoutController:
         + solar), not the radiators, while a non-zero count over the climb is the
         heaters doing the work. Floor temperature alone cannot tell them apart —
         which is why the 2026-08-27 climb could not be credited to the drive
-        rather than the fans. NB ``hvac_action`` is two-valued here
-        (heating/idle); it does NOT distinguish the Rointe's throttled
-        *maintaining* half-power state — that needs the device's own
-        ``heating_status`` sensor (Q17), which this count is not a substitute for.
+        rather than the fans. ``hvac_action`` is two-valued (heating/idle) and is
+        the always-available fallback; the throttled *maintaining* half-power
+        state is captured separately as ``hall_maint`` from the Rointe
+        ``heating_status`` sensor, so full-power ~= ``hall_fire`` − ``hall_maint``.
         """
         n = 0
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
             st = self.hass.states.get(climate)
             if st is not None and st.attributes.get("hvac_action") == "heating":
+                n += 1
+        return n
+
+    def _hall_heaters_maintaining(self) -> int:
+        """How many hall heaters report Rointe ``heating_status == maintaining``.
+
+        The saturation discriminator ``hvac_action`` cannot give (Q17): a heater
+        at *maintaining* has reached its OWN local target and throttled to half
+        power. If the hall floor is still short while heaters sit at maintaining,
+        heat is reaching the probes but not the far field (stratification / a
+        satisfied local probe), NOT a capacity wall — where heaters would pin at
+        full ``heating`` and never back off. 0 when no status sensor is
+        discovered (the field is simply absent from those installs' analysis).
+        """
+        n = 0
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
+            eid = self._heater_sensor(climate, "heating_status")
+            st = self.hass.states.get(eid) if eid else None
+            if st is not None and st.state == "maintaining":
                 n += 1
         return n
 
@@ -2758,6 +2811,24 @@ class ScoutController:
             for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A]))
         ]
         return round(max(offsets), 2) if offsets else 0.0
+
+    def _hall_energy_kwh(self) -> float | None:
+        """Sum of the hall heaters' Rointe energy accumulators (kWh), or None.
+
+        Recorded so a climb's consumption is a delta within the trace itself (the
+        Q10 duty/saving signal), without needing to cross-reference HA long-term
+        statistics. The accumulators are TOTAL_INCREASING, so only differences
+        between trace points are meaningful. None when no energy sensor resolved
+        or none carried a number this tick.
+        """
+        total = 0.0
+        seen = False
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
+            value = self._num_state(self._heater_sensor(climate, "energy"))
+            if value is not None:
+                total += value
+                seen = True
+        return round(total, 3) if seen else None
 
     def _sample_trace(self) -> None:
         """Append a point to the rolling temperature/wattage trace.
@@ -2791,6 +2862,13 @@ class ScoutController:
             # whether the drive or the fans got it there).
             hall_fire=self._hall_heaters_firing(),
             drive_off=self._hall_drive_offset(),
+            # Saturation + consumption from the Rointe sibling sensors: hall_maint
+            # is the count throttled to half power (heaters short + pinned at full
+            # = capacity wall; short + maintaining = stratification/local-satisfied
+            # — Q17), hall_kwh the energy total for a within-trace consumption delta
+            # (Q10). Both absent on installs whose status/energy sensors don't map.
+            hall_maint=self._hall_heaters_maintaining(),
+            hall_kwh=self._hall_energy_kwh(),
         )
 
     def _record_booking_edges(self) -> None:
@@ -4055,6 +4133,61 @@ class ScoutController:
             effective = [e for e in device_matches if "effective" in e.lower()]
             found.extend(effective or device_matches)
         return found
+
+    # Rointe sibling-sensor suffixes captured for each heater. heating_status is
+    # the throttle/saturation signal hvac_action cannot give (idle / heating /
+    # maintaining — a heater at 'maintaining' has reached its own local target and
+    # backed off to half power, the discriminator between a capacity wall and a
+    # satisfied/stratified room); energy is the kWh accumulator (the duty/saving
+    # signal); surface is the Rointe's own surface probe; effective is the live
+    # (modelled) power.
+    _HEATER_SENSOR_SUFFIXES = {
+        "heating_status": "_heating_status",
+        "energy": "_energy",
+        "surface": "_surface_temperature",
+        "effective": "_effective_power",
+    }
+
+    def _heater_sensor_map(self) -> dict[str, dict[str, str]]:
+        """Map each mapped heater climate to its Rointe sibling sensors.
+
+        Walks the entity registry once (memoised, mirroring the power discovery)
+        to find, per heater device, the sensors the Rointe integration exposes
+        alongside the climate. Returns ``{climate: {key: entity_id}}`` carrying
+        only the keys that resolved, so a device missing one degrades gracefully.
+        """
+        if self._heater_sensors is not None:
+            return self._heater_sensors
+        registry = er.async_get(self.hass)
+        result: dict[str, dict[str, str]] = {}
+        climates = (
+            self._as_list(self.config.get(CONF_HALL_CLIMATES))
+            + self._as_list(self.config.get(CONF_OFFICE_CLIMATES))
+            + self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+        )
+        for climate in climates:
+            entry = registry.async_get(climate)
+            if entry is None or entry.device_id is None:
+                continue
+            found: dict[str, str] = {}
+            for member in er.async_entries_for_device(
+                registry, entry.device_id, include_disabled_entities=False
+            ):
+                if member.domain != "sensor":
+                    continue
+                eid = member.entity_id.lower()
+                for key, suffix in self._HEATER_SENSOR_SUFFIXES.items():
+                    if key not in found and eid.endswith(suffix):
+                        found[key] = member.entity_id
+            if found:
+                result[climate] = found
+        if result:  # only memoise once the registry actually carries the devices
+            self._heater_sensors = result
+        return result
+
+    def _heater_sensor(self, climate: str, key: str) -> str | None:
+        """The discovered ``key`` sibling sensor entity id for a heater, or None."""
+        return self._heater_sensor_map().get(climate, {}).get(key)
 
     def _connected_for(self, climate: str) -> str | None:
         """Return the Rointe 'Connected' binary_sensor for a heater, if any."""

@@ -120,3 +120,75 @@ def test_power_discovery_falls_back_without_an_effective_sibling():
         entity_devices={"climate.hall_back": "dev_hall_back"},
     )
     assert ctrl._power_sensors() == ["sensor.hall_back_power"]
+
+
+def _wire_hall_heater_sensors():
+    # Both hall heaters, each with the Rointe sibling sensors seen in the field.
+    set_registry(
+        entries_by_device={
+            "dev_hall_back": [
+                "sensor.hall_back_heating_status",
+                "sensor.hall_back_energy",
+                "sensor.hall_back_surface_temperature",
+                "sensor.hall_back_effective_power",
+            ],
+            "dev_hall_front": [
+                "sensor.hall_front_heating_status",
+                "sensor.hall_front_energy",
+            ],
+        },
+        entity_devices={
+            "climate.hall_back": "dev_hall_back",
+            "climate.hall_front": "dev_hall_front",
+        },
+    )
+
+
+def test_heater_sensor_discovery_finds_the_rointe_siblings():
+    ctrl, _ = make_controller()
+    _wire_hall_heater_sensors()
+    assert (
+        ctrl._heater_sensor("climate.hall_back", "heating_status")
+        == "sensor.hall_back_heating_status"
+    )
+    assert ctrl._heater_sensor("climate.hall_back", "energy") == "sensor.hall_back_energy"
+    assert (
+        ctrl._heater_sensor("climate.hall_back", "surface")
+        == "sensor.hall_back_surface_temperature"
+    )
+    assert (
+        ctrl._heater_sensor("climate.hall_back", "effective")
+        == "sensor.hall_back_effective_power"
+    )
+    # The front heater has no surface sensor mapped -> that key is simply absent.
+    assert ctrl._heater_sensor("climate.hall_front", "surface") is None
+
+
+def test_trace_records_maintaining_count_and_hall_kwh():
+    ctrl, hass = make_controller()
+    _wire_hall_heater_sensors()
+    # One hall heater throttled (maintaining), the other at full heating.
+    hass.states.set("sensor.hall_back_heating_status", "maintaining")
+    hass.states.set("sensor.hall_front_heating_status", "heating")
+    hass.states.set("sensor.hall_back_energy", "4.0")
+    hass.states.set("sensor.hall_front_energy", "6.0")
+
+    ctrl._sample_trace()
+    (point,) = ctrl.trace.to_list()
+    assert point["hall_maint"] == 1  # only the throttled one
+    assert point["hall_kwh"] == 10.0  # summed accumulators
+
+
+def test_heater_detail_includes_rointe_sensors_in_snapshot():
+    ctrl, hass = make_controller()
+    _wire_hall_heater_sensors()
+    hass.states.set("sensor.hall_back_heating_status", "heating")
+    hass.states.set("sensor.hall_back_energy", "4.167")
+    hass.states.set("sensor.hall_back_surface_temperature", "19.0")
+    hass.states.set("sensor.hall_back_effective_power", "0")
+
+    detail = ctrl._heater_detail("climate.hall_back")
+    assert detail["heating_status"] == "heating"
+    assert detail["energy"] == 4.167
+    assert detail["surface"] == 19.0
+    assert detail["effective"] == 0.0
