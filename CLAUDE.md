@@ -828,11 +828,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       office/shared heating (reverses the deliberate `_room_wants_heat` decoupling; a warm
       room already doesn't heat whatever the outdoor). The "shared runs to 21 on warm days"
       waste is largely gone (eco-keyword v1.26.3 + the room-below-target gate). "k drift
-      8.7→12.5 is contamination" is unproven — winter wind/infiltration can make 12.5 real,
-      and the robust EWMA + outlier + tick-drop guards already reject impossible samples
-      (the office just converged *cleanly* 7.34→3.94, disproving "gates too weak"). Coast/
-      optimum-stop already exists (deliberately off for winter). RLS-vs-EMA and an RC/
-      non-linear preheat rewrite are low return for this plant.
+      8.7→12.5 is contamination" is unproven *as they framed it* (warm-season low-gap) —
+      winter wind/infiltration can make 12.5 real, and the robust guards already reject
+      impossible samples (the office converged *cleanly* 7.34→3.94). **BUT the owner then
+      found a real hall-k noise source of a different kind (2026-09-04):** samples taken
+      while the hall sat *over-warm* (~22, above comfort) — transient shed + summer
+      cooling-fan draw + a freeze-jumping Rointe probe — spiked k to 28 and fired a false
+      "opening" alarm. Fixed not by their gate-tightening but by the `COOL_OVERWARM_MARGIN`
+      below-comfort regime gate (see the cool-off bullet) + the `hall_surface` probe
+      investigation. So: reject their diagnosis and their fix, but they were right that the
+      hall k had a real noise source. Coast/optimum-stop already exists (deliberately off
+      for winter). RLS-vs-EMA and an RC/non-linear preheat rewrite are low return.
     - **RE-EVALUATE ON 1.29.2 DATA.** The frost fix's value, the drive-saturation question
       (`hall_maint` vs floor deficit = capacity wall vs stratification), the destrat kWh
       saving (`hall_kwh` fans-on/off), and item 21's flap root all read directly from the
@@ -1012,6 +1018,37 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   whose status sensors don't map. **First-winter watch:** on the first cold
   heated climb read `hall_maint` vs the floor deficit to settle capacity-vs-
   stratification, and `hall_kwh` fans-on vs fans-off for the destrat saving.
+  **The trace also carries `hall_surface` (2026-09-04) — an INDEPENDENT probe.**
+  The `floor` is derived from the Rointe `current_temperature`, which
+  **freeze-then-jumps** through the cloud (field 2026-09-03: floor stepped 18.1 →
+  22.4 in one 15-min tick — no hall heats 4.3 °C in 15 min; it is the probe
+  unfreezing). Those discontinuities corrupt BOTH learnings — fast up-jumps
+  inflate warm-up rates, fast down-steps inflate cool-off k and fire the
+  out-of-family "opening" alarm with no door open. `hall_surface` (the average of
+  the heaters' surface probes) is recorded next to `floor` so a later export can
+  say which probe is steadier and thus the better signal to learn from. Diagnostic
+  only — nothing keys off it yet; caveat: it means the `hall_maint`-while-cold
+  read of capacity-vs-stratification is only trustworthy once the floor reading is
+  confirmed not to be lagging (surface disambiguates).
+- **Cool-off learning is gated to the below-comfort regime (`COOL_OVERWARM_MARGIN`
+  = 2.0, 2026-09-04).** A cool-off is only a clean read of the *fabric* loss when
+  the room decays from at/near its heating setpoint. A sample whose start temp is
+  more than 2 °C ABOVE comfort has been over-warmed (solar, occupancy, a heating
+  overshoot — and on a warm afternoon the summer *cooling* fans actively strip
+  heat), so its early decay is transient shed, not the fabric — and fast enough to
+  trip the >3×-baseline outlier test. This is what drove the field episode the
+  owner corrected: hall samples at **~22 °C (comfort 19.5)** walked k **12.5 → 28**
+  and pushed a **false "window/door open?"** alert **with nothing open** (the doors
+  were a red herring; the cause was over-warm transient shed + a glitchy probe).
+  The gate drops such a sample whole in `_fold_cooloff`, *before* both the fold and
+  the outlier/opening check (`quality_ok` now requires `not over_warm`), so it can
+  neither corrupt k nor cry wolf; `cooloff_sample.over_warm` records it. The 2 °C
+  margin sits above the max legitimate driven overshoot (boost +2, hold +1.5) so a
+  genuinely driven room's decay still teaches. The robust EWMA had *self-corrected*
+  the 28 back to ~15 over clean nights (no manual reset), but the false alarms and
+  the noise should not have happened; this stops them at the source. Winter-safe
+  (the hall rarely sits >2 above comfort in the cold). Does NOT address the probe
+  freeze-jump directly — that is the `hall_surface` investigation above.
 - **Boost drives ABOVE comfort, not just to it (2026-08-07, owner insight).** A
   boost used to return the comfort preset and nothing more — so pressing it while
   the room was already at the comfort setpoint was a *no-op* (the drive was

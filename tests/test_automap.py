@@ -164,6 +164,17 @@ def test_heater_sensor_discovery_finds_the_rointe_siblings():
     assert ctrl._heater_sensor("climate.hall_front", "surface") is None
 
 
+def test_trace_records_hall_surface():
+    ctrl, hass = make_controller()
+    _wire_hall_heater_sensors()  # hall_back has a surface sensor; hall_front does not
+    hass.states.set("sensor.hall_back_surface_temperature", "19.4")
+
+    ctrl._sample_trace()
+    (point,) = ctrl.trace.to_list()
+    # Average over the surface sensors that resolved (just hall_back here).
+    assert point["hall_surface"] == 19.4
+
+
 def test_trace_records_maintaining_count_and_hall_kwh():
     ctrl, hass = make_controller()
     _wire_hall_heater_sensors()
