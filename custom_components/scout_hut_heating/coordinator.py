@@ -307,6 +307,17 @@ DRIVE_COMFORT_TARGET_KEY = {
     ZONE_B: "office_comfort_temp",
     "shared": "shared_comfort_temp",
 }
+# A cool-off is only a clean read of the FABRIC loss when the room is decaying
+# from at/near its heating setpoint. A room sitting this far ABOVE comfort has
+# been over-warmed by solar gain, occupancy or a heating overshoot, and its early
+# decay is transient shedding of that excess (plus, on a warm afternoon, active
+# summer cooling-fan draw) — NOT the fabric constant, and fast enough to trip the
+# out-of-family "opening" alarm with no door open (field 2026-08-29/09-02: samples
+# at ~22 °C, comfort 19.5, drove k 12.5->28 and pushed a false "window open?"). Such
+# a sample is dropped whole, before both the fold and the outlier check, so it can
+# neither corrupt k nor cry wolf. Above the max legitimate driven overshoot (boost
+# +2, hold +1.5) so a genuinely driven room's decay still teaches.
+COOL_OVERWARM_MARGIN = 2.0
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
@@ -1489,19 +1500,29 @@ class ScoutController:
             return
         gap = (start_temp + end_temp) / 2 - out_sum / out_n
         k = current / 100
-        new_k = updated_cooling_k(k, hours, drop, gap, max_tick_drop)
-        new = current if new_k == k else new_k * 100
         # A quality sample whose raw loss is implausibly above the learned baseline
-        # is an unsensored opening (or a probe glitch), not the fabric — it was NOT
-        # folded in (updated_cooling_k rejected it), and the latch drives the
-        # "window/door open?" push. A quality, in-family sample clears the latch
-        # (the opening closed); a poor-quality/noise sample leaves it untouched.
+        # is an unsensored opening (or a probe glitch), not the fabric — it is NOT
+        # folded in and the latch drives the "window/door open?" push. A quality,
+        # in-family sample clears the latch (the opening closed); a poor-quality/
+        # noise sample leaves it untouched.
+        # Over-warm: the room began the decay well above comfort, so the early
+        # drop is transient shed of solar/occupancy/overshoot heat (and possibly
+        # summer cooling-fan draw), not the fabric — drop it whole BEFORE the fold
+        # and the outlier check, so it neither corrupts k nor fires a false opening
+        # alarm on a fast transient with no door open.
+        over_warm = start_temp > self._zone_target(zone) + COOL_OVERWARM_MARGIN
         quality_ok = (
-            drop >= MIN_COOL_SAMPLE_DROP
+            not over_warm
+            and drop >= MIN_COOL_SAMPLE_DROP
             and hours >= MIN_COOL_SAMPLE_HOURS
             and gap >= MIN_COOL_SAMPLE_GAP
             and max_tick_drop < MAX_COOL_TICK_DROP
         )
+        # An over-warm sample is uninformative, not evidence the opening closed, so
+        # it is folded/judged only when the fold actually ran (quality_ok); k is
+        # left untouched when the sample is dropped.
+        new_k = updated_cooling_k(k, hours, drop, gap, max_tick_drop) if quality_ok else k
+        new = current if new_k == k else new_k * 100
         observed = cooling_observed_k(hours, drop, gap)
         outlier = quality_ok and observed is not None and cooling_sample_is_outlier(k, observed)
         if quality_ok:
@@ -1515,6 +1536,7 @@ class ScoutController:
             gap=gap,
             accepted=quality_ok and not outlier,
             outlier=outlier,
+            over_warm=over_warm,
             old_pct=current,
             new_pct=new,
             fan_ticks=fan_ticks,
@@ -2830,6 +2852,24 @@ class ScoutController:
                 seen = True
         return round(total, 3) if seen else None
 
+    def _hall_surface_temp(self) -> float | None:
+        """Average of the hall heaters' Rointe surface-temperature probes, or None.
+
+        An INDEPENDENT reading of the floor, recorded alongside `floor` (which is
+        derived from the Rointe `current_temperature`). The current-temperature
+        probe freezes-then-jumps through the cloud (field 2026-09-03: floor stepped
+        18.1 → 22.4 in one 15-min tick), corrupting both the cool-off and warm-up
+        learning; comparing it against the surface probe over a session shows which
+        is the steadier signal to learn from. Diagnostic only — nothing keys off it
+        yet. None when no surface sensor resolved this tick.
+        """
+        values = [
+            self._num_state(self._heater_sensor(climate, "surface"))
+            for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A]))
+        ]
+        values = [v for v in values if v is not None]
+        return round(sum(values) / len(values), 2) if values else None
+
     def _sample_trace(self) -> None:
         """Append a point to the rolling temperature/wattage trace.
 
@@ -2869,6 +2909,9 @@ class ScoutController:
             # (Q10). Both absent on installs whose status/energy sensors don't map.
             hall_maint=self._hall_heaters_maintaining(),
             hall_kwh=self._hall_energy_kwh(),
+            # Independent probe: the Rointe surface temperature, to compare against
+            # the freeze-then-jump `current_temperature` the `floor` is built from.
+            hall_surface=self._hall_surface_temp(),
         )
 
     def _record_booking_edges(self) -> None:

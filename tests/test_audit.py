@@ -254,6 +254,51 @@ def test_cooloff_sample_is_audited_with_its_gap():
     assert evt["ticks"] == 3
 
 
+def test_cooloff_rejected_when_room_over_warm():
+    # A decay that starts well above comfort (23, comfort 19.5, margin 2 -> 21.5)
+    # is transient shed of solar/overshoot heat, not the fabric: dropped whole, so
+    # it neither moves k nor fires the false "opening" alarm.
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_heatloss_pct", 20)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 10})
+    _hall_temp(hass, 23)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 60)
+    _hall_temp(hass, 22.4)
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 60)
+    _hall_temp(hass, 21.8)  # 1.2 °C over 2 h — would pass every other gate
+    ctrl._update_cooloff_learning()
+
+    (evt,) = events(ctrl, "cooloff_sample")
+    assert evt["over_warm"] is True
+    assert evt["accepted"] is False
+    assert evt["old_pct"] == 20.0 and evt["new_pct"] == 20.0  # k untouched
+    assert ctrl._opening_inferred[ZA] is False  # no false alarm on the transient
+
+
+def test_cooloff_accepted_from_comfort_not_over_warm():
+    # The same clean decay starting AT comfort (19.5) is genuine fabric loss.
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_heatloss_pct", 20)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 10})
+    _hall_temp(hass, 19.5)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 60)
+    _hall_temp(hass, 18.9)
+    ctrl._update_cooloff_learning()
+    advance(ctrl, 60)
+    _hall_temp(hass, 18.3)
+    ctrl._update_cooloff_learning()
+
+    (evt,) = events(ctrl, "cooloff_sample")
+    assert evt["over_warm"] is False
+    assert evt["accepted"] is True
+    assert evt["new_pct"] != 20.0  # learned
+
+
 def test_cooloff_sample_records_a_fan_mixed_window():
     """A cool-off measured with the fans stirring the air is tagged as such.
 
