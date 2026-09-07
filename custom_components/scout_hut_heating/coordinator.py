@@ -149,6 +149,21 @@ FAN_FAULT_GRACE = 70  # seconds a master may be unexpectedly off before we latch
 # Shelly script uses the same settle inside its own reversal sequence).
 FAN_DIRECTION_SETTLE = 1.5  # seconds
 
+# A wanted LIVE reversal must persist this long before it actuates. Fan direction
+# is keyed to the hall's heat state (heating -> reverse, warm+not-heating ->
+# forward), so a hall preset that flaps comfort<->ice on a warm afternoon (a
+# spurious comfort from a probe drop-out, field 2026-08-29/09-03/09-06) would
+# otherwise thrash the heavy fans through a ~5-min coast/spin each time. Holding
+# the current direction until the new one has been wanted continuously for this
+# long collapses a transient blip to zero physical reversals; a genuine, sustained
+# transition still switches once it outlasts the window. Sized to clear the
+# observed blips (~9-12 min) while not sitting on the wrong direction for long. It
+# only ever DELAYS a confirmed reversal — never blocks one, and never keeps the
+# fans on when they should stop (a fire/fault/stop returns off upstream and
+# bypasses it). COOLING_DIRECTION_HYST guards the warm/cool line; this guards the
+# heat-state->direction line it does not cover.
+FAN_DIRECTION_DEBOUNCE_MIN = 15.0
+
 # Hysteresis on the seasonal lockout: engage at avg >= threshold, release only
 # once the 3-day average drops this far below it (or on a cold-snap RealFeel),
 # so a forecast hovering at the threshold cannot flap the lockout hourly.
@@ -375,6 +390,10 @@ class ScoutController:
         self.fan_on: bool | None = None            # last commanded on/off
         self.fan_mode: str = "off"                 # "winter" | "summer" | "off"
         self.fan_direction: str | None = None      # "reverse" | "forward"
+        # Direction debounce: the opposite direction wanted, and since when — a
+        # live reversal is deferred until it has persisted (see _debounce_direction).
+        self._fan_dir_pending: str | None = None
+        self._fan_dir_pending_since: datetime | None = None
         self.fan_last_on: datetime | None = None
         self.fan_last_off: datetime | None = None
         self.fan_dt: float | None = None           # ceiling - floor (diagnostic)
@@ -4601,6 +4620,44 @@ class ScoutController:
             allow_destrat=not self.hall_heating_paused,
         )
 
+    def _debounce_direction(
+        self, want_on: bool, want_dir: str | None, mode: str, now: datetime
+    ) -> tuple[bool, str | None, str]:
+        """Defer a LIVE fan reversal until the new direction has been wanted for
+        ``FAN_DIRECTION_DEBOUNCE_MIN``, so a transient preset blip does not thrash
+        the heavy fans (see the constant). Returns the state to actuate.
+
+        Only a live reversal is held — fans already running, opposite direction
+        wanted. Off, a first start (nothing spinning to reverse), and a
+        same-direction change all pass straight through; while holding, the fans
+        keep their CURRENT direction/mode (they carry on doing something useful),
+        never turning off when they should run. A stop or a change of the wanted
+        target clears the pending timer.
+        """
+        live_reversal = (
+            want_on
+            and want_dir is not None
+            and bool(self.fan_on)
+            and self.fan_direction is not None
+            and want_dir != self.fan_direction
+        )
+        if not live_reversal:
+            self._fan_dir_pending = None
+            self._fan_dir_pending_since = None
+            return want_on, want_dir, mode
+        # A reversal is wanted: (re)start the timer when the target first appears.
+        if self._fan_dir_pending != want_dir or self._fan_dir_pending_since is None:
+            self._fan_dir_pending = want_dir
+            self._fan_dir_pending_since = now
+        elapsed_min = (now - self._fan_dir_pending_since).total_seconds() / 60
+        if elapsed_min < FAN_DIRECTION_DEBOUNCE_MIN:
+            # Hold: keep running exactly as we are — no physical reversal.
+            return True, self.fan_direction, self.fan_mode
+        # Persisted long enough — let the reversal through.
+        self._fan_dir_pending = None
+        self._fan_dir_pending_since = None
+        return want_on, want_dir, mode
+
     async def _reconcile_fans(self) -> None:
         """Apply the desired fan state, honouring the anti-short-cycle timers."""
         if not self.config.get(CONF_FAN_MASTER):
@@ -4620,6 +4677,9 @@ class ScoutController:
         prev = (self.fan_sensor_stale, self.fan_overheated, self.fan_breeze_hot)
         want_on, want_dir, mode = self._fan_target()
         self._notify_condition_edges(*prev)
+
+        # Hold a transient reversal so a flapping preset can't thrash the fans.
+        want_on, want_dir, mode = self._debounce_direction(want_on, want_dir, mode, now)
 
         # The master reads off while we believe it should be on: do NOT
         # re-command it. Closing O1 is the Shelly script's re-arm gesture, so
