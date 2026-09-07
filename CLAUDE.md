@@ -786,10 +786,23 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     warm. **Decision rule:** on 1.29.2, read `hall_fire`/per-heater `heating_status` at
     the next such flap — if a hall probe is unreadable at the `ice→comfort` edge while
     the others read warm, it is the err-warm transient (fix (b)); if a probe genuinely
-    dipped, different. Build the debounce (a) as the cheap symptom guard regardless
-    (fire/fault must bypass it; it only *delays* a confirmed-real reversal, never blocks).
+    dipped, different.
     Pairs with Q16 (the F6 note resolved *season*-driven direction flapping but left the
-    *heat-state*→direction coupling undebounced — this is the first field case of it).
+    *heat-state*→direction coupling undebounced — this was the first field case of it).
+    **The debounce (a) is BUILT (v1.30.1, `FAN_DIRECTION_DEBOUNCE_MIN` = 15, after a
+    third field case 09-06: reverse→forward→reverse in 21 min).** `_debounce_direction`
+    in `_reconcile_fans` holds a **live** reversal (fans already running, opposite
+    direction wanted) until the new direction has been wanted continuously for 15 min;
+    a transient preset blip that reverts inside the window causes **zero** physical
+    reversals, while a sustained transition still switches once it outlasts it. Off, a
+    first start (nothing spinning to reverse), and a same-direction change pass straight
+    through; a fire/fault/stop returns off upstream and bypasses it; it only ever
+    *delays* a confirmed reversal, never blocks one or keeps the fans on when they
+    should stop. Sized to clear the observed blips (~9–12 min) without sitting on the
+    wrong direction long. **The upstream cure (b) is still open** — stop the spurious
+    `ice→comfort` itself (a probe drop-out on the err-warm path); confirm on the next
+    1.30.x export with `heating_status`/`hall_surface` at a flip. The debounce is the
+    symptom guard, not the root fix.
 22. **External evidence review (2026-08-29, standards/literature audit) — triage
     against the current code.** A thorough external report graded the system near
     BS EN 15232 Class A and **independently reproduced the frost-deficit arithmetic**

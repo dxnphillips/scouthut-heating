@@ -12,6 +12,8 @@ These lock in the hard hardware rules:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from custom_components.scout_hut_heating import coordinator as C
@@ -621,8 +623,6 @@ def test_breeze_hold_is_overridden_by_venting_that_holds_the_line():
 
 
 def test_breeze_vent_pass_is_revoked_when_it_makes_no_difference():
-    from datetime import timedelta
-
     from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
     from scout_testkit import E, make_controller, on, run
 
@@ -713,3 +713,60 @@ def test_cold_start_stop_of_a_running_master_is_audited():
     ctrl2.seasonal_lockout = True
     run(ctrl2._reconcile_fans())
     assert not [e for e in ctrl2.audit.to_list() if e["event"] == "fan_change"]
+
+
+# --- Direction debounce (Q21: stop a flapping preset thrashing the fans) -----
+
+T0 = datetime(2026, 9, 6, 18, 0, tzinfo=timezone.utc)
+
+
+def test_direction_debounce_holds_then_releases_a_sustained_reversal():
+    ctrl, _ = fan_controller()
+    ctrl.fan_on, ctrl.fan_direction, ctrl.fan_mode = True, "reverse", "winter"
+    # Forward wanted, but held at the current reverse until it has persisted.
+    assert ctrl._debounce_direction(True, "forward", "summer", T0) == (
+        True, "reverse", "winter",
+    )
+    assert ctrl._debounce_direction(
+        True, "forward", "summer", T0 + timedelta(minutes=10)
+    ) == (True, "reverse", "winter")
+    # Past the debounce window: the genuine, sustained reversal is let through.
+    assert ctrl._debounce_direction(
+        True, "forward", "summer", T0 + timedelta(minutes=16)
+    ) == (True, "forward", "summer")
+
+
+def test_direction_debounce_transient_blip_causes_no_reversal():
+    ctrl, _ = fan_controller()
+    ctrl.fan_on, ctrl.fan_direction, ctrl.fan_mode = True, "reverse", "winter"
+    # A brief flip to forward is held...
+    assert ctrl._debounce_direction(True, "forward", "summer", T0) == (
+        True, "reverse", "winter",
+    )
+    # ...then the preset flaps back before the window elapses: no reversal ever
+    # actuated, and the pending timer is cleared.
+    assert ctrl._debounce_direction(
+        True, "reverse", "winter", T0 + timedelta(minutes=5)
+    ) == (True, "reverse", "winter")
+    assert ctrl._fan_dir_pending is None
+
+
+def test_direction_debounce_passes_through_off_and_first_start():
+    ctrl, _ = fan_controller()
+    # Fans off: a first start sets its direction immediately (nothing to reverse).
+    ctrl.fan_on, ctrl.fan_direction, ctrl.fan_mode = False, "forward", "off"
+    assert ctrl._debounce_direction(True, "reverse", "winter", T0) == (
+        True, "reverse", "winter",
+    )
+    # A stop is always honoured, never held by the debounce.
+    ctrl.fan_on, ctrl.fan_direction, ctrl.fan_mode = True, "reverse", "winter"
+    assert ctrl._debounce_direction(False, None, "off", T0) == (False, None, "off")
+
+
+def test_direction_debounce_same_direction_is_untouched():
+    ctrl, _ = fan_controller()
+    ctrl.fan_on, ctrl.fan_direction, ctrl.fan_mode = True, "reverse", "winter"
+    assert ctrl._debounce_direction(True, "reverse", "winter", T0) == (
+        True, "reverse", "winter",
+    )
+    assert ctrl._fan_dir_pending is None
