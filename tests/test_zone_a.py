@@ -1,5 +1,7 @@
 """Zone A (Hall) desired-preset priority table."""
 
+from datetime import timedelta
+
 from scout_testkit import (
     PRESET_COMFORT,
     PRESET_ECO,
@@ -18,6 +20,44 @@ from scout_testkit import (
 def test_empty_building_is_ice():
     ctrl, _ = make_controller()
     assert ctrl._desired_zone(ZA) == PRESET_ICE
+
+
+# --- Heat/cool regime commit (stops a tight comfort/cooling gap hunting) ------
+
+
+def test_cooling_hold_defers_heat_on_a_brief_between_games_dip():
+    # Just cooled; an occupied hall dips only marginally below comfort (a rest
+    # between games) -> held on ice, not flipped straight to heating.
+    ctrl, _ = make_controller()
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.0)  # comfort 19.5: wants heat, but only 0.5 below
+    ctrl._hall_cooling_until = ctrl._now() + timedelta(minutes=10)
+    assert ctrl._desired_zone(ZA) == PRESET_ICE  # cooling_hold
+
+
+def test_cooling_hold_yields_to_a_genuine_cold_drop():
+    # A real drop (> 1.5 below comfort) overrides the commit and heats.
+    ctrl, _ = make_controller()
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 17.5)  # 2.0 below comfort 19.5 -> games really over
+    ctrl._hall_cooling_until = ctrl._now() + timedelta(minutes=10)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_cooling_hold_expires_after_the_dwell():
+    ctrl, _ = make_controller()
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.0)
+    ctrl._hall_cooling_until = ctrl._now() - timedelta(minutes=1)  # dwell elapsed
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_occupied_override_beats_the_cooling_hold():
+    ctrl, _ = make_controller()
+    ctrl._switches["zone_a_occupied_override"].is_on = True
+    hall_temp(ctrl, 19.0)
+    ctrl._hall_cooling_until = ctrl._now() + timedelta(minutes=10)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
 
 
 def test_booking_with_motion_is_comfort():
