@@ -960,6 +960,31 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   (`fan_change.direction`) and that the 1 °C hysteresis is enough to keep
   reversals rare (widen `COOLING_DIRECTION_HYST` if not); and that a warm hall
   getting a forward breeze is always wanted (if not, raise `cooling_temp_high`).
+- **Heat/cool regime commit — the comfort and cooling-enough thresholds can sit
+  close without hunting (`REGIME_DWELL_MIN` = 15, `REGIME_HEAT_OVERRIDE` = 1.5,
+  2026-09-08).** For an intermittent-activity children's hall the *active* comfort
+  temperature is at or below the *sedentary* heating target — CIBSE puts sports/
+  activity spaces at ~17 °C, and children's preferred temperature falls ~1.3 °C per
+  met of activity, so running Cubs are comfortable ~17 while sitting Cubs want
+  ~19–20 (owner's field report: fine sitting, too warm running). That forces the
+  comfort setpoint (~19) and `cooling_temp_high` (~20) to sit close, which risks the
+  radiators and the cooling breeze chasing each other across the gap. The commit
+  decouples *how eager cooling is* (the threshold) from *how twitchy the switching
+  is* (this dwell): once the hall has been cooling (`fan_mode == "summer"`), the
+  occupancy heat trigger is held off for 15 min (`_cool_regime_holds_heat` →
+  `cooling_hold` reason, ice), so a brief dip during a rest between games cannot
+  flip it straight to heating; only a genuine drop (coldest > 1.5 °C below comfort)
+  overrides, and a manual occupied-override always heats. Hall-only, occupancy-only
+  (bookings/boost/pre-heat are unaffected — they own their own rungs above
+  occupancy); frost protection is untouched. Same principle as the fan-direction
+  debounce, one level up (the fan side holds the *direction*, this holds the *heat/
+  cool decision*). **Owner-set values (2026-09-08, evidence-based):** `hall_comfort_temp`
+  19.5 → **19**, `cooling_temp_high` 21 → **20** (fans are the right tool for sweaty
+  active kids — air movement gives ~2–3 °C of felt cooling, most effective when they
+  are warm — so cool *early* rather than chilling the air). First-season watch:
+  confirm no rapid heat↔cool cycling on an active occupied evening (`cooling_hold`
+  events in the audit), and that the sitting parts don't feel cold at comfort 19
+  (nudge back up if so).
 - **The heaters are driven to target, not trusted (`drive_to_target` = on).**
   The Rointes settle a fraction *below* the setpoint we give them (field
   2026-08-06: a hall probe held ~0.5 below a 19.5 comfort setpoint on a cold

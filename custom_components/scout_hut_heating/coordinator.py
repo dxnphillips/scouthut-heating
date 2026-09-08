@@ -164,6 +164,20 @@ FAN_DIRECTION_SETTLE = 1.5  # seconds
 # heat-state->direction line it does not cover.
 FAN_DIRECTION_DEBOUNCE_MIN = 15.0
 
+# Heat/cool regime commit. For an intermittent-activity children's hall the active
+# comfort temperature (~17 °C for running games — CIBSE puts sports/activity spaces
+# at ~17, and children's preferred temperature falls ~1.3 °C per met of activity)
+# sits at or below the sedentary heating target, so the comfort and cooling-enough
+# thresholds genuinely want to be close — which risks the heaters and the cooling
+# breeze chasing each other across the gap. Once the hall has been COOLING, heating
+# is held off for this dwell so a brief dip during a rest between games cannot flip
+# it straight to heating; only a genuine drop (coldest more than REGIME_HEAT_OVERRIDE
+# below comfort) overrides. This decouples "how eager is cooling" (the threshold)
+# from "how twitchy is the switching" (this dwell), the same principle as the fan-
+# direction debounce, one level up. Occupied-only; frost protection is untouched.
+REGIME_DWELL_MIN = 15.0
+REGIME_HEAT_OVERRIDE = 1.5  # °C below comfort that always heats, dwell or not
+
 # Hysteresis on the seasonal lockout: engage at avg >= threshold, release only
 # once the 3-day average drops this far below it (or on a cold-snap RealFeel),
 # so a forecast hovering at the threshold cannot flap the lockout hourly.
@@ -399,6 +413,9 @@ class ScoutController:
         # live reversal is deferred until it has persisted (see _debounce_direction).
         self._fan_dir_pending: str | None = None
         self._fan_dir_pending_since: datetime | None = None
+        # Heat/cool regime commit: heating is held off until this time after the
+        # hall was last cooling, so a tight comfort/cooling gap can't hunt.
+        self._hall_cooling_until: datetime | None = None
         self.fan_last_on: datetime | None = None
         self.fan_last_off: datetime | None = None
         self.fan_dt: float | None = None           # ceiling - floor (diagnostic)
@@ -2284,6 +2301,27 @@ class ScoutController:
             return self.number("hall_eco_low_temp")
         return self._zone_target(zone)
 
+    def _cool_regime_holds_heat(self, zone: str) -> bool:
+        """Whether the heat/cool regime commit should hold HEATING off right now.
+
+        True only for the hall, only within ``REGIME_DWELL_MIN`` of the last cooling
+        tick, and only while the room is not GENUINELY cold — a coldest probe more
+        than ``REGIME_HEAT_OVERRIDE`` below comfort overrides the commit and heats
+        (games really over, not a rest). This is what lets the comfort and
+        cooling-enough thresholds sit close together without the two hunting: a
+        brief between-games dip holds the cooling regime instead of firing the
+        radiators. Frost protection is unaffected (ice still holds the 7 °C floor).
+        """
+        if zone != ZONE_A or self._hall_cooling_until is None:
+            return False
+        if self._now() >= self._hall_cooling_until:
+            return False
+        coldest = self._zone_room_temp(ZONE_A, coldest=True)
+        floor = self.number("hall_comfort_temp") - REGIME_HEAT_OVERRIDE
+        if coldest is not None and coldest < floor:
+            return False  # a genuine cold-drop overrides the commit
+        return True
+
     def _room_wants_heat(self, zone: str, target: float) -> bool:
         """True when an occupied / booked zone is genuinely below ``target`` and
         so wants heat — the single, season-independent heating gate.
@@ -2567,6 +2605,10 @@ class ScoutController:
         alarm_present = self._alarm_present(self.config.get(ZONE_ALARM[zone]))
         if occupied_override or motion or alarm_present:
             if self._room_wants_heat(zone, self._zone_target(zone)):
+                # Just cooled: hold the regime so a rest between games can't flip
+                # the hall straight to heating (a manual override still heats).
+                if not occupied_override and self._cool_regime_holds_heat(zone):
+                    return self._reason(zone, "cooling_hold", PRESET_ICE)
                 reason = (
                     "occupied_override"
                     if occupied_override
@@ -4771,6 +4813,10 @@ class ScoutController:
         prev_on, prev_dir = bool(self.fan_on), self.fan_direction
         await self._async_ensure_fans(want_on, want_dir)
         self.fan_mode = mode
+        # Extend the heat/cool regime commit for as long as the hall is cooling,
+        # so heating stays held off for REGIME_DWELL_MIN past the LAST cooling tick.
+        if self.fan_on and mode == "summer":
+            self._hall_cooling_until = now + timedelta(minutes=REGIME_DWELL_MIN)
         if (
             bool(self.fan_on) != prev_on
             or (self.fan_on and self.fan_direction != prev_dir)
