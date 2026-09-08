@@ -56,6 +56,16 @@ MIN_SAMPLE_RISE = 1.0
 # and walk the learned rate to the clamp in a couple of incidents.
 MIN_SAMPLE_MINUTES = 10.0
 
+# Single-tick step guard, the warm-up mirror of MAX_COOL_TICK_DROP. The Rointe
+# room probe freezes then jumps through the cloud (field 2026-09-03: a hall floor
+# stepped 18.1 -> 22.4 in one 15-min tick; 2026-09-08: 16.62 -> 19.0, +2.4 in one
+# tick mid-climb). A genuine radiator climb rises gradually — even the fastest
+# learned rate is <~0.75 C per 15 min — so a lone tick rising this much is the
+# reading catching up, not the room, and it inflates the observed rate FAST (the
+# dangerous, cold-arrival direction). The whole sample is rejected. Set above a
+# plausible one-to-two 0.5 C quantum step so a genuinely brisk climb still teaches.
+MAX_WARMUP_TICK_RISE = 1.5
+
 # Never start later than this many minutes before an event, however warm the
 # room already is — the calendar look-ahead needs some window to see events.
 MIN_LEAD = 15.0
@@ -233,15 +243,27 @@ def hold_margin(
     return max(0.0, min(margin, cap))
 
 
-def updated_rate(rate: float, minutes_elapsed: float, temp_rise: float) -> float:
+def updated_rate(
+    rate: float,
+    minutes_elapsed: float,
+    temp_rise: float,
+    max_tick_rise: float = 0.0,
+) -> float:
     """Fold one observed warm-up into the learned rate (EWMA).
 
     ``minutes_elapsed`` over ``temp_rise`` is the observed minutes-per-degree.
     Samples with too little rise are ignored; observations and the result are
     clamped into the plausible band so a single pathological warm-up (opening
-    held open, sensor frozen) cannot poison the estimate.
+    held open, sensor frozen) cannot poison the estimate. ``max_tick_rise`` (the
+    largest single-tick rise seen over the sample) rejects the whole sample when a
+    probe freeze-then-jump dumped a discontinuity into it — the reading catching
+    up, not the room, which would inflate the rate toward a cold arrival.
     """
-    if temp_rise < MIN_SAMPLE_RISE or minutes_elapsed < MIN_SAMPLE_MINUTES:
+    if (
+        temp_rise < MIN_SAMPLE_RISE
+        or minutes_elapsed < MIN_SAMPLE_MINUTES
+        or max_tick_rise >= MAX_WARMUP_TICK_RISE
+    ):
         return rate
     observed = minutes_elapsed / temp_rise
     observed = max(MIN_RATE, min(MAX_RATE, observed))

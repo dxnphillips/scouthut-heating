@@ -101,6 +101,23 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   model-derived values (booking-hold margin, drive feedforward) inherit this via
   their learned inputs; the coast passive-rise predictor stays as-is (idle-only,
   margin-guarded, transient, default-off).
+  **(3) Single-tick step guard (`MAX_WARMUP_TICK_RISE` = 1.5, v1.31.1, 2026-09-08)
+  — the warm-up mirror of the cool-off `MAX_COOL_TICK_DROP`.** The Rointe floor
+  probe freeze-then-jumps through the cloud (field 2026-09-03: 18.1 → 22.4 in one
+  15-min tick; 09-08: 16.62 → 19.0, +2.4 in one tick mid-climb), and those up-jumps
+  inflate the observed rate FAST — the dangerous, cold-arrival direction — slipping
+  the out-of-family reject (a 1.6× inflation is under the 3× gate). `_update_warmup_learning`
+  now tracks the largest single-tick rise over a sample and `updated_rate` rejects
+  the whole sample when it is ≥ 1.5 (a genuine climb rises <~0.75 °C per tick even
+  at the fastest learned rate, so a lone ≥1.5 tick is the reading catching up, not
+  the room). `warmup_sample.max_tick_rise` records it. Verified against the 09-08
+  climb: **the heat was real** (energy +3.85 kWh, lumpy-reported at 08:44 — NOT free
+  gain) but the *timing* was probe-distorted (the +2.4 jump), which had walked the
+  fans rate down to a too-fast **19.8** (vs the 44 cold-fabric baseline) — a real
+  cold-arrival risk on a cold booked winter morning. Fail-safe: rejecting keeps the
+  slower learned rate (arrive-warm). It does not fix the mild-vs-cold-conditions bias
+  (inherent to one EWMA; winter cold-fabric samples pull it back up), only the probe
+  artifact.
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
