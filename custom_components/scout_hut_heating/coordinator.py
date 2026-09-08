@@ -52,6 +52,7 @@ from .fan_logic import fan_decision
 from .preheat import (
     MAX_COOL_TICK_DROP,
     MAX_RATE,
+    MAX_WARMUP_TICK_RISE,
     MIN_COOL_SAMPLE_DROP,
     MIN_COOL_SAMPLE_GAP,
     MIN_COOL_SAMPLE_HOURS,
@@ -485,7 +486,8 @@ class ScoutController:
         # heater (used as the office target, which the integration does not
         # otherwise know).
         self._warmup_start: dict[
-            str, tuple[datetime, float, int, int, float, int] | None
+            str,
+            tuple[datetime, float, int, int, float, int, float | None, float] | None,
         ] = {
             ZONE_A: None,
             ZONE_B: None,
@@ -1308,20 +1310,30 @@ class ScoutController:
                         1,
                         w or 0.0,
                         1 if w is not None else 0,
+                        temp,  # prev_temp, for the single-tick rise guard
+                        0.0,  # max_tick_rise seen so far
                     )
                 continue
 
-            started, start_temp, fan_ticks, ticks, watt_sum, watt_n = sample
+            (
+                started, start_temp, fan_ticks, ticks, watt_sum, watt_n,
+                prev_temp, max_tick_rise,
+            ) = sample
             done = comfort and temp is not None and temp >= target
             if comfort and not done:
                 # Still warming (or temp reading lost: wait). Keep tallying
                 # whether the fans are assisting and how hard (the O1 wattage
-                # encodes the manual dial tap).
+                # encodes the manual dial tap), and the largest single-tick rise
+                # (a freeze-then-jump probe discontinuity rejects the sample).
                 fan_ticks += 1 if self._fans_running() else 0
                 w = self._o1_watts() if zone == ZONE_A else None
                 if w is not None:
                     watt_sum += w
                     watt_n += 1
+                if temp is not None:
+                    if prev_temp is not None:
+                        max_tick_rise = max(max_tick_rise, temp - prev_temp)
+                    prev_temp = temp
                 self._warmup_start[zone] = (
                     started,
                     start_temp,
@@ -1329,6 +1341,8 @@ class ScoutController:
                     ticks + 1,
                     watt_sum,
                     watt_n,
+                    prev_temp,
+                    max_tick_rise,
                 )
                 continue
 
@@ -1347,16 +1361,23 @@ class ScoutController:
                 continue
             minutes = (now - started).total_seconds() / 60
             rise = temp - start_temp
+            if prev_temp is not None:  # count the final tick's rise too
+                max_tick_rise = max(max_tick_rise, temp - prev_temp)
             assisted = fan_ticks * 2 >= ticks
             rate_key = self._warmup_rate_key(zone, assisted=assisted)
             old_rate = self.number(rate_key)
-            new_rate = updated_rate(old_rate, minutes, rise)
+            new_rate = updated_rate(old_rate, minutes, rise, max_tick_rise)
             # Free gain (solar/occupancy/fan-delivered ceiling heat) makes a
             # warm-up read implausibly fast; folding it would corrupt the rate
             # LOW and shorten the lead toward a cold arrival. Rejected by
             # updated_rate; flagged here for the audit (no push — the sun helping
-            # is not something to act on).
-            quality = rise >= MIN_SAMPLE_RISE and minutes >= MIN_SAMPLE_MINUTES
+            # is not something to act on). A single-tick probe jump (freeze-then-
+            # catch-up) is rejected the same way (`max_tick_rise`).
+            quality = (
+                rise >= MIN_SAMPLE_RISE
+                and minutes >= MIN_SAMPLE_MINUTES
+                and max_tick_rise < MAX_WARMUP_TICK_RISE
+            )
             observed = warmup_observed_rate(minutes, rise) if quality else None
             outlier = (
                 quality
@@ -1374,6 +1395,7 @@ class ScoutController:
                 end_temp=temp,
                 fan_ticks=fan_ticks,
                 ticks=ticks,
+                max_tick_rise=max_tick_rise,
                 o1_avg_w=(watt_sum / watt_n) if watt_n else None,
                 reached_target=done,
                 accepted=quality and not outlier,

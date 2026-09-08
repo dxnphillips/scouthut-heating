@@ -164,12 +164,15 @@ def test_trace_records_heater_firing_and_drive_offset():
 def test_accepted_warmup_sample_is_audited_with_its_inputs():
     ctrl, hass = make_controller()
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "hall_comfort_temp", 22)  # target, so the climb is a 4 °C sample
     _hall_temp(hass, 18)
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()
-    advance(ctrl, 120)
-    _hall_temp(hass, 22)  # target reached after 120 min / 4 °C
-    ctrl._update_warmup_learning()
+    # Climb 18 -> 22 in 1 °C/30-min steps (gradual, no single-tick jump).
+    for t in (19, 20, 21, 22):
+        advance(ctrl, 30)
+        _hall_temp(hass, t)
+        ctrl._update_warmup_learning()
 
     (evt,) = events(ctrl, "warmup_sample")
     assert evt["zone"] == ZA
@@ -178,6 +181,7 @@ def test_accepted_warmup_sample_is_audited_with_its_inputs():
     assert evt["reached_target"] is True
     assert evt["minutes"] == pytest.approx(120, abs=0.1)
     assert evt["rise"] == pytest.approx(4.0)
+    assert evt["max_tick_rise"] == pytest.approx(1.0)
     assert evt["old_rate"] == 20.0
     assert evt["new_rate"] == pytest.approx(23.0, abs=0.01)
 
@@ -197,6 +201,26 @@ def test_rejected_warmup_sample_is_audited_as_rejected():
     assert evt["accepted"] is False
     assert evt["reached_target"] is False
     assert evt["new_rate"] == evt["old_rate"] == 20.0
+
+
+def test_warmup_with_a_single_tick_probe_jump_is_rejected():
+    # A freeze-then-jump probe (floor leaps 18 -> 22 in one tick) would read as an
+    # implausibly fast climb; the single-tick-rise guard drops the whole sample so
+    # it can't corrupt the rate toward a cold arrival.
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "hall_comfort_temp", 22)
+    _hall_temp(hass, 18)
+    ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._update_warmup_learning()  # start at 18
+    advance(ctrl, 120)
+    _hall_temp(hass, 22)  # the whole 4 °C rise in one tick -> discontinuity
+    ctrl._update_warmup_learning()
+
+    (evt,) = events(ctrl, "warmup_sample")
+    assert evt["max_tick_rise"] == pytest.approx(4.0)
+    assert evt["accepted"] is False
+    assert evt["new_rate"] == evt["old_rate"] == 20.0  # rate untouched
 
 
 def test_warmup_sample_records_the_average_fan_wattage():

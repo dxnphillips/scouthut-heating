@@ -59,6 +59,15 @@ def test_rate_update_clamps_wild_observations():
     assert updated_rate(20, 300, 1) == pytest.approx(25.0)
 
 
+def test_rate_update_rejects_a_single_tick_probe_jump():
+    # A sample that would otherwise fold (120 min / 4 °C -> 23) is dropped whole
+    # when a lone tick rose >= MAX_WARMUP_TICK_RISE: a freeze-then-jump probe
+    # catching up, not the room, which would corrupt the rate fast.
+    assert updated_rate(20, 120, 4, max_tick_rise=2.4) == 20
+    # A gradual climb (largest tick under the guard) still teaches.
+    assert updated_rate(20, 120, 4, max_tick_rise=1.0) == 23
+
+
 # --- Coordinator wiring ----------------------------------------------------------
 
 def _hall_temp(hass, temp):
@@ -123,13 +132,16 @@ def test_far_off_booking_adds_predicted_cooling():
 def test_completed_warmup_updates_the_learned_rate():
     ctrl, hass = make_controller()
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "hall_comfort_temp", 22)  # target, so the climb is a 4 °C sample
     _hall_temp(hass, 18)
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()  # sample starts at 18 °C
     assert ctrl._warmup_start[ZA] is not None
-    advance(ctrl, 120)
-    _hall_temp(hass, 22)  # target (22) reached after 120 min / 4 °C
-    ctrl._update_warmup_learning()
+    # Climb 18 -> 22 in 1 °C/30-min steps (no single-tick jump to trip the guard).
+    for t in (19, 20, 21, 22):
+        advance(ctrl, 30)
+        _hall_temp(hass, t)
+        ctrl._update_warmup_learning()
     assert ctrl._warmup_start[ZA] is None
     assert ctrl.number("zone_a_warmup_rate") == pytest.approx(23, abs=0.01)  # 20 + 0.3 * (30 - 20)
 
