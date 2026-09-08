@@ -1022,10 +1022,11 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   heaters throttled to *maintaining*) and **`hall_kwh`** (sum of hall energy, for
   a within-trace consumption delta); the diagnostics per-heater block (hall,
   office AND shared) now includes `heating_status` / `energy` / `surface` /
-  `effective`. This is the **definitive Q17 discriminator**: heaters short of
-  target AND pinned at full `heating` (hall_maint 0) = capacity wall (drive can't
-  help); heaters short but at `maintaining` = heat reached the local probe, not
-  the far field = stratification/soak (fans/lead, not more kW). `hall_kwh` deltas
+  `effective`. This was *intended* as the **Q17 discriminator** (heaters short of
+  target AND pinned at full `heating`, hall_maint 0 = capacity wall; short but at
+  `maintaining` = stratification/soak) — **but `hall_maint`/`hall_fire` proved
+  UNRELIABLE on this hardware (read 0 through a confirmed firing); see the
+  2026-09-08 RESOLVED note below — key off the `hall_kwh` delta instead.** `hall_kwh` deltas
   give the Q10 duty/saving signal without cross-referencing HA statistics.
   `hall_fire` stays as the always-available `hvac_action` fallback for installs
   whose status sensors don't map. **First-winter watch:** on the first cold
@@ -1043,6 +1044,34 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   only — nothing keys off it yet; caveat: it means the `hall_maint`-while-cold
   read of capacity-vs-stratification is only trustworthy once the floor reading is
   confirmed not to be lagging (surface disambiguates).
+  **RESOLVED 2026-09-08 (Cubs session) — and it is the OPPOSITE of the hope above.**
+  `hall_surface` is **not an independent room probe — it is the radiator PANEL
+  surface temperature**: it swung to **30 °C while the floor sat at 20** during the
+  17:30–18:16 comfort burn, then fell as the fans cooled. So it tracks the element
+  firing, not the space, and it *also* glitches (a momentary spike to 22 with the
+  heaters idle the day before). **Do NOT learn from `hall_surface`.** The **`floor`
+  (`current_temperature`) is the correct room signal, and it was rock-steady all
+  session** (19.88 → 20.75 → 19.88, no jumps) — the 09-03 floor jump is a separate
+  intermittent glitch, not a reason to switch signals. **Bigger finding:
+  `hall_fire` AND `hall_maint` are UNRELIABLE on these Rointes** — both read **0
+  through a confirmed 45-min firing** (comfort preset, panel surface 26–30 °C,
+  **+1.1 kWh** consumed vs +0.29 over the whole preceding 3-h afternoon). The owner
+  saw the radiators on; the status entities said idle. So the `hvac_action` /
+  `heating_status` signals under-report firing here, and the earlier "definitive Q17
+  discriminator" framing is wrong on this hardware. **The reliable firing/duty
+  signal is the `hall_kwh` (energy) delta** — lumpy and cloud-delayed (a burn at
+  17:30–18:16 reported its +0.8 kWh chunk at 18:43) but *truthful over time*; read
+  it over a window, never expect it real-time. So Q17 capacity-vs-stratification and
+  Q10 duty must key off `hall_kwh`, not `hall_fire`/`hall_maint` (kept only as cheap
+  corroboration, known to under-report). **Control-path caveat (candidate fix, NOT
+  built — verify first):** the drive read-back self-check clears a heater on
+  `hvac_action == heating`; since that reads idle during real firing, it can fail to
+  rescue a genuinely-firing heater and fire a false `drive_setpoint_rejected`
+  (notification-only; gated behind setpoint-lag + probe-short, so `hvac_action` is
+  the last straw not the sole cause — the `hall_back` flags 09-03/09-06 are the
+  suspects). Fix would add "energy rose since the push" as a reliable proof-of-
+  adoption; **confirm against a 09-03/09-06 export that a flag coincided with rising
+  energy before building** (do not assume).
 - **Cool-off learning is gated to the below-comfort regime (`COOL_OVERWARM_MARGIN`
   = 2.0, 2026-09-04).** A cool-off is only a clean read of the *fabric* loss when
   the room decays from at/near its heating setpoint. A sample whose start temp is
