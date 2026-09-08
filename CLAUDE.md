@@ -1063,15 +1063,25 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   17:30–18:16 reported its +0.8 kWh chunk at 18:43) but *truthful over time*; read
   it over a window, never expect it real-time. So Q17 capacity-vs-stratification and
   Q10 duty must key off `hall_kwh`, not `hall_fire`/`hall_maint` (kept only as cheap
-  corroboration, known to under-report). **Control-path caveat (candidate fix, NOT
-  built — verify first):** the drive read-back self-check clears a heater on
-  `hvac_action == heating`; since that reads idle during real firing, it can fail to
-  rescue a genuinely-firing heater and fire a false `drive_setpoint_rejected`
-  (notification-only; gated behind setpoint-lag + probe-short, so `hvac_action` is
-  the last straw not the sole cause — the `hall_back` flags 09-03/09-06 are the
-  suspects). Fix would add "energy rose since the push" as a reliable proof-of-
-  adoption; **confirm against a 09-03/09-06 export that a flag coincided with rising
-  energy before building** (do not assume).
+  corroboration, known to under-report). **Control-path fix VERIFIED + BUILT
+  (v1.30.2, `DRIVE_ENERGY_ADOPTED_KWH` = 0.05).** The drive read-back self-check
+  cleared a heater on `hvac_action == heating`; since that reads idle during real
+  firing, it fired false `drive_setpoint_rejected` flags. **Verified against the
+  09-03/09-06 exports:** both `hall_back` flags coincided with the hall actively
+  burning energy (09-03 17:00 flagged while +0.94 kWh reported and floor climbing
+  21.75→23.0; 09-06 11:47 flagged while +1.81 kWh reported and floor 18.75→22.1) —
+  so the flags were false, the heater WAS firing. Fix: `_check_setpoint_readback`
+  now clears on a third, truthful proof-of-adoption — the heater's own `energy`
+  accumulator having risen `> DRIVE_ENERGY_ADOPTED_KWH` since the push
+  (`_drive_pushed_energy` stamps the baseline at push time). Fail-safe: a genuinely
+  stuck phantom-push heater draws nothing, so its energy stays flat and it is still
+  flagged; the `hvac_action` gate stays as a fallback for installs with no energy
+  sensor. Caveat: the energy is lumpy/cloud-delayed, so a late-reporting burn
+  clears the flag a tick or two late rather than instantly — it shortens these
+  false episodes to a self-clearing blip, not a complete cure. Can only *remove*
+  false positives, never mask a real fault. (Aggregate `hall_kwh` could not isolate
+  `hall_back`'s own draw, but the fix uses each heater's OWN energy sensor and is
+  fail-safe, so this residual uncertainty does not matter.)
 - **Cool-off learning is gated to the below-comfort regime (`COOL_OVERWARM_MARGIN`
   = 2.0, 2026-09-04).** A cool-off is only a clean read of the *fabric* loss when
   the room decays from at/near its heating setpoint. A sample whose start temp is

@@ -15,12 +15,13 @@ from custom_components.scout_hut_heating.coordinator import (
     DRIVE_SETTLE_MINUTES,
     DRIVE_STARTUP_GRACE_MINUTES,
 )
+from scout_testkit import PRESET_COMFORT, ZA, E, make_controller
 
 
 def _past_startup(ctrl):
     """Simulate the integration having been up past the drive self-check grace."""
     ctrl._started_at = ctrl._now() - timedelta(minutes=DRIVE_STARTUP_GRACE_MINUTES + 1)
-from scout_testkit import PRESET_COMFORT, ZA, E, make_controller
+
 
 CLIMATE = "climate.hall_back"
 CEIL = "sensor.ceiling"
@@ -102,6 +103,35 @@ def test_satisfied_idle_at_target_is_not_flagged():
     assert CLIMATE not in ctrl._drive_rejected
     # But a heater still genuinely SHORT and idle at a stale setpoint IS flagged.
     ctrl._check_setpoint_readback(CLIMATE, 20.0, 18.0, now)
+    assert CLIMATE in ctrl._drive_rejected
+
+
+def test_energy_rise_since_push_clears_flag_despite_idle_action():
+    # Field 2026-09-08: hvac_action reads idle through a real firing on these
+    # Rointes, so the action gate can't rescue a genuinely-heating heater. The
+    # energy accumulator is the truthful proof: risen since the push -> it fired.
+    ctrl, hass = make_controller()
+    ctrl._heater_sensors = {CLIMATE: {"energy": "sensor.hb_energy"}}
+    now = _settled_push(ctrl, hass, pushed=22.0, reported=20.0)  # setpoint lags
+    hass.states.set(CLIMATE, "heat", {"temperature": 20.0, "hvac_action": "idle"})
+    ctrl._drive_pushed_energy[CLIMATE] = 10.0
+    hass.states.set("sensor.hb_energy", "10.2")  # +0.2 kWh since the push -> fired
+    # Short (probe 18) and action idle, but energy rose -> not flagged.
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, 18.0, now)
+    assert CLIMATE not in ctrl._drive_rejected
+
+
+def test_flat_energy_still_flags_a_genuinely_stuck_heater():
+    # The fail-safe: a real phantom-push heater draws no power, so its energy
+    # stays flat and it is still flagged (the energy proof only rescues a
+    # demonstrably-consuming heater).
+    ctrl, hass = make_controller()
+    ctrl._heater_sensors = {CLIMATE: {"energy": "sensor.hb_energy"}}
+    now = _settled_push(ctrl, hass, pushed=22.0, reported=20.0)
+    hass.states.set(CLIMATE, "heat", {"temperature": 20.0, "hvac_action": "idle"})
+    ctrl._drive_pushed_energy[CLIMATE] = 10.0
+    hass.states.set("sensor.hb_energy", "10.0")  # flat — no firing
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, 18.0, now)
     assert CLIMATE in ctrl._drive_rejected
 
 

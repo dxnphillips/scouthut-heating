@@ -273,6 +273,11 @@ DRIVE_CAP_ALARM_MINUTES = 60.0
 # genuine never-adopt stays mismatched past it and is still caught.
 DRIVE_SETTLE_MINUTES = 30.0
 DRIVE_SETPOINT_TOL = 0.3  # °C; our pushes and the Rointe are 0.5-quantised
+# The read-back's truthful proof-of-adoption: a heater whose energy accumulator
+# has risen by more than this (kWh) since the push has demonstrably fired, so it
+# adopted the command whatever the (unreliable) hvac_action says. Small, only to
+# clear reporting jitter — any real burn over the 30-min settle window clears it.
+DRIVE_ENERGY_ADOPTED_KWH = 0.05
 # Grace after (re)start before the drive self-checks may fire. The Rointe cloud
 # is much slower to reflect a pushed setpoint just after a restart than in
 # steady state: a 2026-08-07 export caught the read-back flagging all four hall
@@ -542,6 +547,10 @@ class ScoutController:
         # while boosting hard, reset whenever either moves. Notification latches
         # so the alerts raise/clear once, not every tick.
         self._drive_pushed_at: dict[str, datetime] = {}
+        # The heater's own energy accumulator (kWh) at push time — the read-back
+        # clears a heater whose energy has risen since, a truthful proof it is
+        # firing that does not depend on the Rointe's unreliable hvac_action.
+        self._drive_pushed_energy: dict[str, float] = {}
         # Heaters currently in the driven (comfort) state. A heater that flips
         # OUT of comfort and back must restart its read-back settle window and
         # re-assert the comfort preset — otherwise a stale settle stamp from a
@@ -3563,8 +3572,14 @@ class ScoutController:
             return
         self._drive_pushed[climate] = value
         # Stamp the push so the read-back self-check waits a full settle window
-        # before judging whether the device adopted this new value (Q20).
+        # before judging whether the device adopted this new value (Q20), and
+        # capture the heater's energy baseline so a later rise proves it fired.
         self._drive_pushed_at[climate] = self._now()
+        energy = self._num_state(self._heater_sensor(climate, "energy"))
+        if energy is not None:
+            self._drive_pushed_energy[climate] = energy
+        else:
+            self._drive_pushed_energy.pop(climate, None)
         await self.hass.services.async_call(
             "number",
             "set_value",
@@ -3775,13 +3790,23 @@ class ScoutController:
             the 20.0 target the room had reached, their live setpoint merely
             lagging through the cloud — the action gate can't catch a *satisfied*
             heater because a satisfied heater is idle, not heating);
-          * the heater reports ``hvac_action == heating``: it is demonstrably
-            working toward target, its live setpoint just lagging our push by a
-            quantum while the drive staircases upward (2026-08-08 export: all four
-            hall heaters flagged mid-climb, live setpoint one 0.5 step behind).
+          * the heater's ``energy`` accumulator has RISEN since the push
+            (``> DRIVE_ENERGY_ADOPTED_KWH``): it has drawn power, so it is firing
+            and has adopted the command — the truthful proof that does NOT depend
+            on ``hvac_action``, which reads ``idle`` through a real firing on these
+            Rointes (field 2026-09-08 Cubs: 0 status, panel 30 °C, +1.1 kWh; the
+            09-03/09-06 hall_back flags coincided with the hall burning +0.9/+1.8
+            kWh). Lumpy/cloud-delayed, so it clears a late-reporting burn on a
+            later tick rather than instantly — a brief blip, not a standing flag.
+          * the heater reports ``hvac_action == heating``: kept as a fallback for
+            installs with no energy sensor, but under-reports here — it is
+            demonstrably working toward target, its live setpoint just lagging our
+            push by a quantum while the drive staircases upward.
 
-        Only a heater that is short of the pushed target AND has gone idle AND is
-        not reporting our setpoint is genuinely not accepting it.
+        Only a heater that is short of the pushed target AND has drawn no power AND
+        has gone idle AND is not reporting our setpoint is genuinely not accepting
+        it. The energy proof is fail-safe: a truly stuck heater draws nothing, so
+        its energy stays flat and it is still flagged.
         """
         at = self._drive_pushed_at.get(climate)
         if (
@@ -3800,9 +3825,17 @@ class ScoutController:
         if probe is not None and probe >= pushed - DRIVE_SETPOINT_TOL:
             self._drive_rejected.discard(climate)
             return
-        # Short of the pushed setpoint — but a heater actively heating has clearly
-        # accepted the command (it is producing heat toward target); only a heater
-        # that has gone IDLE while still short is genuinely not accepting it.
+        # Short of the pushed setpoint. Truthful proof first: if the heater's own
+        # energy has risen since the push it has fired, so it adopted the command
+        # whatever hvac_action says (the Rointe status under-reports firing here).
+        base = self._drive_pushed_energy.get(climate)
+        energy = self._num_state(self._heater_sensor(climate, "energy"))
+        if base is not None and energy is not None and energy - base > DRIVE_ENERGY_ADOPTED_KWH:
+            self._drive_rejected.discard(climate)
+            return
+        # Fallback for installs without an energy sensor: a heater actively heating
+        # has clearly accepted the command; only one gone IDLE while still short
+        # (and having drawn no power) is genuinely not accepting it.
         st = self.hass.states.get(climate)
         action = st.attributes.get("hvac_action") if st else None
         if action == "heating":
@@ -3923,6 +3956,7 @@ class ScoutController:
         self._drive_step_at.clear()
         self._drive_pushed.clear()
         self._drive_pushed_at.clear()
+        self._drive_pushed_energy.clear()
         self._drive_driven.clear()
         self._drive_cap_since.clear()
         self._drive_rejected.clear()
