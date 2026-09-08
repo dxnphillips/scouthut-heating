@@ -117,7 +117,21 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   cold-arrival risk on a cold booked winter morning. Fail-safe: rejecting keeps the
   slower learned rate (arrive-warm). It does not fix the mild-vs-cold-conditions bias
   (inherent to one EWMA; winter cold-fabric samples pull it back up), only the probe
-  artifact.
+  artifact. **Guard validated + rate reset (2026-09-08 22:50 export, v1.31.1
+  deployed).** The export carried the exact sample the guard is for: the 09-08
+  morning climb rose floor 16.62 → 19.0 in one tick (+2.38) with `hall_fire` 4 and
+  the drive staircasing (`drive_off` 0→1.5) — real heating, probe-distorted timing —
+  producing the 08:03 `warmup_sample` (48.36 min / 3.5 °C, "13.8 min/°C") that walked
+  `zone_a_warmup_rate_fans` 22.38 → **19.81**. It landed *before* the 1.31.1 deploy so
+  slipped through; the guard rejects it (2.38 ≥ 1.5) from now on. Because the corrupt
+  19.81 is fast = cold-arrival direction and the EWMA does not self-heal quickly, the
+  owner **manually reset `zone_a_warmup_rate_fans` to 34** (matching the trustworthy
+  base rate 33.23 and the 08-27 cold-fabric baseline) — the `zone_b_heatloss_pct`
+  reset precedent. **Residual, not yet actioned:** the fans rate is *also* biased fast
+  by over-warm/solar midday samples the tick-guard can't catch (09-06 11:32 started
+  20.62 °C, read 10.2 min/°C) — a warm-up over-warm-start gate (mirror of the cool-off
+  `COOL_OVERWARM_MARGIN`) is the candidate fix, flagged for discussion, not built (one
+  EWMA + winter cold samples pulling it the safe way makes it low-urgency).
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
