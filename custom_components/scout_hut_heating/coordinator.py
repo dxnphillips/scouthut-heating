@@ -359,6 +359,20 @@ DRIVE_COMFORT_TARGET_KEY = {
 # neither corrupt k nor cry wolf. Above the max legitimate driven overshoot (boost
 # +2, hold +1.5) so a genuinely driven room's decay still teaches.
 COOL_OVERWARM_MARGIN = 2.0
+# Settle delay before a cool-off sample anchors, after heating stops. The cool-off
+# clock used to start the instant a zone hit ice, so its first minutes measured the
+# just-switched-off radiator's own cooldown near the mid-wall Rointe probe — a fast
+# transient, not fabric loss. That over-reads the loss for every zone and, for the
+# low-k insulated office (~4 %/h), tripped a FALSE "window/door open?" alarm from
+# the transient shed with nothing open (owner-confirmed twice, 2026-09-09/10). Root
+# fix (not a per-zone alarm mute): a cool-off only anchors once the room has been
+# settling on ice this long, so it measures the fabric from a settled state. The
+# Rointe oil mass coasts down over ~15-20 min (the same mass that overshoots on the
+# heating side), so 20 clears the bulk of the transient; raise it if a post-settle
+# office cool-off still reads out-of-family. Fail-safe: it only DELAYS sampling,
+# never corrupts — and overnight cool-offs (the bulk) lose 20 min of a multi-hour
+# window, nothing material.
+COOL_SETTLE_MINUTES = 20.0
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
@@ -503,6 +517,15 @@ class ScoutController:
             tuple[datetime, float, float, int, int, int, float, int, float, float]
             | None,
         ] = {
+            ZONE_A: None,
+            ZONE_B: None,
+        }
+        # When each zone most recently began cooling (entered ice). The cool-off
+        # sample does not anchor until COOL_SETTLE_MINUTES of continuous ice have
+        # passed, so its early transient — the just-switched-off radiator's local
+        # cooldown near the probe, not fabric loss — is excluded. Reset the moment
+        # heating resumes or an opening is seen.
+        self._cooloff_cooling_since: dict[str, datetime | None] = {
             ZONE_A: None,
             ZONE_B: None,
         }
@@ -1446,6 +1469,7 @@ class ScoutController:
                 if self._cooloff_start[zone] is not None:
                     self.audit.record("cooloff_discarded", now, zone=zone, reason="opening")
                 self._cooloff_start[zone] = None
+                self._cooloff_cooling_since[zone] = None
                 continue
 
             cooling = self.applied[zone] == PRESET_ICE
@@ -1472,7 +1496,17 @@ class ScoutController:
 
             if sample is None:
                 if cooling and temp is not None:
-                    self._cooloff_start[zone] = _anchor(temp)
+                    # Wait out the post-heating transient before anchoring: the
+                    # first COOL_SETTLE_MINUTES of ice are the radiator's own
+                    # cooldown near the probe, not fabric loss (see the constant).
+                    since = self._cooloff_cooling_since[zone]
+                    if since is None:
+                        self._cooloff_cooling_since[zone] = now
+                    elif (now - since).total_seconds() / 60 >= COOL_SETTLE_MINUTES:
+                        self._cooloff_start[zone] = _anchor(temp)
+                else:
+                    # Heating (or reading lost): a later cool-off re-settles.
+                    self._cooloff_cooling_since[zone] = None
                 continue
 
             (

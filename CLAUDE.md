@@ -1251,6 +1251,31 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the noise should not have happened; this stops them at the source. Winter-safe
   (the hall rarely sits >2 above comfort in the cold). Does NOT address the probe
   freeze-jump directly — that is the `hall_surface` investigation above.
+- **Cool-off learning waits out the post-heating transient (`COOL_SETTLE_MINUTES`
+  = 20, v1.34.0, 2026-09-10) — sibling of the over-warm gate, and the ROOT fix for
+  the office false alarm.** The cool-off clock used to anchor the instant a zone hit
+  ice, so its first minutes measured the *just-switched-off radiator's own cooldown*
+  near the mid-wall Rointe probe — a fast transient, not fabric loss. The over-warm
+  gate catches a sample that starts >2 above comfort; this catches the sibling case,
+  a sample that starts AT comfort but freshly-driven. **Field: the office (zone_b),
+  driven to its 21 comfort by a booking, shed ~1 °C in 32 min after the booking
+  ended — ~30 %/h, 8× its tiny insulated k (~4 %/h) — and tripped a FALSE
+  "window/door open?" push, owner-confirmed nothing open TWICE (09-09, 09-10).** The
+  owner rightly rejected a per-zone alarm mute as symptom-patching; the root is that
+  the sample started from the radiator transient. Fix: `_cooloff_cooling_since[zone]`
+  tracks continuous ice, and a sample only anchors after `COOL_SETTLE_MINUTES` of it
+  (the Rointe oil mass coasts down ~15-20 min — the same mass that overshoots on the
+  heating side, Q23), so it measures the fabric from a *settled* state. Resets on
+  heating resume or an opening. Fail-safe: it only DELAYS the anchor (never corrupts
+  k), de-biases EVERY zone's samples (not just the office), and costs nothing on the
+  bulk overnight cool-offs (20 min of a multi-hour window). The `opening_inferred`
+  alarm itself is UNCHANGED — it still fires for a genuine out-of-family sample; we
+  just stop feeding it the transient. **First-winter watch:** confirm a post-booking
+  office cool-off now reads in-family (no `opening_inferred`); if a residual transient
+  still trips it, raise `COOL_SETTLE_MINUTES`. The deeper root — the Rointe cloud
+  probe being our only room signal — stays open (owner's preferred fix is an
+  independent seated-height room sensor per zone, per Q19; this is the code-only
+  mitigation chosen for now).
 - **Boost drives ABOVE comfort, not just to it (2026-08-07, owner insight).** A
   boost used to return the comfort preset and nothing more — so pressing it while
   the room was already at the comfort setpoint was a *no-op* (the drive was

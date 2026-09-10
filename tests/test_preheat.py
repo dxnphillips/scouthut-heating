@@ -9,6 +9,16 @@ from custom_components.scout_hut_heating.preheat import (
 )
 from scout_testkit import PRESET_COMFORT, PRESET_ECO, ZA, ZB, advance, make_controller, E
 
+from custom_components.scout_hut_heating.coordinator import COOL_SETTLE_MINUTES
+
+
+def _begin_cooloff(ctrl):
+    """Anchor a cool-off past the post-heating settle delay (temp held constant
+    across the wait by the caller, so the anchor lands on the intended start)."""
+    ctrl._update_cooloff_learning()
+    advance(ctrl, COOL_SETTLE_MINUTES)
+    ctrl._update_cooloff_learning()
+
 
 # --- Pure model ----------------------------------------------------------------
 
@@ -168,7 +178,7 @@ def test_cooloff_learning_is_gap_normalised():
     hass.states.set(E["weather"], "cloudy", {"temperature": 10})
     _hall_temp(hass, 20)
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()  # sample anchors at 20 °C
+    _begin_cooloff(ctrl)  # sample anchors at 20 °C (after the settle delay)
     assert ctrl._cooloff_start[ZA] is not None
     # Cool smoothly in 0.6 °C steps: each single tick stays well under the
     # 1.5 °C step guard, so this reads as fabric loss, not a discontinuity.
@@ -195,7 +205,7 @@ def test_cooloff_single_tick_step_is_not_learned():
     hass.states.set(E["weather"], "cloudy", {"temperature": 12})
     _hall_temp(hass, 22)
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()  # anchor 22 °C
+    _begin_cooloff(ctrl)  # anchor 22 °C (after the settle delay)
     advance(ctrl, 60)
     _hall_temp(hass, 19)  # 3 °C in a single tick over a real 8.5 °C gap
     ctrl._update_cooloff_learning()
@@ -405,7 +415,7 @@ def test_fast_heat_loss_is_learnable():
     hass.states.set(E["weather"], "cloudy", {"temperature": 9})
     _hall_temp(hass, 20)
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()
+    _begin_cooloff(ctrl)  # anchor 20 °C (after the settle delay)
     advance(ctrl, 20)
     _hall_temp(hass, 19)  # 1 °C in 20 min: too short a sample to fold...
     ctrl._update_cooloff_learning()
