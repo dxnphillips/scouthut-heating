@@ -21,6 +21,7 @@ from custom_components.scout_hut_heating.const import (
     CONF_FAN_O1_POWER,
     DOMAIN,
 )
+from custom_components.scout_hut_heating.coordinator import COOL_SETTLE_MINUTES
 from scout_testkit import (
     E,
     PRESET_COMFORT,
@@ -45,6 +46,18 @@ def _set_rate(ctrl, key, value):
 
 def events(ctrl, kind):
     return [e for e in ctrl.audit.to_list() if e["event"] == kind]
+
+
+def _begin_cooloff(ctrl):
+    """Anchor a cool-off sample past the post-heating settle delay.
+
+    The first update only starts the settle clock; after COOL_SETTLE_MINUTES of
+    ice the next update anchors (the room temp is held constant across the wait
+    by the caller, so the anchor lands on the intended start temperature).
+    """
+    ctrl._update_cooloff_learning()
+    advance(ctrl, COOL_SETTLE_MINUTES)
+    ctrl._update_cooloff_learning()
 
 
 # --- The log itself ---------------------------------------------------------------
@@ -254,7 +267,7 @@ def test_cooloff_sample_is_audited_with_its_gap():
     hass.states.set(E["weather"], "cloudy", {"temperature": 10})
     _hall_temp(hass, 20)
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()
+    _begin_cooloff(ctrl)
     # Cool smoothly in 0.6 °C steps so no single tick trips the step guard.
     advance(ctrl, 60)
     _hall_temp(hass, 19.4)
@@ -278,6 +291,46 @@ def test_cooloff_sample_is_audited_with_its_gap():
     assert evt["ticks"] == 3
 
 
+def test_cooloff_does_not_anchor_until_the_settle_delay():
+    # The first minutes after heating stops are the radiator's own cooldown near
+    # the mid-wall probe, not fabric loss — the sample must not anchor until the
+    # room has been settling on ice for COOL_SETTLE_MINUTES, so the fast transient
+    # is excluded (this is what tripped the false office "opening" alarm).
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_heatloss_pct", 20)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 10})
+    _hall_temp(hass, 21)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()
+    assert ctrl._cooloff_start[ZA] is None  # settling, not yet measuring
+    advance(ctrl, COOL_SETTLE_MINUTES - 5)
+    _hall_temp(hass, 20)  # the transient shed happens here — must be excluded
+    ctrl._update_cooloff_learning()
+    assert ctrl._cooloff_start[ZA] is None  # still inside the settle window
+    advance(ctrl, 10)  # now past the settle
+    _hall_temp(hass, 19.6)
+    ctrl._update_cooloff_learning()
+    assert ctrl._cooloff_start[ZA] is not None
+    # Anchored at the SETTLED temp, not the pre-settle 21 -> the fast transient
+    # drop (21 -> 20) is not in the sample.
+    assert ctrl._cooloff_start[ZA][1] == pytest.approx(19.6)
+
+
+def test_heating_resuming_during_the_settle_restarts_it():
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 21)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()  # settle clock starts
+    advance(ctrl, COOL_SETTLE_MINUTES - 5)
+    ctrl.applied[ZA] = PRESET_COMFORT  # heating resumed before the settle finished
+    ctrl._update_cooloff_learning()  # clears the settle clock
+    ctrl.applied[ZA] = PRESET_ICE  # cooling again
+    ctrl._update_cooloff_learning()  # settle restarts from zero
+    advance(ctrl, COOL_SETTLE_MINUTES - 5)  # not enough on its own
+    ctrl._update_cooloff_learning()
+    assert ctrl._cooloff_start[ZA] is None  # re-settling, correctly not anchored
+
+
 def test_cooloff_rejected_when_room_over_warm():
     # A decay that starts well above comfort (23, comfort 19.5, margin 2 -> 21.5)
     # is transient shed of solar/overshoot heat, not the fabric: dropped whole, so
@@ -287,7 +340,7 @@ def test_cooloff_rejected_when_room_over_warm():
     hass.states.set(E["weather"], "cloudy", {"temperature": 10})
     _hall_temp(hass, 23)
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()
+    _begin_cooloff(ctrl)
     advance(ctrl, 60)
     _hall_temp(hass, 22.4)
     ctrl._update_cooloff_learning()
@@ -309,7 +362,7 @@ def test_cooloff_accepted_from_comfort_not_over_warm():
     hass.states.set(E["weather"], "cloudy", {"temperature": 10})
     _hall_temp(hass, 19.5)
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()
+    _begin_cooloff(ctrl)
     advance(ctrl, 60)
     _hall_temp(hass, 18.9)
     ctrl._update_cooloff_learning()
@@ -343,7 +396,7 @@ def test_cooloff_sample_records_a_fan_mixed_window():
     hass.states.set("sensor.fan_power", "195.0")
     _hall_temp(hass, 20)
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()  # anchors with fans already running
+    _begin_cooloff(ctrl)  # anchors with fans already running
     advance(ctrl, 60)
     _hall_temp(hass, 19.4)
     ctrl._update_cooloff_learning()
@@ -362,7 +415,7 @@ def test_cooloff_sample_without_outdoor_is_rejected_not_guessed():
     _set_rate(ctrl, "zone_a_heatloss_pct", 20)
     _hall_temp(hass, 20)  # no weather state at all
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()
+    _begin_cooloff(ctrl)
     advance(ctrl, 240)
     _hall_temp(hass, 16)
     ctrl._update_cooloff_learning()
@@ -406,7 +459,7 @@ def test_cooloff_sample_discarded_by_an_opening_is_audited():
     ctrl, hass = make_controller()
     _hall_temp(hass, 20)
     ctrl.applied[ZA] = PRESET_ICE
-    ctrl._update_cooloff_learning()  # sample anchors
+    _begin_cooloff(ctrl)  # sample anchors
     assert ctrl._cooloff_start[ZA] is not None
     ctrl.opening_ice[ZA] = True
     ctrl._update_cooloff_learning()  # ventilation loss: discard

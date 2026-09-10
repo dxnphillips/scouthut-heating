@@ -314,6 +314,9 @@ def advance(ctrl, minutes):
     for zone, sample in ctrl._cooloff_start.items():
         if sample is not None:
             ctrl._cooloff_start[zone] = (sample[0] - delta, *sample[1:])
+    for zone, ts in ctrl._cooloff_cooling_since.items():
+        if ts is not None:
+            ctrl._cooloff_cooling_since[zone] = ts - delta
     for zone, sample in ctrl._last_room_temp.items():
         if sample is not None:
             ctrl._last_room_temp[zone] = (sample[0] - delta, sample[1])
