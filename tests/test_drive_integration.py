@@ -10,7 +10,6 @@ from scout_testkit import (
     PRESET_ICE,
     ZA,
     booking,
-    hall_temp,
     make_controller,
     motion,
     run,
@@ -197,7 +196,45 @@ def test_stale_probe_withdraws_to_plain_target():
     assert _pushed(hass, _comfort_number("climate.hall_back")) == target  # not boosted
 
 
-# --- Safety net: cross-probe sanity ------------------------------------------
+# --- Freeze-guard: don't wind the overdrive up against a stuck probe ----------
+def test_frozen_probe_stops_the_overdrive_winding_up():
+    # The Rointe floor probe freeze-then-jumps: it reads flat while the room really
+    # warms, so the plain staircase kept escalating the overdrive and the room
+    # sailed past target when the probe unfroze (field 2026-09-10, hall to 21.4).
+    # With a frozen probe the overdrive must be HELD after the first step, not wound
+    # to the cap.
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 18.0})
+    hb = "climate.hall_back"
+    for _ in range(6):  # six step intervals, probe never moving
+        for climate in ("climate.hall_back", "climate.hall_front"):
+            ctrl._drive_step_at[climate] = dt_util.utcnow() - timedelta(hours=1)
+        run(ctrl.async_reconcile())
+    # First step committed 0.5 of overdrive; every step after was freeze-held.
+    assert ctrl._drive_stair[hb] <= 0.5 + 1e-9
+    assert hb in ctrl._drive_frozen
+    assert any(e.get("event") == "drive_freeze_hold" for e in ctrl.audit._events)
+
+
+def test_a_responding_probe_is_not_freeze_held():
+    # If the probe actually moves between steps, the staircase escalates as normal
+    # (the guard only holds a STUCK reading).
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 18.0})
+    hb = "climate.hall_back"
+    probe = 18.0
+    for _ in range(3):
+        for climate in ("climate.hall_back", "climate.hall_front"):
+            ctrl._drive_step_at[climate] = dt_util.utcnow() - timedelta(hours=1)
+        probe += 0.5  # the room responds each step
+        hass.states.set(hb, "heat", {"current_temperature": probe})
+        run(ctrl.async_reconcile())
+    assert hb not in ctrl._drive_frozen
+    assert ctrl._drive_stair[hb] > 0.5  # escalated past the first step
+
+
 def test_insane_low_probe_is_not_driven_on():
     _wire_numbers()
     ctrl, hass = make_controller()
