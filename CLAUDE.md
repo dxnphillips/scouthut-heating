@@ -887,6 +887,39 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       (`hall_maint` vs floor deficit = capacity wall vs stratification), the destrat kWh
       saving (`hall_kwh` fans-on/off), and item 21's flap root all read directly from the
       first cold heated export once upgraded.
+23. **Does a booking run too hot — and is it a mild-season artefact? (Logging
+    added v1.32.0, `OVERSHOOT_BAND` = 0.5; controller NOT built — measuring first.)**
+    Field 2026-09-09: a mild-afternoon Squirrels booking (comfort 19, outdoor 16,
+    sun on the roof) overshot to **21.25 average** (~+2.25) and the fans then flipped
+    to cooling chasing it — owner asked to hold nearer target so it neither feels hot
+    nor thrashes the fans (the flip is downstream of the overshoot, so fixing the
+    overshoot fixes both). **Diagnosis:** the drive did *not* run away — `drive_off`
+    snapped 1.0 → 0 the moment the room arrived; the overshoot was (a) the frozen
+    Rointe floor probe reading low so the drive over-pushed until it caught up (same
+    glitch as the learning corruption / Q21b flap root), (b) **the Rointe oil mass
+    holding heat and releasing after the element cut out** (owner insight — present in
+    *all* seasons, so not purely mild-day), (c) solar + active kids; the fans mostly
+    *closed* the strat gap, not the culprit. **The trap:** overshoot is a mild/shoulder
+    phenomenon; winter's risk is the OPPOSITE (under-shoot / cold arrival, Q2/Q17). An
+    anti-overshoot controller tuned on a September session could cause cold arrivals in
+    the season that matters — so **do not build one reactively off one mild booking.**
+    **What was built instead (pure measurement):** `booking_end` now carries
+    `peak_over` (max room average − target over the episode, spanning the pre-heat
+    window AND the slot so the mass tail is caught) and `minutes_over` (time
+    >`OVERSHOOT_BAND` above target). `peak_over` 0 = a cold-arrival session. **Decision
+    rule:** read `peak_over` / `minutes_over` across several heated bookings, crucially
+    including a *cold* one. If mild bookings persistently overshoot AND it survives into
+    cold weather, THEN build the fix — with a cold-weather guard so it can't cause cold
+    arrivals. The likely fixes when the data justifies them: (1) soften the final
+    approach (optimum-stop-lite: ease off in the last ~1° so the mass/gain coasts it in
+    rather than the radiators pushing through — the coast predictor's cousin, comfort-
+    lean/opt-in); (2) the **frozen-probe robustness** (hold the drive when the floor
+    probe is stuck — cuts overshoot AND learning corruption AND the Q21b flap at once,
+    the highest-value structural fix). Cheaper interim levers that help without winter
+    risk: trial `coast_when_free` (mild days — hold at eco and let free gain finish, so
+    the radiators don't overdrive), or widen the comfort/cooling gap (stops the flip
+    only). Pairs with Q17 (a capacity-limited hall won't overshoot at all) and Q21b
+    (the shared frozen-probe root).
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*

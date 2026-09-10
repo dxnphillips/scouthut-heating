@@ -179,6 +179,12 @@ FAN_DIRECTION_DEBOUNCE_MIN = 15.0
 REGIME_DWELL_MIN = 15.0
 REGIME_HEAT_OVERRIDE = 1.5  # °C below comfort that always heats, dwell or not
 
+# Overshoot measurement (booking_end summary, pure logging — no behaviour change).
+# A booking episode's peak room temperature above target, and the minutes spent
+# more than OVERSHOOT_BAND above it, so a recurring "runs too hot" can be judged
+# from data rather than eyeballed off the trace. The band ignores trivial hover.
+OVERSHOOT_BAND = 0.5  # °C above target before "over" time is counted
+
 # Hysteresis on the seasonal lockout: engage at avg >= threshold, release only
 # once the 3-day average drops this far below it (or on a cold-snap RealFeel),
 # so a forecast hovering at the threshold cannot flap the lockout hourly.
@@ -544,6 +550,13 @@ class ScoutController:
         # Previous running state per calendar; None = not yet observed, so a
         # restart mid-booking does not audit a phantom booking start.
         self._cal_running_prev: dict[str, bool | None] = {ZONE_A: None, ZONE_B: None}
+        # Overshoot accumulators for the booking_end summary (pure measurement).
+        # An episode spans the pre-heat window AND the running slot, because the
+        # Rointe oil mass keeps releasing after the element cuts out, so the peak
+        # can land well after arrival. Reset when the episode ends.
+        self._booking_over_peak: dict[str, float] = {ZONE_A: 0.0, ZONE_B: 0.0}
+        self._booking_over_minutes: dict[str, float] = {ZONE_A: 0.0, ZONE_B: 0.0}
+        self._booking_over_last: dict[str, Any] = {ZONE_A: None, ZONE_B: None}
         # Why each zone's desired preset is what it is (the rung of the
         # priority ladder that decided it), stashed by _desired_zone/_shared
         # so preset audit events can say WHY, not just what.
@@ -3006,6 +3019,45 @@ class ScoutController:
             hall_surface=self._hall_surface_temp(),
         )
 
+    def _reset_booking_overshoot(self, zone: str) -> None:
+        self._booking_over_peak[zone] = 0.0
+        self._booking_over_minutes[zone] = 0.0
+        self._booking_over_last[zone] = None
+
+    def _track_booking_overshoot(self, zone: str, running: bool) -> None:
+        """Accumulate how far/long the room sails past target across an episode.
+
+        An episode is the pre-heat window PLUS the running slot: the Rointe oil
+        mass keeps releasing after the element cuts out, so the peak often lands
+        after arrival, and much of the rise happens during the pre-heat before
+        the booking is even "running". Pure measurement for the ``booking_end``
+        summary — nothing keys off it. ``_booking_over_last is None`` marks
+        "between episodes": the first active tick then starts a fresh count
+        (whether from a pre-heat opening or an adjacent booking with no pre-heat),
+        so a pre-heat that fizzles without a booking cannot leak into the next.
+        ``booking_end`` reads the totals then resets; an inactive tick only nulls
+        the timestamp, leaving the totals intact for that read.
+        """
+        active = running or self.cal_window.get(zone, False)
+        if not active:
+            self._booking_over_last[zone] = None
+            return
+        now = self._now()
+        last = self._booking_over_last[zone]
+        if last is None:  # episode just began — start a fresh count
+            self._booking_over_peak[zone] = 0.0
+            self._booking_over_minutes[zone] = 0.0
+        self._booking_over_last[zone] = now
+        target = self._booking_target(zone)
+        room = self._zone_room_temp(zone)
+        if target is None or room is None:
+            return
+        over = room - target
+        if over > self._booking_over_peak[zone]:
+            self._booking_over_peak[zone] = over
+        if last is not None and over > OVERSHOOT_BAND:
+            self._booking_over_minutes[zone] += (now - last).total_seconds() / 60.0
+
     def _record_booking_edges(self) -> None:
         """Audit the moment each booking begins and ends.
 
@@ -3025,6 +3077,7 @@ class ScoutController:
             running = self._is_on(cal)
             was = self._cal_running_prev[zone]
             self._cal_running_prev[zone] = running
+            self._track_booking_overshoot(zone, running)
             if was is None or running == was:
                 continue
             if not running:
@@ -3036,7 +3089,14 @@ class ScoutController:
                     average=self._zone_room_temp(zone),
                     outdoor=self._outdoor_temp(),
                     preset=self.applied[zone],
+                    # Overshoot summary for this episode (pre-heat + slot): the
+                    # peak the room's average sailed past target, and the minutes
+                    # it stayed >OVERSHOOT_BAND over. Judges "ran too hot" from
+                    # data. peak_over 0 = never over (a cold-arrival session).
+                    peak_over=round(self._booking_over_peak[zone], 2),
+                    minutes_over=round(self._booking_over_minutes[zone], 1),
                 )
+                self._reset_booking_overshoot(zone)
                 # A hall booking ending is the deliberate boundary that lifts a
                 # pause carried through the session: an adjacent next booking
                 # then starts fresh (inheriting the still-warm room, so its

@@ -317,6 +317,9 @@ def advance(ctrl, minutes):
     for zone, sample in ctrl._last_room_temp.items():
         if sample is not None:
             ctrl._last_room_temp[zone] = (sample[0] - delta, sample[1])
+    for zone, ts in ctrl._booking_over_last.items():
+        if ts is not None:
+            ctrl._booking_over_last[zone] = ts - delta
     if ctrl.water_on_since is not None:
         ctrl.water_on_since = ctrl.water_on_since - delta
     if ctrl.water_last_hot is not None:

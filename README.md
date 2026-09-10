@@ -462,6 +462,13 @@ restarts) of everything it decides and learns:
   event finish — so fan/preset changes shortly after can be read against it.
   The hall `booking_start` also carries `fan_w_last`, so a cold-arrival
   shortfall can be read against a fan speed the occupants had dialled down.
+  `booking_end` also carries `peak_over` / `minutes_over` — how far the room's
+  average sailed past target over the whole episode (pre-heat window plus slot,
+  because the Rointe oil mass keeps releasing after the element cuts out) and
+  how long it stayed more than 0.5 °C over. Pure measurement (nothing keys off
+  it): the signal for whether a booking runs too hot, judged from data rather
+  than eyeballed off the trace. `peak_over` 0 is a session that never reached
+  target (a cold arrival).
 - **`motion`** — a PIR trip after its area has been quiet longer than the
   occupancy timeout (a genuine *arrival*, not every re-trigger while someone
   is already there — that would flood the log during a busy session). This
