@@ -591,6 +591,62 @@ def test_booking_end_is_audited_with_the_leaving_temperature():
     assert len(events(ctrl, "booking_end")) == 1
 
 
+def test_booking_end_records_the_overshoot_peak():
+    from scout_testkit import end_booking
+
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "hall_comfort_temp", 19)
+    _hall_temp(hass, 18)
+    ctrl._record_booking_edges()  # baseline (calendar off)
+    booking(ctrl, ZA, "Beavers")
+    ctrl._record_booking_edges()  # start: room under target, no overshoot yet
+    _hall_temp(hass, 21.5)  # sails past target
+    peak_room = ctrl._zone_room_temp(ZA)
+    ctrl._record_booking_edges()
+    advance(ctrl, 30)  # 30 min of over-target running
+    ctrl._record_booking_edges()
+    _hall_temp(hass, 19)  # settled back to target by the time it ends
+    end_booking(ctrl, ZA)
+    ctrl._record_booking_edges()  # end
+
+    (evt,) = events(ctrl, "booking_end")
+    # The PEAK is recorded, not the settled-at-target end value.
+    assert evt["peak_over"] == pytest.approx(peak_room - 19)
+    assert evt["minutes_over"] == pytest.approx(30, abs=1)
+    # A fresh booking starts a clean count (no leak from the last episode).
+    booking(ctrl, ZA, "Cubs")
+    ctrl._record_booking_edges()
+    end_booking(ctrl, ZA)
+    ctrl._record_booking_edges()
+    end_evt = events(ctrl, "booking_end")[-1]
+    assert end_evt["peak_over"] == 0.0
+    assert end_evt["minutes_over"] == 0.0
+
+
+def test_booking_overshoot_spans_the_preheat_window():
+    # The Rointe mass means much of the overshoot builds during the pre-heat,
+    # before the booking is "running" — the episode must span both.
+    from scout_testkit import end_booking, preheat_window
+
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "hall_comfort_temp", 19)
+    _hall_temp(hass, 18)
+    ctrl._record_booking_edges()  # baseline
+    preheat_window(ctrl, ZA, "Beavers")  # pre-heat open, NOT yet running
+    _hall_temp(hass, 22)  # already over target during the pre-heat
+    preheat_room = ctrl._zone_room_temp(ZA)
+    ctrl._record_booking_edges()  # accumulate during pre-heat
+    booking(ctrl, ZA, "Beavers")  # event starts
+    _hall_temp(hass, 20)
+    ctrl._record_booking_edges()  # start edge
+    _hall_temp(hass, 19)
+    end_booking(ctrl, ZA)
+    ctrl._record_booking_edges()  # end
+
+    (evt,) = events(ctrl, "booking_end")
+    assert evt["peak_over"] == pytest.approx(preheat_room - 19)  # pre-heat peak survived
+
+
 def test_restart_mid_booking_records_no_phantom_start():
     ctrl, hass = make_controller()
     booking(ctrl, ZA)
