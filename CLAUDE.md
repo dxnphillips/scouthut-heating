@@ -1109,7 +1109,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   auto-discovered from the heater's device (`_heater_sensor_map`, mirroring the
   power discovery). The trace now also carries **`hall_maint`** (count of hall
   heaters throttled to *maintaining*) and **`hall_kwh`** (sum of hall energy, for
-  a within-trace consumption delta); the diagnostics per-heater block (hall,
+  a within-trace consumption delta — but see the 2026-09-10 per-zone-energy
+  correction below: the four hall `energy` entities all report the SAME zone value,
+  so `hall_kwh` is that value summed 4× — ~4× inflated in absolute terms. A *delta*
+  is still 4× the true delta, so it stays proportional and fans-on-vs-off RATIO
+  comparisons remain valid, but never read `hall_kwh` as an absolute kWh; a future
+  fix should dedupe to one representative accumulator); the diagnostics per-heater block (hall,
   office AND shared) now includes `heating_status` / `energy` / `surface` /
   `effective`. This was *intended* as the **Q17 discriminator** (heaters short of
   target AND pinned at full `heating`, hall_maint 0 = capacity wall; short but at
@@ -1162,15 +1167,34 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   so the flags were false, the heater WAS firing. Fix: `_check_setpoint_readback`
   now clears on a third, truthful proof-of-adoption — the heater's own `energy`
   accumulator having risen `> DRIVE_ENERGY_ADOPTED_KWH` since the push
-  (`_drive_pushed_energy` stamps the baseline at push time). Fail-safe: a genuinely
-  stuck phantom-push heater draws nothing, so its energy stays flat and it is still
-  flagged; the `hvac_action` gate stays as a fallback for installs with no energy
-  sensor. Caveat: the energy is lumpy/cloud-delayed, so a late-reporting burn
-  clears the flag a tick or two late rather than instantly — it shortens these
-  false episodes to a self-clearing blip, not a complete cure. Can only *remove*
-  false positives, never mask a real fault. (Aggregate `hall_kwh` could not isolate
-  `hall_back`'s own draw, but the fix uses each heater's OWN energy sensor and is
-  fail-safe, so this residual uncertainty does not matter.)
+  (`_drive_pushed_energy` stamps the baseline at push time); the `hvac_action` gate
+  stays as a fallback for installs with no energy sensor. Caveat: the energy is
+  lumpy/cloud-delayed, so a late-reporting burn clears the flag a tick or two late
+  rather than instantly — it shortens these false episodes to a self-clearing blip,
+  not a complete cure.
+  **CORRECTION (2026-09-10 field export): the `energy` sensor is per-ZONE, not
+  per-heater — so the energy proof confirms the *zone* is burning, not the
+  individual heater, and the earlier "uses each heater's OWN energy sensor,
+  fail-safe, can only remove false positives never mask a real fault" claim was
+  WRONG.** All four hall heaters reported an identical `energy` (12.8584 kWh; the
+  shared trio likewise share one value) — the Rointe integration maps every heater
+  in a zone to one accumulator. Consequences: (1) once the zone's energy posts, the
+  proof clears the flag on **every** hall heater, so a genuinely stuck phantom-push
+  heater whose *siblings* are firing would be **masked** (its "energy" rises on their
+  draw) — the proof is NOT the per-heater fail-safe the note claimed. (2) It still
+  correctly removes the common false positive (the whole zone is firing, one warm-end
+  heater merely idle-and-lagging), which is what it was built for. The field case that
+  exposed it: `hall_left` flagged 16:20 while pushed 19.5 / idle at a cloud-lagged
+  19.0 live setpoint / probe 0.2 below the satisfied-guard threshold, with the zone
+  energy not yet posted — a benign warm-end cloud-lag flag, self-clearing. Net: the
+  self-check is notification-only and the drive heats the room via the working
+  heaters regardless, so the practical risk of the masking is low — but a
+  single-stuck-heater fault is NOT reliably caught here, and cannot be without a
+  genuine per-heater energy signal this hardware does not expose. The `hvac_action`
+  gate (also under-reporting, see above) is the only other per-heater adoption
+  signal, so a one-heater phantom-push in a zone whose siblings fire is a real blind
+  spot — accept it, or (if it ever bites) fall back to the independent
+  no-response/ceiling cross-check which is per-zone anyway.
 - **Cool-off learning is gated to the below-comfort regime (`COOL_OVERWARM_MARGIN`
   = 2.0, 2026-09-04).** A cool-off is only a clean read of the *fabric* loss when
   the room decays from at/near its heating setpoint. A sample whose start temp is
