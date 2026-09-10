@@ -84,8 +84,9 @@ def update_drive(
     cap: float,
     prev_stair: float,
     minutes_since_step: float,
-) -> tuple[float, float, bool]:
-    """Return ``(pushed_setpoint, new_stair, evaluated)`` for one heater.
+    probe_moved: bool = True,
+) -> tuple[float, float, bool, bool]:
+    """Return ``(pushed_setpoint, new_stair, evaluated, frozen_held)`` for one heater.
 
     target: temperature we want this heater's probe to reach.
     probe:  the heater's own current temperature.
@@ -98,10 +99,21 @@ def update_drive(
         drive behind).
     minutes_since_step: minutes since the staircase was last *evaluated*; a step
         is only considered once this reaches ``STEP_INTERVAL_MIN``.
+    probe_moved: did this heater's probe change AT ALL since the last evaluated
+        step? Response-keyed anti-windup: the Rointe floor probe freeze-then-jumps
+        through the cloud (reads flat while the room really warms, then leaps a
+        couple of degrees in one tick). A flat reading looks "still below target"
+        every step, so the plain staircase keeps escalating the overdrive and the
+        room sails past target the instant the probe unfreezes. So an *existing*
+        overdrive (``prev_stair > 0``) is only escalated when the probe actually
+        moved — no movement means no evidence the last step landed, so hold rather
+        than wind up. Defaults True (no history → behave as before).
 
     ``evaluated`` is True when the step interval had elapsed and a step decision
-    was taken (stepped or deliberately held on target); the coordinator resets
-    its per-heater step timer on that. The pushed setpoint is clamped to
+    was taken (stepped, held on target, or an up-step was suppressed as a freeze
+    hold); the coordinator resets its per-heater step timer on that. ``frozen_held``
+    is True only when a would-be up-step was suppressed because the probe had not
+    moved — surfaced for diagnostics/audit. The pushed setpoint is clamped to
     ``[target, cap]`` and quantised to the Rointe's 0.5 °C step.
     """
     headroom = max(0.0, cap - target)
@@ -112,9 +124,18 @@ def update_drive(
 
     stair = prev_stair
     evaluated = minutes_since_step >= STEP_INTERVAL_MIN
+    frozen_held = False
     if evaluated:
         if error >= STEP:  # a full 0.5 °C step (or more) below target: nudge up
-            stair = prev_stair + STEP
+            # ...but only escalate an existing overdrive if the probe responded to
+            # the last step. A frozen probe (flat while the room really warms) gets
+            # HELD here — this only ever *withholds extra* overdrive, never blocks
+            # the initial climb to comfort (prev_stair <= 0) or a step-down, so it
+            # can only reduce overshoot, never leave the room short of comfort.
+            if probe_moved or prev_stair <= 0:
+                stair = prev_stair + STEP
+            else:
+                frozen_held = True
         elif error <= -STEP:  # a full step over target: ease down
             stair = prev_stair - STEP
         # within one step of target: hold (the interval still counts as used)
@@ -126,4 +147,4 @@ def update_drive(
     # above the safety cap (harmless while every input sits on the 0.5 grid, but
     # this keeps the cap a hard bound even if a slider is ever off-grid).
     pushed = min(_quantise(target + trim), cap)
-    return pushed, stair, evaluated
+    return pushed, stair, evaluated, frozen_held

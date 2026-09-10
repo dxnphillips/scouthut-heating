@@ -1,7 +1,6 @@
 """Pure 'drive to target' controller (drive.py) — staircase integral + feedforward."""
 
 from custom_components.scout_hut_heating.drive import (
-    FF_GAIN,
     STEP,
     STEP_INTERVAL_MIN,
     feedforward,
@@ -13,7 +12,8 @@ NOT_YET = STEP_INTERVAL_MIN / 2  # too soon to step
 
 
 def _drive(probe, outdoor=8.0, target=19.5, cap=24.0, stair=0.0, since=READY, loss=0.09):
-    return update_drive(target, probe, outdoor, loss, cap, stair, since)
+    # The existing tests care about (pushed, stair, evaluated); drop frozen_held.
+    return update_drive(target, probe, outdoor, loss, cap, stair, since)[:3]
 
 
 # --- Feedforward ---------------------------------------------------------------
@@ -33,12 +33,12 @@ def test_feedforward_never_negative_when_warmer_outside():
 # --- Head-start is bounded to one step ----------------------------------------
 def test_head_start_capped_at_one_step_even_when_very_cold():
     # Deep cold: raw feedforward would exceed a step; it must be clamped to STEP.
-    pushed, stair, _ = update_drive(19.5, 19.5, -20.0, 0.5, 24.0, 0.0, READY)
+    pushed, stair, _, _ = update_drive(19.5, 19.5, -20.0, 0.5, 24.0, 0.0, READY)
     assert pushed - 19.5 <= STEP + 1e-9
 
 
 def test_on_target_holds_plain_target_without_feedforward():
-    pushed, _, _ = update_drive(19.5, 19.5, None, 0.09, 24.0, 0.0, READY)
+    pushed, _, _, _ = update_drive(19.5, 19.5, None, 0.09, 24.0, 0.0, READY)
     assert pushed == 19.5  # no outdoor -> no head-start -> just target
 
 
@@ -96,7 +96,7 @@ def _simulate(droop, plant_gain, *, ticks=1200, start=18.0, outdoor=6.0, cap=24.
         # The controller only ever sees the probe reported in 0.5 °C steps; the
         # true room temperature accumulates continuously underneath.
         probe_meas = round(probe_true * 2) / 2
-        pushed, stair, evaluated = update_drive(
+        pushed, stair, evaluated, _ = update_drive(
             target, probe_meas, outdoor, 0.09, cap, stair, since
         )
         since = 0.0 if evaluated else since + 1.0
@@ -128,3 +128,45 @@ def test_no_droop_plant_settles_at_target_not_above():
     final, peak = _simulate(droop=0.0, plant_gain=0.1)
     assert final <= 20.0  # head-start cancelled by the staircase
     assert peak <= 20.5
+
+
+# --- Freeze-guard (response-keyed anti-windup) --------------------------------
+def test_frozen_probe_holds_the_overdrive_instead_of_escalating():
+    # Already overdriving (stair 1.0), probe a full step short, but the probe has
+    # NOT moved since the last step -> a stuck reading. Must hold, not wind up.
+    pushed, stair, evaluated, frozen = update_drive(
+        19.0, 18.0, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=False
+    )
+    assert evaluated is True
+    assert frozen is True
+    assert stair == 1.0  # held, NOT escalated to 1.5
+
+
+def test_moved_probe_still_escalates_normally():
+    # Same situation but the probe DID move since the last step -> genuine response,
+    # so the staircase escalates as before.
+    _, stair, _, frozen = update_drive(
+        19.0, 18.0, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=True
+    )
+    assert frozen is False
+    assert stair == 1.5
+
+
+def test_freeze_guard_never_blocks_the_initial_climb_to_comfort():
+    # No overdrive committed yet (stair 0): the first climb toward comfort is
+    # sacred even if the probe reads flat, so it steps up regardless.
+    _, stair, _, frozen = update_drive(
+        19.0, 17.0, 8.0, 0.09, 24.0, 0.0, READY, probe_moved=False
+    )
+    assert frozen is False
+    assert stair == STEP
+
+
+def test_freeze_guard_still_allows_step_down_when_over():
+    # A frozen probe that reads OVER target must still ease down (the safe
+    # direction) — the guard only ever withholds *up*-steps.
+    _, stair, _, frozen = update_drive(
+        19.0, 20.5, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=False
+    )
+    assert frozen is False
+    assert stair == 0.5

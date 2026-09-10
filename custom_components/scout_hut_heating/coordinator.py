@@ -568,6 +568,13 @@ class ScoutController:
         # first, so a crash can never leave a wound-up overdrive behind.
         self._drive_stair: dict[str, float] = {}
         self._drive_step_at: dict[str, datetime] = {}
+        # Response-keyed anti-windup (freeze-guard): the probe value at each
+        # heater's last evaluated step, and the set currently freeze-held (up-step
+        # suppressed because the freeze-then-jump floor probe has not moved). Stops
+        # the drive escalating the overdrive against a stuck reading and sailing
+        # past target when it unfreezes. Not persisted (like the staircase).
+        self._drive_step_probe: dict[str, float] = {}
+        self._drive_frozen: set[str] = set()
         self._drive_pushed: dict[str, float] = {}  # last setpoint pushed per heater
         self._drive_number: dict[str, str] = {}  # cached climate -> comfort number
         self._drive_cap_since: dict[str, datetime | None] = {}  # cap-pinned clock
@@ -2116,6 +2123,9 @@ class ScoutController:
                     "setpoint_rejected": sorted(self._drive_rejected),
                     "rejected_alert": self._drive_reject_notified,
                     "no_response_alert": self._drive_noresp_notified,
+                    # Heaters whose overdrive is currently held because their
+                    # freeze-then-jump probe has not moved (freeze-guard active).
+                    "frozen_held": sorted(self._drive_frozen),
                     # Booking hold: how far above comfort the hall is currently
                     # being held to pre-empt an evening dip (0 when not a running
                     # comfort booking, mild, or disabled).
@@ -3775,16 +3785,34 @@ class ScoutController:
                     self._drive_cap_since[climate] = None
                     self._drive_rejected.discard(climate)
                     self._drive_driven.discard(climate)
+                    self._drive_step_probe.pop(climate, None)
+                    self._drive_frozen.discard(climate)
                     await self._drive_push(climate, number, target)
                     continue
                 since = self._drive_minutes_since_step(climate, now)
-                pushed, stair, evaluated = update_drive(
+                # Response-keyed anti-windup: has the probe moved since the step we
+                # last evaluated against? (True when we have no baseline yet.)
+                moved = self._drive_step_probe.get(climate) != probe
+                pushed, stair, evaluated, frozen_held = update_drive(
                     target, probe, outdoor, loss, cap,
-                    self._drive_stair.get(climate, 0.0), since,
+                    self._drive_stair.get(climate, 0.0), since, moved,
                 )
                 self._drive_stair[climate] = stair
                 if evaluated:
                     self._drive_step_at[climate] = now
+                    self._drive_step_probe[climate] = probe
+                    if frozen_held and climate not in self._drive_frozen:
+                        self._drive_frozen.add(climate)
+                        self.audit.record(
+                            "drive_freeze_hold",
+                            now,
+                            zone=zone,
+                            heater=climate,
+                            probe=probe,
+                            pushed=pushed,
+                        )
+                    elif not frozen_held:
+                        self._drive_frozen.discard(climate)
                 # Entering the driven state (a fresh comfort episode): re-assert
                 # and restart the read-back window even if the comfort number is
                 # unchanged from a prior withdrawal, so the read-back does not
@@ -4078,6 +4106,8 @@ class ScoutController:
                 )
         self._drive_stair.clear()
         self._drive_step_at.clear()
+        self._drive_step_probe.clear()
+        self._drive_frozen.clear()
         self._drive_pushed.clear()
         self._drive_pushed_at.clear()
         self._drive_pushed_energy.clear()

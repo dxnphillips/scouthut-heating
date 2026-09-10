@@ -920,6 +920,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     the radiators don't overdrive), or widen the comfort/cooling gap (stops the flip
     only). Pairs with Q17 (a capacity-limited hall won't overshoot at all) and Q21b
     (the shared frozen-probe root).
+    **Fix #2 BUILT (v1.33.0, 2026-09-10, the drive freeze-guard — see the drive
+    bullet).** Confirmed live on the 09-10 Beavers booking: floor probe frozen at 18.5
+    for 30 min while `drive_off` wound to 1.5, then jumped to 21.38 → booking started
+    at `shortfall −2.0` → forward→reverse→forward fan flap. The response-keyed
+    anti-windup (`update_drive.probe_moved`) now holds the overdrive when the stuck
+    probe shows no response, fail-safe (never blocks the climb to comfort). This is the
+    biggest lever and it is in. **Still to confirm/measure:** deploy 1.32.0's `peak_over`
+    logging to size the *residual* oil-mass coast the freeze-guard can't remove, across
+    heated bookings incl. a cold one; if that residual still runs too warm, then
+    fix #1 (soften the final approach). The `coast_when_free` / comfort-cooling-gap
+    interim levers remain available but are now second-line behind the freeze-guard.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
@@ -1094,6 +1105,32 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   **First-winter watch:** confirm it lands *on* target without hover/overshoot on
   the slow fabric, and read `drive_capped` / the `drive.pushed` trace for which
   heaters need the most boost.
+  **Freeze-guard: response-keyed anti-windup (v1.33.0, 2026-09-10) — the Q23 fix
+  #2 / Q21b drive side.** The staircase stepped the overdrive up every
+  `STEP_INTERVAL_MIN` whenever the probe read "below target" — but the Rointe floor
+  probe freeze-then-jumps (reads flat while the room really warms, then leaps a
+  couple of degrees in one tick), so a stuck reading looked below-target every step
+  and the drive wound the overdrive to the cap; the room then sailed past target the
+  instant the probe unfroze. **Field 2026-09-10 (caught live):** occupancy heating
+  from ~15:50, floor probe frozen at 18.5 for 30 min while `drive_off` wound
+  0.5→1.0→**1.5** and the panels hit ~50 °C, then the probe jumped 18.5 → 21.38 in one
+  tick — the hall overshot to **21.4** and the Beavers booking (17:00) started at
+  `shortfall −2.0`, seeding a forward→reverse→forward fan flap through the slot. Fix:
+  `update_drive` gains `probe_moved` and only escalates an *existing* overdrive
+  (`prev_stair > 0`) when the probe actually moved since the last evaluated step —
+  no movement = no evidence the last step landed = hold, don't wind up. The
+  coordinator tracks the probe at each step (`_drive_step_probe`), records a
+  `drive_freeze_hold` audit event on the rising edge, and exposes `drive.frozen_held`
+  in diagnostics. **Strictly fail-safe:** it only ever *withholds extra* overdrive —
+  the initial climb to comfort (`prev_stair <= 0`) and step-downs are never blocked,
+  so it can only reduce overshoot, never leave the room short of comfort. Self-clears
+  the instant the probe moves. **What it does NOT fix:** (a) the residual Rointe
+  oil-mass coast (hot panels keep releasing after cut-off — a smaller ~0.5–1 °C
+  overshoot the freeze-guard can't touch; the Q23 `peak_over` logging measures what's
+  left), and (b) the Q21b spurious `ice→comfort` from a probe *drop-out* (None read)
+  on the err-warm path — a distinct mechanism (drop-out, not freeze) still open. It
+  reduces the heat/cool flap by killing the overshoot that seeds it, not by touching
+  the regime logic.
   **The 15-min trace now carries `hall_fire` and `drive_off` (2026-08-28) so a
   climb is retrospectively attributable** — `hall_fire` is the count of hall
   heaters reporting `hvac_action == heating`, `drive_off` the largest overdrive
