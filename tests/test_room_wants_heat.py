@@ -14,7 +14,6 @@ from scout_testkit import (
     PRESET_ICE,
     ZA,
     ZB,
-    E,
     booking,
     hall_temp,
     make_controller,
