@@ -40,6 +40,10 @@ def _hall_temp(hass, temp):
     hass.states.set(E["hall"][0], "heat", {"current_temperature": temp})
 
 
+def _outdoor(hass, temp):
+    hass.states.set(E["weather"], "cloudy", {"temperature": temp})
+
+
 def _set_rate(ctrl, key, value):
     ctrl._numbers[key].native_value = value
 
@@ -179,6 +183,7 @@ def test_accepted_warmup_sample_is_audited_with_its_inputs():
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "hall_comfort_temp", 22)  # target, so the climb is a 4 °C sample
     _hall_temp(hass, 18)
+    _outdoor(hass, 5)  # cold: warm-up learning only folds in cold conditions
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()
     # Climb 18 -> 22 in 1 °C/30-min steps (gradual, no single-tick jump).
@@ -203,6 +208,7 @@ def test_rejected_warmup_sample_is_audited_as_rejected():
     ctrl, hass = make_controller()
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _hall_temp(hass, 18)
+    _outdoor(hass, 5)  # cold, so the rejection is the small rise, not the mild gate
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()
     advance(ctrl, 20)
@@ -224,6 +230,7 @@ def test_warmup_with_a_single_tick_probe_jump_is_rejected():
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "hall_comfort_temp", 22)
     _hall_temp(hass, 18)
+    _outdoor(hass, 5)  # cold, so the rejection is the tick jump, not the mild gate
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()  # start at 18
     advance(ctrl, 120)
@@ -249,6 +256,7 @@ def test_warmup_sample_records_the_average_fan_wattage():
     hass.states.set("sensor.fan_power", "120.0")
     _set_rate(ctrl, "zone_a_warmup_rate_fans", 20)
     _hall_temp(hass, 18)
+    _outdoor(hass, 5)  # cold: warm-up learning only folds in cold conditions
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()  # sample starts
     ctrl._update_warmup_learning()  # one mid-warm-up tick
@@ -259,6 +267,64 @@ def test_warmup_sample_records_the_average_fan_wattage():
     (evt,) = events(ctrl, "warmup_sample")
     assert evt["rate_key"] == "zone_a_warmup_rate_fans"
     assert evt["o1_avg_w"] == pytest.approx(120.0)
+
+
+def _run_warmup(outdoor_temp):
+    # A clean 4 °C climb (gradual, target reached) at the given outdoor temp.
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "hall_comfort_temp", 22)
+    _hall_temp(hass, 18)
+    _outdoor(hass, outdoor_temp)
+    ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._update_warmup_learning()
+    for t in (19, 20, 21, 22):
+        advance(ctrl, 30)
+        _hall_temp(hass, t)
+        ctrl._update_warmup_learning()
+    (evt,) = events(ctrl, "warmup_sample")
+    return evt
+
+
+def test_warmup_in_mild_weather_is_not_learned():
+    # The same clean climb that folds when it is cold must NOT fold in mild
+    # weather: solar on the roof does the work, so the sample reads too fast and
+    # would erode the rate toward a cold arrival. Rejected whole, rate untouched,
+    # the audit says why (mild).
+    mild = _run_warmup(16.0)  # a mild shoulder-season afternoon
+    assert mild["mild"] is True
+    assert mild["accepted"] is False
+    assert mild["new_rate"] == mild["old_rate"] == 20.0
+    assert mild["outdoor"] == pytest.approx(16.0)
+
+
+def test_warmup_in_cold_weather_is_learned():
+    # The identical climb in genuinely cold conditions is representative of when
+    # the pre-heat fires, so it teaches the rate.
+    cold = _run_warmup(5.0)
+    assert cold["mild"] is False
+    assert cold["accepted"] is True
+    assert cold["new_rate"] == pytest.approx(23.0, abs=0.01)
+
+
+def test_warmup_with_no_outdoor_reading_is_not_learned():
+    # Unknown outdoor counts as not-cold (fail-safe): a climb that cannot be
+    # confirmed as cold-condition is left unfolded rather than risk folding a
+    # solar-contaminated one.
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "hall_comfort_temp", 22)
+    _hall_temp(hass, 18)  # no _outdoor() call -> weather entity unset -> None
+    ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._update_warmup_learning()
+    for t in (19, 20, 21, 22):
+        advance(ctrl, 30)
+        _hall_temp(hass, t)
+        ctrl._update_warmup_learning()
+    (evt,) = events(ctrl, "warmup_sample")
+    assert evt["mild"] is True
+    assert evt["accepted"] is False
+    assert evt["new_rate"] == evt["old_rate"] == 20.0
 
 
 def test_cooloff_sample_is_audited_with_its_gap():

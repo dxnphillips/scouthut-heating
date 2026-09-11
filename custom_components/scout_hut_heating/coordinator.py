@@ -373,6 +373,22 @@ COOL_OVERWARM_MARGIN = 2.0
 # never corrupts — and overnight cool-offs (the bulk) lose 20 min of a multi-hour
 # window, nothing material.
 COOL_SETTLE_MINUTES = 20.0
+# Cold-conditions gate on warm-up learning (2026-09-11, field). A warm-up timed
+# in mild weather reads implausibly fast because solar gain on the big uninsulated
+# roof (plus occupancy) does much of the work the radiators are credited with.
+# Air temperature does NOT separate a good sample from a contaminated one — the
+# same outdoor ~16 °C gave 44 min/°C pre-sunrise (08-27) but 12-15 min/°C under
+# midday sun, eroding zone_a_warmup_rate_fans 34 -> 22 in three mild-September days
+# (toward a cold arrival, the dangerous direction). But a cold-morning pre-heat
+# only needs samples taken in cold-morning-like conditions, so instead of trying
+# to detect the sun we reject the whole mild band: fold a warm-up only when the
+# outdoor is genuinely cold. This freezes learning through the mild shoulder
+# season (every current sample rejected) and resumes it when the weather turns,
+# which is exactly when the learned rate matters. Unknown outdoor counts as
+# not-cold (fail-safe: keep the conservative rate rather than fold an
+# unattributable climb). Sits well below the ~15-18 °C contamination band and the
+# UK heating base (15.5) while capturing real cold mornings.
+WARMUP_COLD_MAX_OUTDOOR = 12.0
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
@@ -1412,18 +1428,24 @@ class ScoutController:
             assisted = fan_ticks * 2 >= ticks
             rate_key = self._warmup_rate_key(zone, assisted=assisted)
             old_rate = self.number(rate_key)
-            new_rate = updated_rate(old_rate, minutes, rise, max_tick_rise)
             # Free gain (solar/occupancy/fan-delivered ceiling heat) makes a
             # warm-up read implausibly fast; folding it would corrupt the rate
-            # LOW and shorten the lead toward a cold arrival. Rejected by
-            # updated_rate; flagged here for the audit (no push — the sun helping
-            # is not something to act on). A single-tick probe jump (freeze-then-
-            # catch-up) is rejected the same way (`max_tick_rise`).
+            # LOW and shorten the lead toward a cold arrival. Three guards, then
+            # the cold-conditions gate: too little rise/duration is noise, a
+            # single-tick probe jump (freeze-then-catch-up) is a discontinuity,
+            # and a sample timed in MILD weather is dominated by solar on the roof
+            # (WARMUP_COLD_MAX_OUTDOOR — the same outdoor gave 44 vs 12 min/°C by
+            # time of day, so only cold-morning conditions are trusted). Flagged
+            # for the audit; no push (the sun helping is not something to act on).
+            outdoor = self._outdoor_temp()
+            mild = outdoor is None or outdoor > WARMUP_COLD_MAX_OUTDOOR
             quality = (
                 rise >= MIN_SAMPLE_RISE
                 and minutes >= MIN_SAMPLE_MINUTES
                 and max_tick_rise < MAX_WARMUP_TICK_RISE
+                and not mild
             )
+            new_rate = updated_rate(old_rate, minutes, rise, max_tick_rise) if quality else old_rate
             observed = warmup_observed_rate(minutes, rise) if quality else None
             outlier = (
                 quality
@@ -1443,6 +1465,8 @@ class ScoutController:
                 ticks=ticks,
                 max_tick_rise=max_tick_rise,
                 o1_avg_w=(watt_sum / watt_n) if watt_n else None,
+                outdoor=outdoor,
+                mild=mild,
                 reached_target=done,
                 accepted=quality and not outlier,
                 outlier=outlier,
