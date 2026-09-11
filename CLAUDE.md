@@ -907,11 +907,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     `peak_over` (max room average − target over the episode, spanning the pre-heat
     window AND the slot so the mass tail is caught) and `minutes_over` (time
     >`OVERSHOOT_BAND` above target). `peak_over` 0 = a cold-arrival session.
-    **ECO-keyword bookings are excluded (v1.34.1, field 2026-09-11):** their target
-    is a low cleaning-slot FLOOR (eco-low 14), not a comfort aim, so a warm room
-    coasting above it on ice is not overshoot — a 16 °C room on a 14 target logged a
-    meaningless `peak_over 2.12`. The metric only means "ran too hot" for a room
-    actually DRIVEN to target, i.e. a non-eco booking; eco bookings now log 0. **Decision
+    **Gated to a room actually HEATED toward target (v1.34.2, field 2026-09-11;
+    supersedes the v1.34.1 eco-exclusion, which was too blunt — owner caught it).**
+    A mild-day room already at 16 sitting on ice above an eco-low 14 floor logged a
+    meaningless `peak_over 2.12` — never driven there, so not overshoot. But the fix
+    is NOT "exclude eco bookings": a *deep-winter* eco booking driven up from frost 7
+    to its eco-low 14 CAN overshoot 14 (Rointe mass) exactly as a comfort booking
+    overshoots 19, and that must be measured. So the distinction is *driven vs
+    coasting*, not eco vs comfort: `_booking_over_heated` latches once the zone is in
+    a heating preset (comfort/eco) during the episode, and `booking_end` reports 0
+    unless it did — capturing the mass tail (which coasts on ice AFTER heating) while
+    excluding a never-heated warm coast. **Decision
     rule:** read `peak_over` / `minutes_over` across several heated bookings, crucially
     including a *cold* one. If mild bookings persistently overshoot AND it survives into
     cold weather, THEN build the fix — with a cold-weather guard so it can't cause cold
