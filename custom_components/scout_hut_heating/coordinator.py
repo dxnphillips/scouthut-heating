@@ -3081,8 +3081,17 @@ class ScoutController:
         so a pre-heat that fizzles without a booking cannot leak into the next.
         ``booking_end`` reads the totals then resets; an inactive tick only nulls
         the timestamp, leaving the totals intact for that read.
+
+        Skipped for ECO-keyword bookings: their target is a low cleaning-slot
+        FLOOR (eco-low 14), not a comfort aim, so a warm room simply coasting
+        above it is not overshoot — the room is on ice, never driven there
+        (field 2026-09-11: a 05:00 eco booking sat at 16 vs target 14 and logged
+        a meaningless peak_over 2.12). The metric only means "ran too hot" for a
+        room actually DRIVEN to its target, i.e. a non-eco booking.
         """
-        active = running or self.cal_window.get(zone, False)
+        active = (running or self.cal_window.get(zone, False)) and not (
+            self._eco_keyword_active(zone)
+        )
         if not active:
             self._booking_over_last[zone] = None
             return
