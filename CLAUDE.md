@@ -906,7 +906,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     **What was built instead (pure measurement):** `booking_end` now carries
     `peak_over` (max room average − target over the episode, spanning the pre-heat
     window AND the slot so the mass tail is caught) and `minutes_over` (time
-    >`OVERSHOOT_BAND` above target). `peak_over` 0 = a cold-arrival session. **Decision
+    >`OVERSHOOT_BAND` above target). `peak_over` 0 = a cold-arrival session.
+    **ECO-keyword bookings are excluded (v1.34.1, field 2026-09-11):** their target
+    is a low cleaning-slot FLOOR (eco-low 14), not a comfort aim, so a warm room
+    coasting above it on ice is not overshoot — a 16 °C room on a 14 target logged a
+    meaningless `peak_over 2.12`. The metric only means "ran too hot" for a room
+    actually DRIVEN to target, i.e. a non-eco booking; eco bookings now log 0. **Decision
     rule:** read `peak_over` / `minutes_over` across several heated bookings, crucially
     including a *cold* one. If mild bookings persistently overshoot AND it survives into
     cold weather, THEN build the fix — with a cold-weather guard so it can't cause cold
