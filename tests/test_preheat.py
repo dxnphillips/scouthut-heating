@@ -144,6 +144,7 @@ def test_completed_warmup_updates_the_learned_rate():
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "hall_comfort_temp", 22)  # target, so the climb is a 4 °C sample
     _hall_temp(hass, 18)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 5})  # cold: learning gated to it
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()  # sample starts at 18 °C
     assert ctrl._warmup_start[ZA] is not None
@@ -160,6 +161,7 @@ def test_aborted_warmup_with_small_rise_is_ignored():
     ctrl, hass = make_controller()
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _hall_temp(hass, 18)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 5})  # cold: reject on rise, not gate
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()
     advance(ctrl, 20)

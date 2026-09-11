@@ -127,11 +127,31 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   19.81 is fast = cold-arrival direction and the EWMA does not self-heal quickly, the
   owner **manually reset `zone_a_warmup_rate_fans` to 34** (matching the trustworthy
   base rate 33.23 and the 08-27 cold-fabric baseline) — the `zone_b_heatloss_pct`
-  reset precedent. **Residual, not yet actioned:** the fans rate is *also* biased fast
-  by over-warm/solar midday samples the tick-guard can't catch (09-06 11:32 started
-  20.62 °C, read 10.2 min/°C) — a warm-up over-warm-start gate (mirror of the cool-off
-  `COOL_OVERWARM_MARGIN`) is the candidate fix, flagged for discussion, not built (one
-  EWMA + winter cold samples pulling it the safe way makes it low-urgency).
+  reset precedent. **Residual FIXED — cold-conditions gate (`WARMUP_COLD_MAX_OUTDOOR`
+  = 12.0, v1.35.0, 2026-09-11).** The 09-11 export showed the reset-to-34 eroded
+  straight back to **21.89** in three days: every accepted daytime climb read 12-15
+  min/°C (09-09 15:35, 09-10 10:37, 09-11 10:30, starts 15.75-17.12 — *below* comfort,
+  so an over-warm-start gate would NOT catch them) and each pulled the fans rate down
+  toward a cold arrival. The bias is **solar on the big roof plus occupancy** doing the
+  radiators' work on mild days, and crucially **air temperature does not separate a good
+  sample from a bad one** — the trustworthy 08-27 cold-fabric baseline (44 min/°C) and
+  the contaminated mild samples were *both* at outdoor ~16 °C; the discriminator was time
+  of day (pre-sunrise vs midday sun), not outdoor temp. So the over-warm-start gate was
+  the wrong fix. Instead `_update_warmup_learning` now folds a sample only when the
+  **outdoor is genuinely cold** (≤ 12 °C): a cold-morning pre-heat only needs samples
+  taken in cold-morning-like conditions, so rejecting the whole mild band (rather than
+  trying to detect the sun) freezes learning through the mild shoulder season — every
+  current 15-18 °C sample rejected — and resumes it when the weather turns, exactly when
+  the rate matters. Unknown outdoor counts as not-cold (fail-safe: keep the conservative
+  rate). Applies to both zones and both rates. `warmup_sample` now carries `outdoor` +
+  `mild`; audit-only, no push. The base rate held stable at 33.23 the whole erosion (no
+  no-fan climbs happen in shoulder season), so it stayed a good anchor. **Owner-side: the
+  fix stops future erosion but does not restore the corrupt 21.89 — reset
+  `zone_a_warmup_rate_fans` back up to ~40** (the 08-27 cold-fabric 44 with winter
+  headroom; the base 33.23 is the floor). **First-winter watch:** confirm cold-morning
+  climbs (outdoor < 12) now fold and pull the rate toward the true cold-fabric ~40+, and
+  that the gate is not so strict it never learns before deep winter (if autumn cold
+  mornings are being rejected at 12-14 °C, nudge `WARMUP_COLD_MAX_OUTDOOR` up toward 13-14).
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
