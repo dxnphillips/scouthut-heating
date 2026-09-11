@@ -652,6 +652,7 @@ def test_booking_end_records_the_overshoot_peak():
     _hall_temp(hass, 18)
     ctrl._record_booking_edges()  # baseline (calendar off)
     booking(ctrl, ZA, "Beavers")
+    ctrl.applied[ZA] = PRESET_COMFORT  # driven toward comfort this slot
     ctrl._record_booking_edges()  # start: room under target, no overshoot yet
     _hall_temp(hass, 21.5)  # sails past target
     peak_room = ctrl._zone_room_temp(ZA)
@@ -686,6 +687,7 @@ def test_booking_overshoot_spans_the_preheat_window():
     _hall_temp(hass, 18)
     ctrl._record_booking_edges()  # baseline
     preheat_window(ctrl, ZA, "Beavers")  # pre-heat open, NOT yet running
+    ctrl.applied[ZA] = PRESET_COMFORT  # driven toward comfort during the pre-heat
     _hall_temp(hass, 22)  # already over target during the pre-heat
     preheat_room = ctrl._zone_room_temp(ZA)
     ctrl._record_booking_edges()  # accumulate during pre-heat
@@ -700,15 +702,16 @@ def test_booking_overshoot_spans_the_preheat_window():
     assert evt["peak_over"] == pytest.approx(preheat_room - 19)  # pre-heat peak survived
 
 
-def test_eco_booking_logs_no_overshoot():
-    # An ECO-keyword booking aims at a low cleaning-slot floor (eco-low 14), not a
-    # comfort target — a warm room simply coasting above it is not overshoot, so the
-    # metric must not accumulate (field 2026-09-11: a 16 °C room on a 14 target logged
+def test_never_heated_warm_coast_logs_no_overshoot():
+    # A room already warm above a low target, sitting on ICE (never driven there),
+    # is not overshoot — the distinction is driven-vs-coasting, not eco-vs-comfort
+    # (field 2026-09-11: a 16 °C room on an eco-low 14 target, never heated, logged
     # a meaningless peak_over 2.12).
     from scout_testkit import end_booking
 
     ctrl, hass = make_controller()
-    _hall_temp(hass, 16)  # well above the eco-low floor, never driven there
+    ctrl.applied[ZA] = PRESET_ICE  # warm enough already: on ice, not driven
+    _hall_temp(hass, 16)  # well above the eco-low floor
     ctrl._record_booking_edges()  # baseline
     booking(ctrl, ZA, "test")  # 'test' is a default ECO keyword -> eco-low target
     ctrl._record_booking_edges()  # start
@@ -720,6 +723,30 @@ def test_eco_booking_logs_no_overshoot():
     (evt,) = events(ctrl, "booking_end")
     assert evt["peak_over"] == 0.0
     assert evt["minutes_over"] == 0.0
+
+
+def test_heated_eco_booking_still_logs_overshoot():
+    # A deep-winter eco booking DRIVEN up from frost toward its eco-low floor can
+    # overshoot it (Rointe mass) exactly as a comfort booking overshoots 19 — that
+    # IS overshoot and must be measured (the fix is not to exclude eco, but to
+    # require the room was actually heated toward target).
+    from scout_testkit import end_booking
+
+    ctrl, hass = make_controller()
+    _hall_temp(hass, 13)  # below the eco-low floor, climbing
+    ctrl._record_booking_edges()  # baseline
+    booking(ctrl, ZA, "test")  # eco-low target 14
+    ctrl.applied[ZA] = PRESET_ECO  # being driven toward eco-low
+    ctrl._record_booking_edges()  # start (room below target: no overshoot yet)
+    _hall_temp(hass, 15.5)  # overshot the 14 floor
+    over_room = ctrl._zone_room_temp(ZA)
+    ctrl._record_booking_edges()
+    _hall_temp(hass, 14)
+    end_booking(ctrl, ZA)
+    ctrl._record_booking_edges()  # end
+
+    (evt,) = events(ctrl, "booking_end")
+    assert evt["peak_over"] == pytest.approx(over_room - 14)  # driven -> counted
 
 
 def test_restart_mid_booking_records_no_phantom_start():

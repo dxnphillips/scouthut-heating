@@ -580,6 +580,9 @@ class ScoutController:
         self._booking_over_peak: dict[str, float] = {ZONE_A: 0.0, ZONE_B: 0.0}
         self._booking_over_minutes: dict[str, float] = {ZONE_A: 0.0, ZONE_B: 0.0}
         self._booking_over_last: dict[str, Any] = {ZONE_A: None, ZONE_B: None}
+        # Whether the zone was actually driven (comfort/eco preset) this episode —
+        # a never-heated warm coast above a low target reports no overshoot.
+        self._booking_over_heated: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         # Why each zone's desired preset is what it is (the rung of the
         # priority ladder that decided it), stashed by _desired_zone/_shared
         # so preset audit events can say WHY, not just what.
@@ -3067,6 +3070,7 @@ class ScoutController:
         self._booking_over_peak[zone] = 0.0
         self._booking_over_minutes[zone] = 0.0
         self._booking_over_last[zone] = None
+        self._booking_over_heated[zone] = False
 
     def _track_booking_overshoot(self, zone: str, running: bool) -> None:
         """Accumulate how far/long the room sails past target across an episode.
@@ -3082,16 +3086,18 @@ class ScoutController:
         ``booking_end`` reads the totals then resets; an inactive tick only nulls
         the timestamp, leaving the totals intact for that read.
 
-        Skipped for ECO-keyword bookings: their target is a low cleaning-slot
-        FLOOR (eco-low 14), not a comfort aim, so a warm room simply coasting
-        above it is not overshoot — the room is on ice, never driven there
-        (field 2026-09-11: a 05:00 eco booking sat at 16 vs target 14 and logged
-        a meaningless peak_over 2.12). The metric only means "ran too hot" for a
-        room actually DRIVEN to its target, i.e. a non-eco booking.
+        Only counts when the room was actually HEATED toward the target this
+        episode — the distinction is not eco-vs-comfort but driven-vs-coasting.
+        A deep-winter eco booking climbing from frost 7 to its eco-low 14 can
+        overshoot 14 (mass) exactly as a comfort booking overshoots 19, and we
+        want that; but a mild-day room already at 16, sitting on ice above the
+        same 14 floor and never driven there, is not overshoot (field 2026-09-11:
+        that logged a meaningless peak_over 2.12). So `_booking_over_heated` latches
+        once the zone is in a heating preset (comfort/eco) during the episode, and
+        `booking_end` reports 0 unless it did — capturing the mass tail (which
+        coasts on ice AFTER heating) while excluding a never-heated warm coast.
         """
-        active = (running or self.cal_window.get(zone, False)) and not (
-            self._eco_keyword_active(zone)
-        )
+        active = running or self.cal_window.get(zone, False)
         if not active:
             self._booking_over_last[zone] = None
             return
@@ -3100,7 +3106,10 @@ class ScoutController:
         if last is None:  # episode just began — start a fresh count
             self._booking_over_peak[zone] = 0.0
             self._booking_over_minutes[zone] = 0.0
+            self._booking_over_heated[zone] = False
         self._booking_over_last[zone] = now
+        if self.applied.get(zone) in (PRESET_COMFORT, PRESET_ECO):
+            self._booking_over_heated[zone] = True  # driven toward target this slot
         target = self._booking_target(zone)
         room = self._zone_room_temp(zone)
         if target is None or room is None:
@@ -3145,9 +3154,19 @@ class ScoutController:
                     # Overshoot summary for this episode (pre-heat + slot): the
                     # peak the room's average sailed past target, and the minutes
                     # it stayed >OVERSHOOT_BAND over. Judges "ran too hot" from
-                    # data. peak_over 0 = never over (a cold-arrival session).
-                    peak_over=round(self._booking_over_peak[zone], 2),
-                    minutes_over=round(self._booking_over_minutes[zone], 1),
+                    # data. peak_over 0 = never over (a cold-arrival session), OR
+                    # the room was never heated toward target this slot (a warm
+                    # coast above a low eco floor is not overshoot).
+                    peak_over=(
+                        round(self._booking_over_peak[zone], 2)
+                        if self._booking_over_heated[zone]
+                        else 0.0
+                    ),
+                    minutes_over=(
+                        round(self._booking_over_minutes[zone], 1)
+                        if self._booking_over_heated[zone]
+                        else 0.0
+                    ),
                 )
                 self._reset_booking_overshoot(zone)
                 # A hall booking ending is the deliberate boundary that lifts a
