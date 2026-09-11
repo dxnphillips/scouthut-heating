@@ -10,7 +10,6 @@ their pre-1.12 behaviour.
 from scout_testkit import (
     E,
     PRESET_COMFORT,
-    PRESET_ECO,
     PRESET_ICE,
     ZA,
     ZB,
