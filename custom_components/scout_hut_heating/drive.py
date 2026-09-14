@@ -85,8 +85,9 @@ def update_drive(
     prev_stair: float,
     minutes_since_step: float,
     probe_moved: bool = True,
-) -> tuple[float, float, bool, bool]:
-    """Return ``(pushed_setpoint, new_stair, evaluated, frozen_held)`` for one heater.
+    near_target: bool = False,
+) -> tuple[float, float, bool, bool, bool]:
+    """Return ``(pushed_setpoint, new_stair, evaluated, frozen_held, approach_held)``.
 
     target: temperature we want this heater's probe to reach.
     probe:  the heater's own current temperature.
@@ -108,13 +109,27 @@ def update_drive(
         overdrive (``prev_stair > 0``) is only escalated when the probe actually
         moved — no movement means no evidence the last step landed, so hold rather
         than wind up. Defaults True (no history → behave as before).
+    near_target: has the ZONE AS A WHOLE (its average room temperature, not this
+        one laggy per-heater probe) reached within a step of target? Soften-final-
+        approach anti-overshoot: during a fast climb the per-heater probes lag the
+        real room (cloud lag + 0.5 °C freeze-creep), so they read "still short" and
+        the staircase keeps *escalating* the overdrive even after the room has
+        actually arrived — then the room sails past target as they catch up (field
+        2026-09-14: room averaged 20.25, comfort 19, yet the drive stepped to +1.5).
+        So an *existing* overdrive (``prev_stair > 0``) is not escalated once the
+        room average is at the top of the approach: hold what is already committed
+        and let the mass coast it in. Like the freeze-guard it only ever *withholds
+        extra* overdrive (never reduces drive, never blocks the initial climb from
+        ``prev_stair <= 0``), so it cannot cause a cold arrival — on a genuine cold
+        climb the average is far below target and this never engages. Defaults False.
 
     ``evaluated`` is True when the step interval had elapsed and a step decision
-    was taken (stepped, held on target, or an up-step was suppressed as a freeze
-    hold); the coordinator resets its per-heater step timer on that. ``frozen_held``
-    is True only when a would-be up-step was suppressed because the probe had not
-    moved — surfaced for diagnostics/audit. The pushed setpoint is clamped to
-    ``[target, cap]`` and quantised to the Rointe's 0.5 °C step.
+    was taken (stepped, held on target, or an up-step was suppressed as a freeze or
+    approach hold); the coordinator resets its per-heater step timer on that.
+    ``frozen_held`` is True when a would-be up-step was suppressed because the probe
+    had not moved; ``approach_held`` when it was suppressed because the room average
+    had reached the top of the approach — both surfaced for diagnostics/audit. The
+    pushed setpoint is clamped to ``[target, cap]`` and quantised to the 0.5 °C step.
     """
     headroom = max(0.0, cap - target)
     # Head-start bounded to a single step, so it cannot overshoot a non-drooping
@@ -125,17 +140,24 @@ def update_drive(
     stair = prev_stair
     evaluated = minutes_since_step >= STEP_INTERVAL_MIN
     frozen_held = False
+    approach_held = False
     if evaluated:
         if error >= STEP:  # a full 0.5 °C step (or more) below target: nudge up
-            # ...but only escalate an existing overdrive if the probe responded to
-            # the last step. A frozen probe (flat while the room really warms) gets
-            # HELD here — this only ever *withholds extra* overdrive, never blocks
-            # the initial climb to comfort (prev_stair <= 0) or a step-down, so it
-            # can only reduce overshoot, never leave the room short of comfort.
-            if probe_moved or prev_stair <= 0:
+            # The initial climb to comfort (prev_stair <= 0) is sacred and always
+            # steps. An *existing* overdrive is only escalated when BOTH guards are
+            # clear: the probe responded to the last step (freeze-guard) AND the
+            # room as a whole has not yet reached the top of the approach
+            # (soften-final-approach). Each only ever *withholds extra* overdrive —
+            # never blocks the climb or a step-down — so neither can leave the room
+            # short of comfort; they can only reduce overshoot.
+            if prev_stair <= 0:
                 stair = prev_stair + STEP
-            else:
+            elif not probe_moved:
                 frozen_held = True
+            elif near_target:
+                approach_held = True
+            else:
+                stair = prev_stair + STEP
         elif error <= -STEP:  # a full step over target: ease down
             stair = prev_stair - STEP
         # within one step of target: hold (the interval still counts as used)
@@ -147,4 +169,4 @@ def update_drive(
     # above the safety cap (harmless while every input sits on the 0.5 grid, but
     # this keeps the cap a hard bound even if a slider is ever off-grid).
     pushed = min(_quantise(target + trim), cap)
-    return pushed, stair, evaluated, frozen_held
+    return pushed, stair, evaluated, frozen_held, approach_held

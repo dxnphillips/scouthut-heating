@@ -12,7 +12,7 @@ NOT_YET = STEP_INTERVAL_MIN / 2  # too soon to step
 
 
 def _drive(probe, outdoor=8.0, target=19.5, cap=24.0, stair=0.0, since=READY, loss=0.09):
-    # The existing tests care about (pushed, stair, evaluated); drop frozen_held.
+    # The existing tests care about (pushed, stair, evaluated); drop the hold flags.
     return update_drive(target, probe, outdoor, loss, cap, stair, since)[:3]
 
 
@@ -33,12 +33,12 @@ def test_feedforward_never_negative_when_warmer_outside():
 # --- Head-start is bounded to one step ----------------------------------------
 def test_head_start_capped_at_one_step_even_when_very_cold():
     # Deep cold: raw feedforward would exceed a step; it must be clamped to STEP.
-    pushed, stair, _, _ = update_drive(19.5, 19.5, -20.0, 0.5, 24.0, 0.0, READY)
+    pushed, stair, *_ = update_drive(19.5, 19.5, -20.0, 0.5, 24.0, 0.0, READY)
     assert pushed - 19.5 <= STEP + 1e-9
 
 
 def test_on_target_holds_plain_target_without_feedforward():
-    pushed, _, _, _ = update_drive(19.5, 19.5, None, 0.09, 24.0, 0.0, READY)
+    pushed, *_ = update_drive(19.5, 19.5, None, 0.09, 24.0, 0.0, READY)
     assert pushed == 19.5  # no outdoor -> no head-start -> just target
 
 
@@ -96,7 +96,7 @@ def _simulate(droop, plant_gain, *, ticks=1200, start=18.0, outdoor=6.0, cap=24.
         # The controller only ever sees the probe reported in 0.5 °C steps; the
         # true room temperature accumulates continuously underneath.
         probe_meas = round(probe_true * 2) / 2
-        pushed, stair, evaluated, _ = update_drive(
+        pushed, stair, evaluated, *_ = update_drive(
             target, probe_meas, outdoor, 0.09, cap, stair, since
         )
         since = 0.0 if evaluated else since + 1.0
@@ -134,18 +134,19 @@ def test_no_droop_plant_settles_at_target_not_above():
 def test_frozen_probe_holds_the_overdrive_instead_of_escalating():
     # Already overdriving (stair 1.0), probe a full step short, but the probe has
     # NOT moved since the last step -> a stuck reading. Must hold, not wind up.
-    pushed, stair, evaluated, frozen = update_drive(
+    pushed, stair, evaluated, frozen, approach = update_drive(
         19.0, 18.0, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=False
     )
     assert evaluated is True
     assert frozen is True
+    assert approach is False
     assert stair == 1.0  # held, NOT escalated to 1.5
 
 
 def test_moved_probe_still_escalates_normally():
     # Same situation but the probe DID move since the last step -> genuine response,
     # so the staircase escalates as before.
-    _, stair, _, frozen = update_drive(
+    _, stair, _, frozen, _ = update_drive(
         19.0, 18.0, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=True
     )
     assert frozen is False
@@ -155,7 +156,7 @@ def test_moved_probe_still_escalates_normally():
 def test_freeze_guard_never_blocks_the_initial_climb_to_comfort():
     # No overdrive committed yet (stair 0): the first climb toward comfort is
     # sacred even if the probe reads flat, so it steps up regardless.
-    _, stair, _, frozen = update_drive(
+    _, stair, _, frozen, _ = update_drive(
         19.0, 17.0, 8.0, 0.09, 24.0, 0.0, READY, probe_moved=False
     )
     assert frozen is False
@@ -165,8 +166,53 @@ def test_freeze_guard_never_blocks_the_initial_climb_to_comfort():
 def test_freeze_guard_still_allows_step_down_when_over():
     # A frozen probe that reads OVER target must still ease down (the safe
     # direction) — the guard only ever withholds *up*-steps.
-    _, stair, _, frozen = update_drive(
+    _, stair, _, frozen, _ = update_drive(
         19.0, 20.5, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=False
     )
     assert frozen is False
     assert stair == 0.5
+
+
+# --- Soften-final-approach (anti-overshoot) -----------------------------------
+def test_near_target_holds_the_overdrive_instead_of_escalating():
+    # Already overdriving (stair 1.0); this heater's own probe still reads a full
+    # step short (laggy), but the ROOM AVERAGE has reached the top of the approach
+    # (near_target). Must hold, not wind up — the overshoot the field showed.
+    _, stair, evaluated, frozen, approach = update_drive(
+        19.0, 18.0, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=True, near_target=True
+    )
+    assert evaluated is True
+    assert approach is True
+    assert frozen is False
+    assert stair == 1.0  # held, NOT escalated to 1.5
+
+
+def test_near_target_never_blocks_the_initial_climb():
+    # No overdrive committed yet (stair 0): even with the room average near target,
+    # the first climb toward comfort is sacred, so it steps up — the brake only ever
+    # withholds EXTRA overdrive, so it can never cause a cold arrival.
+    _, stair, _, _, approach = update_drive(
+        19.0, 18.0, 8.0, 0.09, 24.0, 0.0, READY, probe_moved=True, near_target=True
+    )
+    assert approach is False
+    assert stair == STEP
+
+
+def test_near_target_still_allows_step_down_when_over():
+    # The brake only withholds up-steps: a probe reading a full step over target
+    # still eases down even with near_target set.
+    _, stair, _, _, approach = update_drive(
+        19.0, 20.5, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=True, near_target=True
+    )
+    assert approach is False
+    assert stair == 0.5
+
+
+def test_far_from_target_escalates_despite_the_flag_being_available():
+    # Sanity: with near_target False (a genuine cold climb, room average well below
+    # target) the staircase escalates normally — the brake never bites in winter.
+    _, stair, _, _, approach = update_drive(
+        19.0, 18.0, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=True, near_target=False
+    )
+    assert approach is False
+    assert stair == 1.5

@@ -962,6 +962,34 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     heated bookings incl. a cold one; if that residual still runs too warm, then
     fix #1 (soften the final approach). The `coast_when_free` / comfort-cooling-gap
     interim levers remain available but are now second-line behind the freeze-guard.
+    **Fix #1 BUILT (v1.36.0, 2026-09-14, the drive soften-final-approach —
+    `DRIVE_APPROACH_BAND` = 0.5, owner-confirmed "still overheating + one fan switch,
+    not flapping").** The freeze-guard only catches a *fully* frozen probe; the 09-14
+    export showed the residual is a *slowly-lagging* probe. Occupancy heating that
+    morning overshot comfort 19 → **21.12**: at 11:17 the room AVERAGED 20.25 (+1.25
+    over comfort) yet `drive_off` stepped **up to 1.5 with all four heaters firing** —
+    the per-heater probes were creeping 0.5°/tick (lagging the real room, so each read
+    "still short and moving" → freeze-guard allowed the step). Then they caught up →
+    21.12 → heaters cut → fans flipped reverse→forward *once* (overshoot crossed
+    `cooling_temp_high` 20 with heating stopped; the v1.30.1 debounce stopped it
+    flapping back, so the owner saw one switch, not a flap). Fix: `update_drive` gains
+    `near_target` and the coordinator passes it True once the zone AVERAGE (the mean of
+    the zone's heater probes — the signal the overshoot outran, NOT the laggy coldest)
+    is within a step of target; an *existing* overdrive is then not escalated (hold what
+    is committed, let the mass coast it in). Structurally identical to the freeze-guard
+    and equally **fail-safe: it only ever withholds EXTRA overdrive** — never reduces
+    drive, never blocks the initial climb (`prev_stair <= 0`) or a step-down — so it
+    cannot cause a cold arrival (on a real cold climb the average sits far below target
+    and it never engages; this is the Q23 cold-weather guard). Keyed on the average, not
+    the coldest, deliberately: the long hall's genuinely-lagging cold *end* may then sit
+    ~0.5 °C cooler than target to avoid the overshoot — the right side to err on when the
+    complaint is *too warm*. Records `drive_approach_hold`; diagnostics `drive.approach_held`.
+    It removes the large drive-over-push part of the overshoot (and so the fan flip); the
+    ~0.5–1 °C oil-mass coast the drive can't touch remains — measure it via `peak_over`
+    and, only if still too warm, take fix's final-approach easing further. **First-winter
+    watch:** confirm `drive_approach_hold` fires at the top of warm climbs and that no
+    cold booked morning under-arrives because the cold end was held (read
+    `booking_start.shortfall` — it must not go positive on the held zone).
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
@@ -1162,6 +1190,25 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   on the err-warm path — a distinct mechanism (drop-out, not freeze) still open. It
   reduces the heat/cool flap by killing the overshoot that seeds it, not by touching
   the regime logic.
+  **Soften-final-approach: the second anti-overshoot guard (v1.36.0, 2026-09-14,
+  `DRIVE_APPROACH_BAND` = 0.5).** The freeze-guard catches a *fully* frozen probe;
+  this catches the sibling case, a *slowly-lagging* one. On a fast climb the
+  per-heater probes creep up 0.5°/tick behind the real room, so they read "still
+  short AND moving" and the freeze-guard lets the staircase keep escalating the
+  overdrive even after the room has arrived — then it sails past target as they catch
+  up (field 2026-09-14: room averaged 20.25, comfort 19, drive still stepped to +1.5
+  → overshoot to 21.12 → fans flipped reverse→forward once). `update_drive` now takes
+  `near_target`; the coordinator sets it True once the zone AVERAGE (mean of the
+  zone's heater probes — the signal the overshoot outran, deliberately NOT the laggy
+  coldest) is within a step of target, and an *existing* overdrive is then held, not
+  escalated. **Fail-safe exactly like the freeze-guard** (withholds only EXTRA
+  overdrive; never reduces drive, never blocks the initial climb or a step-down), so
+  no cold-arrival risk — this is the Q23 cold-weather guard: on a real cold climb the
+  average is far below target and it never engages. The long hall's genuinely-lagging
+  cold end may sit ~0.5 °C under target to avoid the overshoot (err-cool when the
+  complaint is too-warm). Records `drive_approach_hold`; diagnostics
+  `drive.approach_held`. Removes the drive-over-push part of the overshoot (and the
+  fan flip it seeds); the ~0.5–1 °C oil-mass coast remains (Q23, measured by `peak_over`).
   **The 15-min trace now carries `hall_fire` and `drive_off` (2026-08-28) so a
   climb is retrospectively attributable** — `hall_fire` is the count of hall
   heaters reporting `hvac_action == heating`, `drive_off` the largest overdrive

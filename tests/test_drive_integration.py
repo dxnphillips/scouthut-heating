@@ -235,6 +235,31 @@ def test_a_responding_probe_is_not_freeze_held():
     assert ctrl._drive_stair[hb] > 0.5  # escalated past the first step
 
 
+# --- Soften-final-approach: stop winding up once the room average has arrived --
+def test_room_average_at_target_stops_the_overdrive_winding_up():
+    # The cold END of the hall (hall_back) still reads a full step short, but the
+    # room AVERAGE has reached target — so hall_back's overdrive is approach-held
+    # rather than wound to the cap (field 2026-09-14: room averaged 20.25, comfort
+    # 19, drive still stepped to +1.5 -> overshoot to 21.1 -> fans flipped).
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    # hall_front warm, hall_back a step short -> average is within a step of target.
+    _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 20.5})
+    hb = "climate.hall_back"
+    probe = 18.0
+    for _ in range(5):
+        for climate in ("climate.hall_back", "climate.hall_front"):
+            ctrl._drive_step_at[climate] = dt_util.utcnow() - timedelta(hours=1)
+        probe = 18.5 if probe == 18.0 else 18.0  # moves each step (so NOT freeze-held)
+        hass.states.set(hb, "heat", {"current_temperature": probe})
+        run(ctrl.async_reconcile())
+    # After the first (sacred) step the overdrive is held, not escalated.
+    assert ctrl._drive_stair[hb] <= 0.5 + 1e-9
+    assert hb in ctrl._drive_approach
+    assert hb not in ctrl._drive_frozen  # the probe moved — an approach hold, not a freeze
+    assert any(e.get("event") == "drive_approach_hold" for e in ctrl.audit._events)
+
+
 def test_insane_low_probe_is_not_driven_on():
     _wire_numbers()
     ctrl, hass = make_controller()

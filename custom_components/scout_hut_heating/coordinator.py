@@ -277,6 +277,19 @@ DRIVE_PROBE_SANE_BELOW = 4.0  # °C
 # still a full step short of target for this long — a real capacity wall or a
 # stuck sensor, either of which the owner wants to know about.
 DRIVE_CAP_ALARM_MINUTES = 60.0
+# Soften-final-approach anti-overshoot (2026-09-14, field): stop ESCALATING a
+# heater's overdrive once the zone AVERAGE room temperature has climbed within a
+# step of target. During a fast climb the per-heater Rointe probes lag the real
+# room (cloud lag + 0.5 °C freeze-creep), so they read "still short" and the
+# staircase keeps winding the overdrive up even after the room has arrived — then
+# the room sails past target as the probes catch up (field: room averaged 20.25,
+# comfort 19, drive still stepped to +1.5 → overshoot to 21.1, which then flipped
+# the fans to cooling). Keyed on the average, not the coldest, because the coldest
+# probe is the laggiest signal — it is what the overshoot outran. Fail-safe like
+# the freeze-guard: it only ever withholds EXTRA overdrive (never reduces drive,
+# never blocks the initial climb), so it cannot cause a cold arrival — on a real
+# cold climb the average sits far below target and this never engages.
+DRIVE_APPROACH_BAND = DRIVE_STEP  # avg within this of target → hold, don't escalate
 
 # --- Drive self-validation (Q20): does the loop know its commands are working?
 # Two independent checks, both reading signals the Rointe cloud cannot fake.
@@ -617,6 +630,9 @@ class ScoutController:
         # past target when it unfreezes. Not persisted (like the staircase).
         self._drive_step_probe: dict[str, float] = {}
         self._drive_frozen: set[str] = set()
+        # Heaters whose overdrive escalation is being held because the zone average
+        # has reached the top of the approach (soften-final-approach anti-overshoot).
+        self._drive_approach: set[str] = set()
         self._drive_pushed: dict[str, float] = {}  # last setpoint pushed per heater
         self._drive_number: dict[str, str] = {}  # cached climate -> comfort number
         self._drive_cap_since: dict[str, datetime | None] = {}  # cap-pinned clock
@@ -2187,6 +2203,9 @@ class ScoutController:
                     # Heaters whose overdrive is currently held because their
                     # freeze-then-jump probe has not moved (freeze-guard active).
                     "frozen_held": sorted(self._drive_frozen),
+                    # Heaters whose overdrive escalation is held because the zone
+                    # average reached the top of the approach (soften-final-approach).
+                    "approach_held": sorted(self._drive_approach),
                     # Booking hold: how far above comfort the hall is currently
                     # being held to pre-empt an evening dip (0 when not a running
                     # comfort booking, mild, or disabled).
@@ -3855,6 +3874,13 @@ class ScoutController:
             probes = {c: self._heater_probe(c) for c in climates}
             readable = sorted(v for v in probes.values() if v is not None)
             median = readable[len(readable) // 2] if readable else None
+            # Soften the final approach: once the room AS A WHOLE (the average of
+            # this zone's own heater probes — the signal the overshoot outran, not
+            # the laggy coldest probe) has reached within a step of target, stop
+            # escalating the overdrive on any heater. Uses the probes already read
+            # here, so it works uniformly for all three zones (hall/office/shared).
+            zone_avg = sum(readable) / len(readable) if readable else None
+            near_target = zone_avg is not None and zone_avg >= target - DRIVE_APPROACH_BAND
             for climate in climates:
                 number = self._heater_comfort_number(climate)
                 if number is None:
@@ -3873,15 +3899,17 @@ class ScoutController:
                     self._drive_driven.discard(climate)
                     self._drive_step_probe.pop(climate, None)
                     self._drive_frozen.discard(climate)
+                    self._drive_approach.discard(climate)
                     await self._drive_push(climate, number, target)
                     continue
                 since = self._drive_minutes_since_step(climate, now)
                 # Response-keyed anti-windup: has the probe moved since the step we
                 # last evaluated against? (True when we have no baseline yet.)
                 moved = self._drive_step_probe.get(climate) != probe
-                pushed, stair, evaluated, frozen_held = update_drive(
+                pushed, stair, evaluated, frozen_held, approach_held = update_drive(
                     target, probe, outdoor, loss, cap,
                     self._drive_stair.get(climate, 0.0), since, moved,
+                    near_target=near_target,
                 )
                 self._drive_stair[climate] = stair
                 if evaluated:
@@ -3899,6 +3927,19 @@ class ScoutController:
                         )
                     elif not frozen_held:
                         self._drive_frozen.discard(climate)
+                    if approach_held and climate not in self._drive_approach:
+                        self._drive_approach.add(climate)
+                        self.audit.record(
+                            "drive_approach_hold",
+                            now,
+                            zone=zone,
+                            heater=climate,
+                            probe=probe,
+                            zone_avg=zone_avg,
+                            pushed=pushed,
+                        )
+                    elif not approach_held:
+                        self._drive_approach.discard(climate)
                 # Entering the driven state (a fresh comfort episode): re-assert
                 # and restart the read-back window even if the comfort number is
                 # unchanged from a prior withdrawal, so the read-back does not
@@ -4194,6 +4235,7 @@ class ScoutController:
         self._drive_step_at.clear()
         self._drive_step_probe.clear()
         self._drive_frozen.clear()
+        self._drive_approach.clear()
         self._drive_pushed.clear()
         self._drive_pushed_at.clear()
         self._drive_pushed_energy.clear()
