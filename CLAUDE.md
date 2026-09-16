@@ -990,6 +990,59 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     watch:** confirm `drive_approach_hold` fires at the top of warm climbs and that no
     cold booked morning under-arrives because the cold end was held (read
     `booking_start.shortfall` — it must not go positive on the held zone).
+    **Still un-cold-tested (2026-09-15):** every booking since the 1.36.0 deploy has been
+    a warm-start coast (room already ≥ comfort on hot sunny days, `peak_over` 0.0), so the
+    soften-approach has NOT yet been exercised by a genuine cold-start driven climb — the
+    validation waits for cold weather. No overshoot has recurred, but that is absence of
+    the trigger, not proof of the fix.
+24. **Does an occupied WINTER hall leave reclaimable roof heat once the floor is
+    satisfied — and would running the fans on it save electric? (Analysed 2026-09-14/15,
+    NO code change — mild-season data cannot settle it.)** The owner's framing: "big
+    stratification screams wasted heat", tune the heating+fans for electric efficiency. A
+    full trace analysis (09-14 export) established:
+    - **The severe stratification (ceiling−floor gap 3.5–5.5, ceiling to 24.5) is
+      overwhelmingly the EMPTY / near-empty hut on warm, sunny shoulder afternoons**
+      (outdoor 15–22, RH falling through the 50s = sun on the roof, `hall_kwh` flat,
+      hall PIR quiet). That is **solar gain on the uninsulated roof, not radiator heat** —
+      exactly the case Q9's sealed test + Q15 already decided NOT to fan (no measured
+      retention, ~150 W cost, nobody in the hall to deliver to; and the stored heat is
+      reclaimed anyway once someone arrives and heating starts). Not a bug — a decision
+      already made and recorded.
+    - **When the hall is genuinely heated AND occupied, the reverse fans DO run and the
+      gap collapses** (09-10 09:59: gap 1.95 → 0.28; 09-14 10:32: 1.95 → 1.18). The three
+      fans and the destrat mechanism work; the delivery case is not the gap.
+    - **The apparent "occupied + cool + stratified + fans-off" ticks were a MISREAD.** The
+      trace `occupied` flag is the loose `_cooling_occupied` (hall PIR within 15 min OR a
+      hall event running); the actual motion in those windows was in the KITCHEN/OFFICE/
+      GENTS, not the hall — people in adjacent rooms, the hall itself empty, fans correctly
+      off. Do not treat trace-`occupied` as "the hall is occupied".
+    **Owner's constraints (settled by Q&A, 2026-09-14), for IF a reclaim is ever built:**
+    (a) **never push the floor above comfort** — comfort wins; a satisfied floor under a hot
+    roof is left stratified rather than mixed (mixing raises the floor, and the owner will
+    not trade the just-fixed overshoot/fan-flip for it); (b) reclaim only while the room is
+    genuinely BELOW the target it is being driven to (an ECO-keyword booking above its low
+    target must NOT be reclaimed toward comfort — the `test_recirc_target` invariant); (c)
+    empty hut only when a booking is imminent (pre-mix); (d) build conservative, stopping a
+    margin short of target, and MEASURE against a mixing rate we do not yet learn.
+    **Why nothing was built:** a first cut (a `reclaim_ok` term running reverse for a cool
+    occupied hall on ice) **broke the deliberate `test_recirc_target` invariant** ("on ice,
+    don't destratify" — so a satisfied eco room isn't force-warmed) AND rested on the
+    adjacent-room-motion misread above. Building an anti-stratification controller on
+    mild-season data is the exact mistake that bred the Q23 overshoot bug (a controller
+    tuned on the wrong season). So the code was reverted; `main` unchanged.
+    **Decision rule:** the question is only answerable from a genuinely COLD heated export.
+    Read it for the signature **hall GENUINELY occupied (hall PIR, not adjacent rooms) +
+    floor below its target + large gap + heaters idle (`hall_kwh` flat) + fans off**. If
+    that exists in winter, it is a real reclaim gap → size a conservative reverse-destrat
+    reclaim (never above comfort, occupancy/booking-gated) from the measured floor-rise-per-
+    fan-minute-vs-gap mixing rate (derivable from the existing 15-min trace: floor rise per
+    tick while reverse, against the gap). If it does not, the fans are already correct and
+    the visible stratification is the empty-hut solar case Q9/Q15 settled. **Candidate
+    measurement-only step (no behaviour):** log at each tick whether the HALL itself is
+    occupied (hall PIR) distinct from adjacent-room motion, next to gap/preset/`hall_fire`,
+    so the first cold export answers this unambiguously. Pairs with Q10 (the retention
+    saving this depends on is itself unproven, ±50 %) and Q17 (a capacity-limited hall
+    builds no hot roof to reclaim).
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
@@ -1354,6 +1407,31 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   probe being our only room signal — stays open (owner's preferred fix is an
   independent seated-height room sensor per zone, per Q19; this is the code-only
   mitigation chosen for now).
+  **OUTSTANDING — the settle-delay does NOT catch the office's recurring 3am false
+  alarm; a DIFFERENT mechanism (probe freeze-then-unfreeze) is now firing ~nightly
+  (2026-09-14 AND 09-15 03:17, post-deploy).** The office probe holds one value flat
+  for HOURS overnight (09-15: `office` stuck at *exactly* 23.5 °C for six hours,
+  empty, on ice, outdoor 17 — impossible for a real room losing heat), then the probe
+  unfreezes and the compressed catch-up drop reads as ~17 %/h (≈4× the office's 4.5 %
+  baseline) → out-of-family → `opening_inferred` push at 3am. The over-warm gate catches
+  the first sample (start 23.5 > comfort 21 + `COOL_OVERWARM_MARGIN` 2) but not the tail
+  once the start falls below 23; the settle-delay is irrelevant (the decay is measured
+  hours into ice, not a fresh post-heating transient). So this is the **probe
+  freeze-jump family** (same glitch as the hall floor, on the sensorless office), NOT the
+  radiator transient the settle-delay was built for. Harmless to the learning (rejected,
+  k untouched at ~4.5) but it is now real cry-wolf — a false "window/door open?" at 3am
+  two nights running. **Decision (owner):** the durable fix is the planned independent
+  office sensor (Q19); the code alternative is a **freeze-detector** — reject a cool-off
+  whose reading was static (flat, unchanged) for N hours immediately before the sample,
+  since a genuine fabric decay steps down steadily while a freeze holds then jumps. Not
+  built (fiddly, and a slow insulated office CAN legitimately sit near one 0.5 ° quantum
+  for 1–2 h, so the flat-window threshold must be long enough not to reject real slow
+  decays). Awaiting owner call: fit the sensor, or build the freeze-detector.
+  **Related watch: is the office genuinely over-heating to 23.5 (comfort 21), or is the
+  23.5 itself a frozen-high probe?** Six hours flat at 23.5 argues frozen (a real 23.5
+  office at outdoor 17 would step down ~1.6 °C over 6 h), but if the office IS being driven
+  ~2.5 °C past its setpoint that is real wasted electric worth chasing — confirm from the
+  office `energy`/`surface` sibling sensors on a future export.
 - **Boost drives ABOVE comfort, not just to it (2026-08-07, owner insight).** A
   boost used to return the comfort preset and nothing more — so pressing it while
   the room was already at the comfort setpoint was a *no-op* (the drive was
@@ -1633,6 +1711,14 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   mornings, raise `TIME_MARGIN_FRAC`/`MIN_RISE_RATE` or revert to observe-only.
 - **Office eco drift is unjudgeable** (the setpoint lives on the device and
   is never pushed); skipped rather than guessed.
+- **Recurring fire-alarm events — cause not code (owner to check).** `fire`/`fire_cleared`
+  has fired twice in a week (2026-09-08, and 2026-09-14 17:59 "Fire at 1st Pelsall Scouts"
+  during the Cubs booking, cleared 14 min later). The fire-hold behaved correctly both
+  times (latched everything off, manual clear via the button). But two in a week is worth
+  the owner establishing whether it is a flaky detector, a test/keypad-fire, or a real
+  cooking/kitchen trigger during sessions — a genuinely faulty detector that keeps
+  latching the whole hut off (heat + water + fans) is a real availability problem, not
+  just noise.
 - **Alarm suppression is away-aware (1.12.0).** `_alarm_armed` reads a real
   `alarm_control_panel` and only an *away*-type arm (`armed_away`/
   `armed_vacation` = empty building) drops a zone to ice; `armed_night`/
