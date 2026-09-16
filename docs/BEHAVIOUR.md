@@ -116,6 +116,43 @@ updating. The reconciler is defensive about this:
 - **Fan floor temperature & heat-demand** ignore a heater that is unavailable or
   has stopped reporting (judged from `last_reported`), so a frozen reading is
   never trusted; if nothing readable remains the floor is treated as lost.
+  **Known inert (2026-09-16):** the Rointe integration rewrites entity state on
+  every 15-s poll, so `last_reported` is always fresh and this guard (and every
+  other `last_reported` check — `_zone_climate_temps`, `_shared_room_temp`,
+  `_heater_probe`, `_stale`) has never rejected a frozen reading. See below.
+
+### Known Rointe integration defects (2026-09-16)
+
+From the owner's code review of `JYewman/rointe_integration` v3.0.4 and live
+Nexa cloud audits (full text: `reference/rointe_nexa_findings_2026-09-16.md`;
+the fix plan is CLAUDE.md Q25). These are facts about the layer underneath the
+reconciler, and they change how several entries above should be read:
+
+- `set_preset_mode` copies the integration's **cached** comfort/eco number into
+  the live setpoint, and a number write does not update that cache for ~10 s —
+  so the push-number-then-re-apply-preset sequence used by the drive
+  (`_drive_push`) and the slider path (`_async_push_hall_temps` →
+  `_async_apply_climate`) sends the **previous** value unless the debounced
+  refresh happens to win the race. Commands reach the heaters in 2–5 s: every
+  "cloud lag" in the drive / read-back entries is this bug. Not yet fixed
+  (planned: `climate.set_temperature` with the intended value after the number
+  write; `set_preset_mode` kept for ice only).
+- `last_reported` / `last_updated` are refreshed every poll regardless of data,
+  so the freshness guards above are inert (planned: a flat-reading detector).
+- `status_warming` is always 2: `heating_status` carries no information,
+  `hvac_action` is probe < (possibly stale) setpoint, and "effective power" is
+  100 / 50 % of nominal by that status — so the trace's `hall_fire` /
+  `hall_maint` / `demand` are a probe-below-setpoint proxy, not firing. The panel
+  `surface` temperature is the honest firing signal.
+- `preset_mode` flickers between the preset name and null (each HA write resets
+  the device status to `none`); nothing should key on it.
+- `energy` is an installation-level estimate split by Rointe cloud zone and then
+  equally per heater; the office shares the hall's Rointe zone, so `hall_kwh`
+  includes the office, and the value can drop (an HA meter reset).
+- The Nexa token expires after 7 days and is never renewed → all heaters
+  `unavailable` until the integration is reloaded (the 29 Jul outage).
+- Write acknowledgements are not checked; each climate command triggers a full
+  8-heater refresh; switches / boost / schedule / min-max numbers silently no-op.
 - **Re-send after reconnect** — `_async_set_preset` records when a preset was
   sent while a heater was offline (`_zone_offline_apply`); `_reconcile_zones`
   re-sends once every heater in the zone is back online (`_all_zone_online`), so

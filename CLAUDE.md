@@ -156,9 +156,50 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
   the live "Effective power" (discovery prefers effective), and readings can
-  freeze while looking alive (hence `last_reported` staleness checks). The
+  freeze while looking alive (hence `last_reported` staleness checks — **which
+  are INERT, see the next bullet**). The
   ceiling Shelly H&T G3 is the opposite: a local threshold reporter (0.5 °C)
   whose silence means "unchanged" — its freshness is availability-only.
+- **The Rointe integration's defects are now KNOWN, not guessed (2026-09-16,
+  owner's code review of `JYewman/rointe_integration` v3.0.4 + live Nexa cloud
+  audits — full text in `docs/reference/rointe_nexa_findings_2026-09-16.md`; the
+  fix plan is Q25).** Six facts overturn explanations this file used to give:
+  (1) **`set_preset_mode` copies the integration's CACHED comfort/eco value into
+  the live setpoint, and a number write does not update that cache for ~10 s** —
+  so our push-number-then-re-apply-preset sequence (`_drive_push`, and the
+  slider path `_async_push_hall_temps` → `_async_apply_climate`) routinely sends
+  the *previous* value, and `_drive_push` then never re-sends it (it early-returns
+  on an unchanged value). **Every "the Rointe cloud lags our pushes" in this file
+  is really this bug** — commands land in 2–5 s. The 09-16 export is the
+  fingerprint: hall_left/right live 22.0 vs pushed 22.5 for 32 min, ladies 22.0 vs
+  22.5, gents 22.5 vs 23.0, while hall_front/back matched because the ~10 s
+  debounced refresh happened to beat their non-blocking preset call — a race per
+  push. The v1.24.3 startup grace, v1.24.4 30-min settle window and v1.25.1 action
+  gate were all workarounds for it; the v1.14.x "phantom push" (number alone never
+  moves the live setpoint) is the same defect. (2) **`last_reported` /
+  `last_updated` are rewritten every 15-s poll regardless of data**, so every
+  freshness guard keyed on them — `_zone_climate_temps`, `_shared_room_temp`,
+  `_heater_probe` (`DRIVE_PROBE_STALE_MINUTES`), `_stale`, `_floor_temp`, i.e.
+  `_rointe_stale_min` and the whole "warm-enough reads reject a frozen Rointe
+  value" bullet — **has never fired**. The only freeze defence that works is the
+  drive's value-based `probe_moved` guard. (3) **`status_warming` is always 2**:
+  `heating_status` is meaningless, `hvac_action` is just probe < (possibly stale)
+  setpoint, and "effective power" is 100/50 % of nominal by that status — so
+  `hall_fire`/`hall_maint`/`_heat_demand` are "a comfort heater whose probe is
+  below its setpoint", a usable proxy but never a wattmeter (this is why 09-08
+  read 0 through a firing and 09-16 read 4/4 through one). **The honest firing
+  signal is the panel `surface` temperature** (live, fast — 20 °C in 6 min). (4)
+  `preset_mode` **flickers** between the preset name and null because every HA
+  write resets the device status to `"none"` (the device re-sets it to the
+  matching preset on its own sync) — never key anything on it. (5) The `energy`
+  sensor is an **installation-level estimate** split by Rointe zone then equally
+  per heater regardless of rating; the hall and office share the **"Hall and
+  Office"** Rointe zone, so `hall_kwh` (4× one value) includes the office and can
+  drop (an HA meter reset). (6) The Nexa REST token lasts **7 days and is never
+  renewed** — the 29 Jul 27-h outage (Q18). Also: write acknowledgements are not
+  checked (a service call returning is not proof), each climate command triggers a
+  full 8-heater refresh (~17 connections), and switches/boost/schedule/min-max
+  numbers silently no-op on Nexa.
 - The Shelly script owns all fan timing/safety (coast-down reversal dwell —
   the blades take ~5 min to stop, so `DWELL_MS` must cover that, not 45 s; stall
   latch). HA must **never** re-command an unexpectedly-off fan master (that
@@ -189,6 +230,22 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    was warm-fabric ambient stratification in an *empty* hut, not a bad
    threshold, so the fix was the occupancy gate (Q15) rather than raising
    `fan_dt_off`. Re-judge this only against *occupied or heated* plateaus.
+   **2026-09-16 — the START side false-tripped on quantisation (first heated
+   cold-start, the 06:50Z boost).** `fan_change` on at 07:12:18Z with **dt 1.05**
+   (one hair over `fan_dt_on` 1.0) while the 15-min trace had the gap at 0.68
+   (07:03), 0.85 (07:18), 0.62 (07:33): the Shelly ceiling threshold-reports in
+   0.5 steps and stepped up ahead of the laggy mid-wall floor average, opening a
+   transient >1.0 gap at one 30-s reconcile. The reverse fans then ran 24 min at
+   81–83 W (min-run held them) with nothing stratified — the gap collapsed to −0.05
+   at the 07:36:24Z stop as hall_left/right unfroze to 20.0 and lifted the floor
+   average above the ceiling. ΔT = (0.5-quantised ceiling) − (average of four
+   0.5-quantised probes), so a 1.0 line sits inside the quantisation noise.
+   Trivial cost (~25 Wh, reverse does not wind-chill) but zero-benefit running.
+   **Decision rule:** if the next heated exports show more `fan_change` starts at
+   dt ≈ 1.0–1.1 that the trace gap does not support, raise `fan_dt_on` to ~1.5
+   (slider) so a lone ceiling step cannot trip it; leave `fan_dt_off` at 0.5.
+   The deeper fix is the floor signal (the radiator-adjacent mid-wall probe
+   over-reads during a hard drive — Q19's seated-height sensor).
 2. **Pre-heat cap (default 120 min, slider now to 240).** Judge from
    `booking_start.shortfall` on cold-start mornings: persistent positive
    shortfalls with the lead pinned at cap → raise the slider/default.
@@ -251,6 +308,27 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    34–40 as winter mornings land (the fail-safe, arrive-warm direction). This was
    occupancy, not a booking, so there is *still* no `booking_start.shortfall` to read
    — the next cold *booked* morning remains the pre-heat validation (Q2/Q14).
+   **First genuinely cold hard climb (2026-09-16, owner's 90-min boost from a
+   15 °C cold-soaked hall, outdoor 10.9).** Floor 15.38 → 19.25 in 47.4 min with
+   all four heaters driven (`drive_off` 0.5 → 1.5, panels 58–61 °C) — the 07:38Z
+   `warmup_sample` read **12.2 min/°C**, `mild False` (the cold gate correctly
+   ADMITTED it), `max_tick_rise` 1.12 (under the 1.5 tick guard), and it was
+   rejected only by the 3× out-of-family gate against the reset-40 fans rate
+   (12.2 < 13.3) → `zone_a_warmup_rate_fans` held at 40. Rejecting was right: the
+   coldest probe was still 17.5 when the average hit 19.25 — the radiator-adjacent
+   mid-wall probes (and two freeze-jumps, hall_front +4.0 in one reading) raced
+   the real room. **Two fragilities exposed:** (a) the guard hinged on *which rate
+   key* the sample went to — the fans' 24-min false start (Q1) attributed it to
+   the fans rate (40, gate 13.3); had they not run it would have gone to the base
+   rate (33.23, gate 11.08) and 12.2 would have been ACCEPTED, pulling the base
+   rate down by the 25 % cap to ~24.9 — a cold-arrival-direction corruption saved
+   by luck; (b) `MAX_WARMUP_TICK_RISE` is applied to the zone AVERAGE, so a +4.0
+   freeze-jump on one of four probes dilutes to +1.0 and passes. Neither is fixed;
+   both argue for judging warm-up samples on per-probe discontinuities (or on the
+   coldest probe) rather than the average. **Q17 read from this climb:** gap
+   ceiling−floor stayed 0.6–0.85 then inverted — no hot roof at all on a cold hard
+   drive; the constraint was end-to-end spread (cold end 1.75 °C behind), i.e.
+   soak/spread, not stratification.
 4. **Gap-normalised heat-loss constants (`zone_X_heatloss_pct`, seed 25).**
    July measurements: hall ~10 %/h, office ~4.5 %/h. Verify autumn/winter
    `cooloff_sample` events (they carry `gap`) confirm season transfer;
@@ -674,6 +752,15 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     urgency now (summer); do before the first heating season. Pairs with the
     Rointe staleness checks (`last_reported`) already in place for the
     freeze-while-alive case — this covers the distinct *unavailable* case.
+    **CAUSE FOUND (2026-09-16, Rointe findings):** the Nexa REST token lasts 168 h
+    and the integration never renews it — after 7 days without a reload every
+    heater goes `unavailable` until the Rointe integration is reloaded. So this is
+    a *scheduled* outage, not a flaky cloud. Two-part response (Q25): build the
+    alert as designed, AND (owner-side, interim, reversible) an HA automation that
+    reloads the Rointe config entry every six days at a quiet hour until upstream
+    renews the token. Note also the `last_reported` checks referenced above are
+    inert (they never detect a freeze), so this alert is the *only* heater-health
+    signal we will have.
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
@@ -812,7 +899,19 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     The residual single-heater active-climb flag (one heater short+idle mid-climb as
     the cloud lag brushes the 30-min window) stays a *widen the settle window* call
     per the decision rule, not a tolerance change.
-21. **Fan-direction thrash from a spurious comfort flip (field 2026-08-29, v1.28.1
+    **REFRAMED (2026-09-16, Rointe findings — see the Rointe-defects bullet).**
+    The "cloud lag" every fix above was sized against is the integration's
+    stale-cache preset bug: our re-assert sends the previous comfort number, so a
+    live setpoint one 0.5 step behind the push is the *normal* outcome of our own
+    write sequence, not a slow cloud. That means (a) the read-back's setpoint
+    comparison (`DRIVE_SETPOINT_TOL` 0.3 < one step) is *systematically* failed
+    by healthy heaters and the check survives only on its proofs-of-adoption;
+    (b) of those, the `energy` proof is dead while the accumulator is frozen (and
+    per-zone anyway) and the `hvac_action` proof is "probe < stale setpoint", not
+    firing — so the check is currently blind in both directions; (c) the honest
+    proof is a **rising panel `surface`**. Fix order (Q25): make the push land
+    (`climate.set_temperature` with our value) FIRST, then the read-back can be
+    tightened and re-based on surface rise; do not tune the settle window again. from a spurious comfort flip (field 2026-08-29, v1.28.1
     export — candidate debounce, NOT yet built; confirm root on 1.29.2).** On a warm
     occupied afternoon the ceiling fans reversed **3× in 84 min** (11:49 forward →
     12:41 reverse → 13:03 forward), each a ~5-min coast/spin sequence. Root: fan
@@ -1043,6 +1142,76 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     so the first cold export answers this unambiguously. Pairs with Q10 (the retention
     saving this depends on is itself unproven, ±50 %) and Q17 (a capacity-limited hall
     builds no hot roof to reclaim).
+25. **Rointe integration defects — the fix plan (2026-09-16; facts in the
+    Rointe-defects bullet under Working conventions, full source in
+    `docs/reference/rointe_nexa_findings_2026-09-16.md`). Documented only; NO code
+    changed yet — the write-path change is hardware-facing and waits for the
+    owner's go, tested on one heater first.** Verdict on the owner's nine
+    recommendations, in the order to ship them (one PR each):
+    - **PR 1 — make the push actually land (recs 1 + 2 + 4).** In `_drive_push`
+      and in `_async_set_preset` for comfort/eco: write the number `blocking=True`,
+      then `climate.set_temperature` with the *intended* value (same fields as a
+      preset on Nexa, but our number, not the stale cache); keep `set_preset_mode`
+      only for ice (its cached 7 is constant). Catch `HomeAssistantError` and record
+      a `write_failed` audit event — today `applied`/`expected`/`_all_zone_online`
+      are set *before* the non-blocking write has executed. Kill the double write on
+      a comfort tick (`_async_push_hall_temps` writes the base 19.0 milliseconds
+      before the drive rewrites 21.5 — each command is a full 8-heater refresh, so a
+      boost tick is ~20 refreshes) and space per-heater pushes ~1 s apart. **Test on
+      one heater first** — the live evidence for `set_temperature`'s Nexa semantics
+      is one audit. Fail-safe direction: if `set_temperature` misbehaves the
+      symptom is the same one-step-behind we have now, not a cold room.
+    - **PR 2 — redact `cal_title` in the export (rec 9).** It is in `diagnostics`
+      (`state.cal_title`) AND persisted in `booking_start.title` — hirer names are in
+      every export pasted into a session. Keep the eco-keyword flag; drop/hash the
+      title at export time in `diagnostics.py`.
+    - **PR 3 — energy hygiene (rec 8).** `hall_kwh` = one accumulator (not ×4),
+      labelled a zone estimate that includes the office; treat a drop as a reset.
+    - **PR 4 — Q18 outage alert (rec 7)**, plus the owner-side six-day reload
+      automation as the interim.
+    - **PR 5 — replace the inert freshness guards (rec 6).** Delete the
+      `last_reported` checks (they claim a protection that does not exist) and add a
+      **flat-reading freeze detector** with a long threshold (normal sync gaps reach
+      ≥16 min; an insulated office can legitimately sit on one quantum for 1–2 h — so
+      think ≥45–60 min, and reject the *sample*, never withhold heat). This is also
+      the office 3am false-alarm fix (cool-off bullet) and the per-probe warm-up
+      discontinuity fix (Q3 fragility (b)).
+    - **PR 6 — read-back on surface rise (rec 5).** Drop the `hvac_action` and
+      `energy` proofs; a driven heater whose panel `surface` is rising has adopted
+      the command. Rename/annotate `hall_fire`/`hall_maint`/`effective` as the
+      probe-below-setpoint proxy they are.
+    - **Rec 3 (drift from intended setpoint, never `preset_mode`)** is already the
+      `_setpoint_matches` fallback, but its 0.3 tolerance is failed by the
+      stale-cache off-by-one — it becomes correct once PR 1 lands; do not touch
+      before.
+    - **Do-not-do list (owner's):** never write `block_remote` / `block_local` /
+      `ice_mode` / `power` / `check_updates_now` / `debug_*`; never reuse the
+      `um_password` PIN; never patch the Rointe integration in place (HACS
+      overwrites) — upstream PRs or a fork. Upstream issues to raise: CERT_NONE on
+      Nexa WebSockets, token renewal, stale-cache presets, per-command full refresh,
+      unchecked acks, silent no-op controls, `coordinator.data` emptying, whole-poll
+      failure on one bad field, expose `last_sync_datetime_device` / surface
+      freshness / `active_power`.
+    - **Open (owner's):** surfaces 33–47.5 °C at 12:22Z with 7 °C setpoints and
+      +1.84 kWh 11:22–12:19Z, with HA writing to every heater at 12:03Z without
+      changing the setpoint — from our side a write-to-all that changes nothing is a
+      preset **re-apply** (restart/reload, or `_zone_offline_apply` after a blip);
+      the warm panels + energy look like an occupancy-heating episode that had
+      already iced before the snapshot. Needs the 11:00–12:30Z export. Also: is
+      `active_power` (Hall Left + Ladies only) an hourly average; overnight sync
+      gaps; which heater is at −78 dBm; what `block_remote` does.
+    - **Also from the 09-16 boost export (partial audit, verification pending):**
+      the cross-probe sanity rule (`DRIVE_PROBE_SANE_BELOW` 4) withdrew hall_front —
+      the hall's genuinely coldest heater — when its siblings freeze-jumped to 20.0
+      while its own probe sat frozen at 15.5 (median 20 − 4 > 15.5), zeroing its
+      overdrive (1.0 → 0) and re-entering at 0.5 two minutes later when it jumped to
+      19.5; the withdrawal leaves **no audit event** and, per (1) above, did not even
+      move the live setpoint. `hall_kwh` has read 63.12 since 09-14 13:02Z (43 h,
+      through this 77-min burn). The shared trio were driven to 22.5–23.0 (ladies
+      panel 80.5 °C) by the hall boost with nobody in the toilets ("shared follows
+      either room's boost" — intended, but worth a look at cost). The soften-approach
+      guard never engaged because two frozen-low probes held the zone average 0.25
+      under its 20.5 line.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
@@ -1363,6 +1532,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   signal, so a one-heater phantom-push in a zone whose siblings fire is a real blind
   spot — accept it, or (if it ever bites) fall back to the independent
   no-response/ceiling cross-check which is per-zone anyway.
+  **Further corrected (2026-09-16):** the "zone" is the *Rointe cloud* zone — the
+  office is in the same one as the hall ("Hall and Office"), so `hall_kwh` includes
+  the office; the value is an installation-level *estimate* split equally per
+  heater regardless of rating, can drop (HA meter reset), and has been **frozen at
+  63.12 since 09-14 13:02Z** through a 77-min four-heater burn — so the energy
+  proof and the Q10 duty signal are both dead until it moves (Q25 PR 3/6).
 - **Cool-off learning is gated to the below-comfort regime (`COOL_OVERWARM_MARGIN`
   = 2.0, 2026-09-04).** A cool-off is only a clean read of the *fabric* loss when
   the room decays from at/near its heating setpoint. A sample whose start temp is
@@ -1638,6 +1813,11 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   under-led a cold start into a cold arrival; it now reads as None → fail-warm
   (the pre-heat falls back to the cap). The fan ΔT reference and the diagnostic
   spread deliberately omit `stale_min` (a frozen value is harmless there).
+  **INERT (2026-09-16, Rointe findings):** the integration rewrites entity state
+  every 15-s poll, so `last_reported` is always fresh and none of these guards has
+  ever rejected anything — hall_front's 31-min flat 15.5 on 09-16 passed as
+  "fresh". The protection described here does not exist; Q25 PR 5 replaces it with
+  a flat-reading detector.
 - **A transient room-reading drop-out doesn't flip a warm room to heat
   (v1.26.2).** `_room_wants_heat`'s err-warm fail-safe is right for a *sustained*
   loss but wrong on a *blip*: a ~17 s Rointe hall-probe drop-out on a hot
@@ -1784,7 +1964,11 @@ pipe/tank frost protection* (trace heating or a frost stat) on vulnerable pipe
 runs — the 7 °C Rointe air floor protects room air, not pipes in cold voids; and
 *verify the kitchen water heater meets HSG274 Part 2* (a genuine 50–60 °C thermal
 cycle for Legionella on the ≤15 L point-of-use unit) and that the hygiene clock
-guarantees it.
+guarantees it. **Rointe (2026-09-16, Q25):** decide on the interim six-day
+Rointe-integration reload automation (the 7-day token); raise the upstream issues;
+send the 11:00–12:30Z export for the 12:03Z write-to-all question; identify the
+−78 dBm heater; and give the go for PR 1 (the `set_temperature` write path),
+tested on one heater first.
 
 ## Architecture pointers
 
