@@ -1206,12 +1206,49 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       while its own probe sat frozen at 15.5 (median 20 − 4 > 15.5), zeroing its
       overdrive (1.0 → 0) and re-entering at 0.5 two minutes later when it jumped to
       19.5; the withdrawal leaves **no audit event** and, per (1) above, did not even
-      move the live setpoint. `hall_kwh` has read 63.12 since 09-14 13:02Z (43 h,
-      through this 77-min burn). The shared trio were driven to 22.5–23.0 (ladies
+      move the live setpoint. The shared trio were driven to 22.5–23.0 (ladies
       panel 80.5 °C) by the hall boost with nobody in the toilets ("shared follows
       either room's boost" — intended, but worth a look at cost). The soften-approach
       guard never engaged because two frozen-low probes held the zone average 0.25
       under its 20.5 line.
+    - **Audit outcome (2026-09-16 evening; 14 analyses, 83 findings, 9 verified
+      before the usage limit cut the verifiers off — report in the session
+      scratchpad, `REPORT.md`).** CONFIRMED: the hall_front withdrawal above was the
+      cross-probe sanity rule (the staleness path is inert, which settles it) —
+      severity downgraded bug → risk (pushed is clamped ≥ target, so it cannot cause
+      a below-comfort arrival; it forfeits overdrive headroom on the coldest end,
+      silently); every Rointe probe in the building freeze-then-jumped during the
+      climb (hall_front +4.0 in one 30-s reconcile, hall_right +4.5 in ≤15 min) while
+      the ceiling rose smoothly, so the freeze-guard ran as a "probe unchanged for
+      15 min" test and held six of seven driven heaters to a ~30-min cadence; the
+      soften-approach guard could not have fired (band keyed to the boost target 21,
+      freeze branch tested first, frozen-low probes count at full weight in the
+      average); a probe sitting exactly at target keeps its full overdrive (error 0
+      is inside the ±0.5 hold band — `near_target` never de-escalates) and under the
+      stale cache the first ease-down would *raise* the live setpoint; no code path
+      resets `_drive_stair` on a target drop, so a zone still in comfort at boost
+      expiry would be re-pushed target + 1.5 (latent — not today's path); `effective`
+      = nominal × {1, 0.5, 0} on 8/8 heaters and `hvac_action` = probe < setpoint, so
+      the read-back's action proof is circular. REFUTED: "energy frozen" (see the
+      energy correction above). Contradicting the Rointe review: `status_warming`
+      does vary under drive here (six heaters read `maintaining` = 1) — it just
+      carries no deficit information. **Additions to the Q25 plan:** (a) PR 1 must
+      also make the *withdrawal* and `async_drive_reset` land (today a withdrawal is
+      a hardware no-op — the ice preset saved us) and reset/re-clamp the stair on a
+      target drop; (b) add a `drive_withdrawn` audit event (heater, reason, stair
+      lost); (c) change the insane-probe withdrawal from "zero the stair" to "hold
+      the stair and timer, drive at the plain target", or judge insanity against the
+      previous evaluation's median; (d) evaluate `near_target` before the freeze
+      test (diagnostic only) and exclude a just-rejected probe from `zone_avg`;
+      (e) PR 5's flat-reading detector should feed the warm-up tick guard *per
+      probe* (a +4.0 single-probe jump reads 1.0 on the 4-probe average); (f) PR 6's
+      surface witness needs a ≥45-min window (`hall_surface` was cloud-lagged ≥28 min
+      at burn start: 16.5 at 07:18Z after 27 min of firing, 58.0 at 07:33Z).
+      **Watch (next export):** a `fan_change forward` within the hour after a
+      cold-morning boost expiry (mix > 20 with no hysteresis while `fan_mode` is off
+      → the first PIR trip starts a breeze on an 11 °C morning); the post-boost coast
+      peak (predicted floor ~21.5–22.25 around 08:40–09:00Z, unlogged — `peak_over`
+      gates on bookings only); the 09:0x/10:0x `hall_kwh` rows.
 
 - **The hall pause is manual-resume, no timer, hall-only — on purpose.** The
   Rointes are child-locked, so `hall_heating_paused` (the *Pause hall heating*
@@ -1535,9 +1572,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   **Further corrected (2026-09-16):** the "zone" is the *Rointe cloud* zone — the
   office is in the same one as the hall ("Hall and Office"), so `hall_kwh` includes
   the office; the value is an installation-level *estimate* split equally per
-  heater regardless of rating, can drop (HA meter reset), and has been **frozen at
-  63.12 since 09-14 13:02Z** through a 77-min four-heater burn — so the energy
-  proof and the Q10 duty signal are both dead until it moves (Q25 PR 3/6).
+  heater regardless of rating, can drop (HA meter reset). **Scale correction:** with
+  five heaters in the Rointe zone each reports zone ÷ 5, so `hall_kwh` (4 × one
+  value) is ≈ **0.8× the Hall-and-Office zone estimate**, not "4× inflated" as
+  stated above. **The "frozen since 09-14 13:02Z" reading was REFUTED by the
+  09-16 audit's verifiers:** every posting in the 7-day trace lands 30–62 min
+  after the consuming clock hour closes, the hall burned nothing between 09-14
+  13:02Z and the 06:50Z boost (a 46-h idle flat precedent exists), and at the
+  08:08Z export only the 06:50–07:00 sliver was overdue — the 09:0x/10:0x rows
+  decide (still 63.12 at 10:02Z after a 90-min burn = a real stall). What stands
+  either way: the energy proof-of-adoption is 30–120 min late by construction, so
+  it is never available inside the 30-min settle window (Q25 PR 3/6).
 - **Cool-off learning is gated to the below-comfort regime (`COOL_OVERWARM_MARGIN`
   = 2.0, 2026-09-04).** A cool-off is only a clean read of the *fabric* loss when
   the room decays from at/near its heating setpoint. A sample whose start temp is
