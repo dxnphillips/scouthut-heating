@@ -520,6 +520,70 @@ def test_preheat_window_latches_open_as_the_room_warms(monkeypatch):
     assert ctrl.cal_window[ZA] is True
 
 
+def test_preheat_latch_survives_a_restart(monkeypatch):
+    """A restart mid-pre-heat must not re-derive the window on a bare
+    `gap <= lead`: the 2026-09-17 deploy restart did, the re-derivation ran
+    off a panel-inflated reading, closed the window and the booking arrived
+    +1.0 short. The latch is persisted with the window it belongs to."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+    from scout_testkit import run
+
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)
+    start = dt_util.now() + timedelta(minutes=25)
+    events = _events_for([{"start": start.isoformat(), "summary": "squirrels"}])
+    monkeypatch.setattr(ctrl, "_async_calendar_events", events)
+    _hall_temp(hass, 12.0)
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True
+    snapshot = ctrl._state_snapshot()
+    assert snapshot["preheat_open_for"][ZA] == start.isoformat()
+
+    # Restart: the room reads warm (the just-heated panels), so a bare
+    # gap-vs-lead test would close the window. The restored latch holds it.
+    ctrl2, hass2 = make_controller()
+
+    async def _load():
+        return snapshot
+
+    ctrl2._store.async_load = _load
+    run(ctrl2._async_restore_state())
+    assert ctrl2._preheat_open_for[ZA] == start
+    monkeypatch.setattr(ctrl2, "_async_calendar_events", events)
+    _set_rate(ctrl2, "zone_a_heatloss_pct", 0)
+    _hall_temp(hass2, 22.0)
+    run(ctrl2._async_refresh_calendars())
+    assert ctrl2.cal_window[ZA] is True
+
+    # Without the latch the same refresh closes the window — the pre-fix path.
+    ctrl3, hass3 = make_controller()
+    monkeypatch.setattr(ctrl3, "_async_calendar_events", events)
+    _set_rate(ctrl3, "zone_a_heatloss_pct", 0)
+    _hall_temp(hass3, 22.0)
+    run(ctrl3._async_refresh_calendars())
+    assert ctrl3.cal_window[ZA] is False
+
+
+def test_a_stale_preheat_latch_is_not_restored():
+    """A latch for an event that started while HA was down is dropped: the
+    next refresh judges whatever comes next fresh."""
+    from datetime import timedelta
+    from scout_testkit import run
+
+    ctrl, _ = make_controller()
+    ctrl._preheat_open_for[ZA] = ctrl._now() - timedelta(minutes=5)
+    snapshot = ctrl._state_snapshot()
+    ctrl2, _ = make_controller()
+
+    async def _load():
+        return snapshot
+
+    ctrl2._store.async_load = _load
+    run(ctrl2._async_restore_state())
+    assert ctrl2._preheat_open_for[ZA] is None
+
+
 def test_preheat_latch_does_not_bridge_into_the_next_booking(monkeypatch):
     """Back-to-back bookings inside the look-ahead must NOT hold comfort across
     the empty gap: when booking A ends, booking B's pre-heat is judged fresh."""

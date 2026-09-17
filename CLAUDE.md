@@ -256,6 +256,10 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    (slider) so a lone ceiling step cannot trip it; leave `fan_dt_off` at 0.5.
    The deeper fix is the floor signal (the radiator-adjacent mid-wall probe
    over-reads during a hard drive — Q19's seated-height sensor).
+   **Tally (2026-09-17):** two more heated starts at dt 1.07 (08:36Z) and 1.12
+   (06:00Z) — both SUPPORTED by the trace (the gap reached 1.7 and 1.4 within the
+   run), so they are genuine, not quantisation. False count stays at one (09-16
+   07:12Z). Rule unchanged; do not raise `fan_dt_on` yet.
 2. **Pre-heat cap (default 120 min, slider now to 240).** Judge from
    `booking_start.shortfall` on cold-start mornings: persistent positive
    shortfalls with the lead pinned at cap → raise the slider/default.
@@ -292,6 +296,39 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    faster per °C (smaller gap) but fights cold-mass soak (Q17), so treat 7–10 h as
    an order of magnitude, and note Q17's open question of whether frost→19.5 in one
    session is even reachable before the capacity/soak wall.
+   **First POSITIVE shortfall on record: +1.0 at the 2026-09-17 09:00Z booking
+   (coldest 18.0, average 18.5, target 19) — and the cap was not the cause.** The
+   chain: (1) the 06:00Z pre-heat sized a 181-min lead off the reset-40 rate from a
+   15 °C start and the room reached 19.0 at 07:17Z, **100 min early** (the climb ran
+   ~21 min/°C — the rate is ~2× too slow for these conditions, and the sample was
+   rejected `mild` by the pre-1.37.0 closing-tick gate); (2) once warm, the pre-heat
+   branch dropped the hall to **ice** on `booking_warm` at 07:39Z (not eco), so the
+   pre-heated room cooled freely; (3) the 1.37.0 deploy restart at 07:43Z discarded
+   the un-persisted `_preheat_open_for` latch, so the window re-derived on `gap <=
+   lead` instead of holding — without the restart the latched window would have
+   re-engaged comfort as soon as coldest fell below 19.0 (~08:10Z); (4) that
+   re-derivation ran off a **panel-inflated reading**: at 08:13Z coldest read 18.5 with
+   a 26 °C panel beside it (it had read 19.5 at 07:48Z next to a 47 °C panel) and the
+   lead came out at 37 min against a 49-min gap, so the window stayed shut; by 08:30Z
+   the probe had fallen to 17.5 (a 2 °C fall in 48 min in a 13 °C outdoor — Newton at
+   12 %/h predicts ~0.5 °C/h, so ~1.5 °C of the 07:48 reading was the radiator, not
+   the room) and the lead doubled to 70 with only 29.5 min left. The second climb ran
+   08:30–09:06Z (36 min, 32 min/°C, fans reverse, drive to +1.0) and the room was on
+   target six minutes after the start. **Three things this settles:** (a) persist
+   `_preheat_open_for` — **BUILT v1.37.1 (Q25 PR 8)**: the latch rides in the store
+   with `cal_window`, a stale one (event already started) is dropped on restore; the
+   "at most one benign cycle" claim in the latch note was wrong for a restart that
+   lands during the post-heating shed; (b) the pre-heat lead reads
+   the same panel-inflated probe the cool-off learning now waits out (PR 7) — for
+   ~45 min after a heating episode `indoor_coldest` runs warm and the lead short,
+   the cold-arrival direction; **decision rule:** if another booking arrives short
+   with the window having opened late after an earlier heating episode, size the
+   lead conservatively while `_zone_panels_hot` (e.g. hold the last reading taken
+   with cold panels), otherwise leave it; (c) `booking_warm` inside a pre-heat window
+   icing rather than resting at eco throws away the pre-heat — worth an eco rest
+   when the event is < ~60 min away, but measure the cost first (the hall fell
+   19.5 → 17.5 coldest in 50 min, partly reading artefact). The lead itself will
+   shorten once cold pre-dawn samples fold (the 14 °C gate).
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the
@@ -1105,6 +1142,35 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     soften-approach has NOT yet been exercised by a genuine cold-start driven climb — the
     validation waits for cold weather. No overshoot has recurred, but that is absence of
     the trigger, not proof of the fix.
+    **Recurred on the first 1.37.0 booking (2026-09-17 09:00Z, comfort 19, outdoor 15,
+    ~20 children).** Arrived +1.0 short (Q2), on target by 09:06Z, then **20.62 average
+    and still rising at 09:55Z (+1.6)** with the hall on ice since 09:27Z
+    (`booking_warm`), panels 33–36 °C, and the fans flipped reverse→forward at 09:42Z
+    (mix 20.9 > cooling 20, heating off — one debounced switch, no flap). Decomposition:
+    the staircase stepped to +1.0 at 08:51–09:00Z on probes reading 18.0 (setpoints
+    20.0 on hall_back/right, 19.5 on front/left); the approach guard fired at 09:00:57Z
+    (average 18.5, within the band) and withheld the third step — **so the guard
+    worked, but the two committed steps were already enough**: the Rointes fire to
+    their OWN probes, so a +1.0 setpoint means the local probe goes to 20, and the
+    step-DOWN is 0.5 per 15 min (09:21Z 0.5, 09:36Z 0) — the setpoints sat at 20 for
+    ~20 min after the average crossed 19. Then the mass tail (+0.6 on ice) and the
+    occupants. `peak_over` at `booking_end` will size it. **Candidate fix #3 (not
+    built; Q23's cold-weather rule stands): an asymmetric staircase — slow up, but
+    collapse the overdrive to zero the moment the zone average is at/above target,
+    instead of easing 0.5 per step.** It acts only once the room is AT target, so it
+    cannot cause a cold arrival; it would have cut ~20 min of over-firing here. Build
+    when `peak_over` shows the same pattern on a cold booking, or sooner if the owner
+    judges the "too hot then fans" complaint worth pre-empting.
+    **Measured (`booking_end` 11:00Z): `peak_over` 1.62, `minutes_over` 110.9** — over
+    the 0.5 band for 111 of the ~150 min episode (pre-heat + slot). Fourth mild-weather
+    instance (09-09 +2.25, 09-10 +2.0, 09-14 +2.12, 09-17 +1.62): **mild persistence is
+    now established**; cold-weather survival is the remaining half of the rule. Same
+    session, a NEW mechanism the overshoot then seeded — **a booked hall chased itself
+    heat↔cool** (see the regime-commit bullet): the forward breeze cooled the warm hall
+    from 20.6 back to coldest 19.0 by 10:27Z, the booking rung re-heated it (comfort,
+    reverse fans 10:43Z), it went warm again at 10:59Z, forward fans again at 11:01Z —
+    two full reversals and a 0.24-kWh re-heat inside a session that was too warm
+    throughout.
 24. **Does an occupied WINTER hall leave reclaimable roof heat once the floor is
     satisfied — and would running the fans on it save electric? (Analysed 2026-09-14/15,
     NO code change — mild-season data cannot settle it.)** The owner's framing: "big
@@ -1176,6 +1242,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       one heater first** — the live evidence for `set_temperature`'s Nexa semantics
       is one audit. Fail-safe direction: if `set_temperature` misbehaves the
       symptom is the same one-step-behind we have now, not a cold room.
+      **FIELD-VERIFIED (2026-09-17 09:55Z export, first driven session on
+      1.37.0).** The shared trio, driven for the 09:00Z booking, read live
+      `setpoint` 19.0 / 20.0 / 19.5 against pushed 19.0 / 20.0 / 19.5 (stairs 0 /
+      1.0 / 0.5, `preset: comfort`) — the first export in which every driven
+      heater reports exactly the pushed value; under 1.36.0 the two overdriven
+      ones would have sat one step behind. No `write_failed`, no
+      `drive_setpoint_rejected` through a four-heater hall drive to +1.0. Same
+      export: PR 5(b) fired (the 09:06:57Z hall `warmup_sample` carried
+      `max_probe_tick_rise` 2.0 against a 0.5 average tick — the single-probe jump
+      the average hid), PR 7 held the hall cool-off un-anchored at 09:55Z with panels
+      33–36 °C over a 20.6 room while the office (panel at room) anchored normally,
+      and no `opening_inferred` fired through two post-heating panel sheds.
     - **PR 2 — redact `cal_title` in the export (rec 9). BUILT v1.37.0 (export
       hygiene).** Titles are reduced at export time to what the controller used
       them for — `eco:<keywords>` on a match, `redacted` otherwise — in both
@@ -1464,6 +1542,23 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   confirm no rapid heat↔cool cycling on an active occupied evening (`cooling_hold`
   events in the audit), and that the sitting parts don't feel cold at comfort 19
   (nudge back up if so).
+  **First field chase — and it was a BOOKING, which the dwell does not cover
+  (2026-09-17 09:00–11:00Z Squirrels).** With `cooling_temp_high` 20 and the 1.0
+  direction hysteresis, the forward breeze does not stop until the mix falls to
+  **19.0 — which is the comfort line**, and the coldest probe (below the mix) crosses
+  19 first. So a warm booked hall (overshoot to 20.6, Q23) got the breeze at 09:42Z,
+  the breeze cooled it to coldest 19.0, the `booking` rung re-lit comfort at 10:27Z
+  (reverse fans 10:43Z), the room went warm again at 10:59Z (`booking_warm` → ice)
+  and the forward breeze restarted at 11:01Z: two reversals and a re-heat in 80 min,
+  the radiators and the fans doing each other's work. The 15-min `cooling_hold` is
+  occupancy-only and would not have helped anyway (the flip came 45 min into
+  cooling). **The structural cause is the zero gap between the cooling STOP line
+  (`cooling_temp_high` − hysteresis = 19.0) and the heating START line (comfort 19).**
+  Levers, cheapest first, owner's comfort call: (1) `cooling_temp_high` 20 → **20.5**
+  (slider; stop line becomes 19.5, a 0.5 band the breeze cannot cross on its own);
+  (2) the cooling stop could be floored at comfort + 0.5 in code so the two lines can
+  never meet whatever the sliders say; (3) extend the regime dwell to the booking
+  rung (weakest — a dwell only delays). One instance, mild day; recorded, not changed.
 - **The heaters are driven to target, not trusted (`drive_to_target` = on).**
   The Rointes settle a fraction *below* the setpoint we give them (field
   2026-08-06: a hall probe held ~0.5 below a 19.5 comfort setpoint on a cold
@@ -1964,9 +2059,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   pause-clear still fire only on the first open. Trade-off: the room sits at
   comfort a little early if it reaches target before its booking — it cannot
   overheat past setpoint, and it removes the cold-arrival risk of the window
-  closing mid-lead. (`_preheat_open_for` is not persisted; after a restart mid-
-  pre-heat the next refresh re-derives it, at most one benign comfort↔eco cycle at
-  the near-target boundary.)
+  closing mid-lead. **`_preheat_open_for` is persisted with `cal_window` (v1.37.1,
+  Q25 PR 8)** — it used not to be, and a restart mid-pre-heat re-derived the window
+  on a bare `gap <= lead`; the 2026-09-17 07:43Z deploy restart did that off a
+  panel-inflated reading, closed the window and the 09:00Z booking arrived +1.0
+  short (Q2). A saved latch whose event has already started is dropped on restore,
+  so it can never hold a window open for a past event.
 - **Warm-enough reads reject a frozen Rointe value (2026-08-06).** The Rointe
   cloud can freeze while the entity still reads `available`, so every path that
   decides "is the room warm enough?" — pre-heat sizing (`_zone_preheat_minutes`),
