@@ -115,6 +115,7 @@ from .const import (
     NOTIFY_FAN_TOO_HOT,
     NOTIFY_INTERNAL_DOOR,
     NOTIFY_FIRE,
+    NOTIFY_HEATERS_OFFLINE,
     NOTIFY_OPENING_INFERRED,
     NOTIFY_SEASONAL,
     NOTIFY_SHARED_OPENING,
@@ -335,6 +336,12 @@ DRIVE_NO_RESPONSE_EPS = 0.3  # °C of movement that counts as "responding"
 # consecutive per-heater writes are spaced out rather than fired in a burst. The
 # offline tests zero this.
 HEATER_WRITE_SPACING_S = 1.0
+# Sustained heater outage alert (Q18). The Rointe integration's Nexa token
+# lasts 7 days and is never renewed, so every heater goes `unavailable` until
+# the integration is reloaded — the 29 Jul 27-h outage left no mark on the
+# audit trail. Routine cloud blips are single polls (seconds), so a zone whose
+# EVERY heater has been offline this long is a real outage, not a hiccup.
+HEATERS_OFFLINE_MINUTES = 10.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -667,6 +674,12 @@ class ScoutController:
         self._drive_target: dict[str, float] = {}
         # Heater writes whose last attempt raised; audited on the edges only.
         self._write_failing: set[str] = set()
+        # Sustained heater outage watch (Q18): when a zone's heaters ALL went
+        # offline, which zones have ever been seen online (so a boot into an
+        # unconfigured/slow start does not cry wolf), and which are alerted.
+        self._heaters_offline_since: dict[str, datetime | None] = {}
+        self._heaters_seen_online: set[str] = set()
+        self._heaters_offline_notified: set[str] = set()
         self._drive_reject_notified = False
         self._opening_notified: set[str] = set()
         # Fire fallback latch: on a panel fire the fans are hardware-cut, but this
@@ -2225,6 +2238,11 @@ class ScoutController:
                 "boost_until": {z: _iso(t) for z, t in self.boost_until.items()},
                 "hall_heating_paused": self.hall_heating_paused,
                 "fire_hold": self._fire_hold,
+                # Zones whose heaters are ALL unreachable right now, and since
+                # when (the Q18 outage watch; alerted after HEATERS_OFFLINE_MINUTES).
+                "heaters_offline": {
+                    z: _iso(t) for z, t in self._heaters_offline_since.items() if t
+                },
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
                 # Booking titles carry hirer names; the export keeps only what
@@ -2292,6 +2310,13 @@ class ScoutController:
                 "fan_o1_w": self._o1_watts(),
                 "ceiling_rh": self._ceiling_humidity(),
                 "heat_demand": self.heat_demand,
+                # One representative accumulator per Rointe cloud zone (the
+                # per-heater values are identical within a zone — see
+                # _hall_energy_kwh); the hall's zone includes the office.
+                "energy_kwh": {
+                    "hall_office_zone": self._hall_energy_kwh(),
+                    "shared_zone": self._shared_energy_kwh(),
+                },
             },
             "events": [self._redact_event(e) for e in self.audit.to_list()],
             "trace": self.trace.to_list(),
@@ -3032,6 +3057,7 @@ class ScoutController:
         try:
             self._refresh_motion_from_states()
             await self._evaluate_openings()
+            await self._update_heaters_offline()
             self._record_booking_edges()
             self._update_passive_rise()
             await self._reconcile_zones()
@@ -3109,22 +3135,33 @@ class ScoutController:
         return round(max(offsets), 2) if offsets else 0.0
 
     def _hall_energy_kwh(self) -> float | None:
-        """Sum of the hall heaters' Rointe energy accumulators (kWh), or None.
+        """One representative hall energy accumulator (kWh), or None.
 
         Recorded so a climb's consumption is a delta within the trace itself (the
         Q10 duty/saving signal), without needing to cross-reference HA long-term
-        statistics. The accumulators are TOTAL_INCREASING, so only differences
-        between trace points are meaningful. None when no energy sensor resolved
-        or none carried a number this tick.
+        statistics. Rointe/Nexa findings (2026-09-16): the ``energy`` sensor is an
+        installation-level ESTIMATE split by Rointe cloud zone and then equally
+        per heater regardless of rating — every heater in a zone reports the same
+        number, and the hall shares its zone ("Hall and Office") with the office.
+        So the accumulators are never summed (pre-1.37.0 ``hall_kwh`` was one
+        value × 4); one heater's value is recorded, i.e. the zone estimate ÷ the
+        heaters in that Rointe zone. TOTAL_INCREASING in intent but it can DROP
+        (a cloud re-estimate reads as a meter reset), so only positive
+        differences between trace points are meaningful, and it posts 30–120 min
+        after the consuming clock hour. None when nothing resolved/readable.
         """
-        total = 0.0
-        seen = False
-        for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
+        return self._zone_energy_kwh(self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])))
+
+    def _shared_energy_kwh(self) -> float | None:
+        """One representative shared-zone energy accumulator (kWh), or None."""
+        return self._zone_energy_kwh(self._as_list(self.config.get(CONF_SHARED_CLIMATES)))
+
+    def _zone_energy_kwh(self, climates: list[str]) -> float | None:
+        for climate in climates:
             value = self._num_state(self._heater_sensor(climate, "energy"))
             if value is not None:
-                total += value
-                seen = True
-        return round(total, 3) if seen else None
+                return round(value, 3)
+        return None
 
     def _hall_surface_temp(self) -> float | None:
         """Average of the hall heaters' Rointe surface-temperature probes, or None.
@@ -3183,6 +3220,7 @@ class ScoutController:
             # (Q10). Both absent on installs whose status/energy sensors don't map.
             hall_maint=self._hall_heaters_maintaining(),
             hall_kwh=self._hall_energy_kwh(),
+            shared_kwh=self._shared_energy_kwh(),
             # Independent probe: the Rointe surface temperature, to compare against
             # the freeze-then-jump `current_temperature` the `floor` is built from.
             hall_surface=self._hall_surface_temp(),
@@ -4887,6 +4925,97 @@ class ScoutController:
     def _all_zone_online(self, zone: str) -> bool:
         climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
         return bool(climates) and all(self._climate_online(c) for c in climates)
+
+    _OFFLINE_ZONE_CLIMATES = {
+        ZONE_A: CONF_HALL_CLIMATES,
+        ZONE_B: CONF_OFFICE_CLIMATES,
+        "shared": CONF_SHARED_CLIMATES,
+    }
+
+    async def _update_heaters_offline(self) -> None:
+        """Surface a SUSTAINED loss of every heater in a zone (Q18).
+
+        The coordinator tolerates an offline heater silently on purpose (a
+        cloud blip is routine and self-heals), but a zone whose heaters have ALL
+        been unreachable for ``HEATERS_OFFLINE_MINUTES`` is a different thing: in
+        winter it is a cold snap or a booking arriving with no heat and no
+        warning, and the 29 Jul 27-h outage — the Rointe integration's 7-day
+        Nexa token expiring unrenewed — left no mark on the audit trail. Raises a
+        persistent notification + companion push and an audit event
+        (``heaters_offline`` with zone, minutes and whether every zone is down —
+        the token signature), dismissed and audited (``heaters_online``) on
+        recovery. A zone never yet seen online is not judged inside the startup
+        grace, so a slow boot does not cry wolf.
+        """
+        now = self._now()
+        all_down = True
+        watched = 0
+        for zone, key in self._OFFLINE_ZONE_CLIMATES.items():
+            climates = self._as_list(self.config.get(key))
+            if not climates:
+                continue
+            watched += 1
+            if any(self._climate_online(c) for c in climates):
+                all_down = False
+                self._heaters_seen_online.add(zone)
+                since = self._heaters_offline_since.get(zone)
+                if since is not None:
+                    self._heaters_offline_since[zone] = None
+                    if zone in self._heaters_offline_notified:
+                        self._heaters_offline_notified.discard(zone)
+                        self.audit.record(
+                            "heaters_online",
+                            now,
+                            zone=zone,
+                            minutes=round((now - since).total_seconds() / 60, 1),
+                        )
+                        persistent_notification.async_dismiss(
+                            self.hass, NOTIFY_HEATERS_OFFLINE[zone]
+                        )
+                continue
+            if zone not in self._heaters_seen_online and self._within_startup_grace(now):
+                continue
+            if self._heaters_offline_since.get(zone) is None:
+                self._heaters_offline_since[zone] = now
+        if not watched:
+            return
+        for zone, since in list(self._heaters_offline_since.items()):
+            if since is None or zone in self._heaters_offline_notified:
+                continue
+            minutes = (now - since).total_seconds() / 60
+            if minutes < HEATERS_OFFLINE_MINUTES:
+                continue
+            self._heaters_offline_notified.add(zone)
+            self.audit.record(
+                "heaters_offline",
+                now,
+                zone=zone,
+                minutes=round(minutes, 1),
+                all_zones=all_down,
+            )
+            label = "shared kitchen/toilets" if zone == "shared" else ZONE_LABEL[zone]
+            title = "🏕 Scout Hut – Heaters offline"
+            message = (
+                f"Every {label} radiator has been unreachable for "
+                f"{minutes:.0f} minutes. The heating cannot be controlled "
+                "(the radiators frost-protect on their own if they still have "
+                "power)."
+            )
+            if all_down:
+                message += (
+                    " Every zone is down at once, which is the Rointe cloud "
+                    "session expiring (its token lasts 7 days) — reload the "
+                    "Rointe integration."
+                )
+            persistent_notification.async_create(
+                self.hass,
+                message,
+                title=title,
+                notification_id=NOTIFY_HEATERS_OFFLINE[zone],
+            )
+            await self._push_companion(
+                title, message, icon="mdi:radiator-off", channel="Scout Hut alerts"
+            )
 
     def _mapped_fault(self) -> bool:
         """The Shelly-published fault boolean, when mapped and readable."""

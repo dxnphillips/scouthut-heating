@@ -760,7 +760,7 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     reloads the Rointe config entry every six days at a quiet hour until upstream
     renews the token. Note also the `last_reported` checks referenced above are
     inert (they never detect a freeze), so this alert is the *only* heater-health
-    signal we will have.
+    signal we will have. **BUILT v1.37.0 — see Q25 PR 4.**
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
@@ -1176,10 +1176,22 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       mean with `coldest` alongside (it used to carry the min, mislabelled), and a
       boost press / expiry / cancel are audit events (`boost` with minutes + the
       driven target, `boost_expired` with coldest/average, `boost_cancelled`).
-    - **PR 3 — energy hygiene (rec 8).** `hall_kwh` = one accumulator (not ×4),
-      labelled a zone estimate that includes the office; treat a drop as a reset.
-    - **PR 4 — Q18 outage alert (rec 7)**, plus the owner-side six-day reload
-      automation as the interim.
+    - **PR 3 — energy hygiene (rec 8). BUILT v1.37.0.** The trace's `hall_kwh` is
+      now ONE representative hall accumulator (the per-heater values are identical
+      within a Rointe zone — pre-1.37.0 it was that value × 4, so deltas are ¼ of
+      the old trace's), documented as the Hall-and-Office zone estimate ÷ heaters
+      in that zone, which can DROP (a cloud re-estimate = meter reset — only
+      positive deltas mean anything) and posts 30–120 min late; `shared_kwh`
+      (representative shared accumulator) joins the trace; diagnostics carry
+      `readings.energy_kwh` per Rointe zone.
+    - **PR 4 — Q18 outage alert (rec 7). BUILT v1.37.0** (`HEATERS_OFFLINE_MINUTES`
+      = 10, `_update_heaters_offline`): a zone whose heaters are ALL unreachable
+      for 10 min raises `heaters_offline` (zone, minutes, `all_zones` — every zone
+      down at once is the token signature and the message says "reload the Rointe
+      integration"), a persistent notification and a companion push; recovery
+      audits `heaters_online` and dismisses. A zone never yet seen online is not
+      judged inside the 25-min startup grace. Diagnostics `state.heaters_offline`.
+      The owner-side six-day reload automation remains the interim cure.
     - **PR 5 — replace the inert freshness guards (rec 6).** Delete the
       `last_reported` checks (they claim a protection that does not exist) and add a
       **flat-reading freeze detector** with a long threshold (normal sync gaps reach

@@ -166,6 +166,14 @@ reconciler, and they change how several entries above should be read:
 - **Drift detection pauses while offline** — `_detect_drift` skips a zone whose
   representative heater is not reachable, so a stale preset is not mistaken for a
   manual change.
+- **A sustained outage is surfaced (v1.37.0, Q18)** — `_update_heaters_offline`:
+  a zone (hall / office / shared) whose heaters are ALL unreachable for
+  `HEATERS_OFFLINE_MINUTES` (10) records `heaters_offline` (zone, minutes,
+  `all_zones`), raises a persistent notification and a companion push (every
+  zone down at once is the Rointe 7-day token expiring — the message says to
+  reload the Rointe integration); recovery records `heaters_online` and
+  dismisses. Single-poll blips never qualify; a zone never yet seen online is
+  not judged inside the startup grace. Diagnostics: `state.heaters_offline`.
 
 Reachability comes from each heater's Rointe **Connected** binary_sensor
 (auto-detected from the device, like the Effective Power sensors), falling back

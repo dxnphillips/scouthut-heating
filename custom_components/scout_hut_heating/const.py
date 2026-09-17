@@ -442,3 +442,8 @@ NOTIFY_OPENING_INFERRED = {
     ZONE_A: "scout_zone_a_opening_inferred",
     ZONE_B: "scout_zone_b_opening_inferred",
 }
+NOTIFY_HEATERS_OFFLINE = {
+    ZONE_A: "scout_zone_a_heaters_offline",
+    ZONE_B: "scout_zone_b_heaters_offline",
+    "shared": "scout_shared_heaters_offline",
+}
