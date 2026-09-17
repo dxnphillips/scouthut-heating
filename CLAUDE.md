@@ -1329,6 +1329,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       shed past the mid-wall probe read as a 5.7× "opening" — the hall 09:11Z and
       office 19:03Z false pushes. Both are sample-selection only: neither touches a
       setpoint, a fan or the alarm logic. Tests in `tests/test_learning_conditions.py`.
+    - **PR 8 — persist the pre-heat latch (v1.37.1).** `_preheat_open_for` rides in
+      the store with `cal_window`; a saved latch whose event has already started is
+      dropped on restore. Without it a restart mid-pre-heat re-derived the window on
+      a bare `gap <= lead`, and the 09-17 deploy restart did that off a
+      panel-inflated reading → the first positive `booking_start.shortfall` on
+      record (Q2).
+    - **PR 9 — one comfort reference for heating AND cooling (v1.38.0).** The
+      absolute `cooling_temp_high` slider is replaced by the offset
+      `cooling_above_comfort` (default 1.0, min 1.0) on top of `_cooling_reference()`
+      (comfort, + `boost_offset` while boosting, never lowered by an eco keyword),
+      and the regime commit (`cooling_hold`) now covers the booking/pre-heat rung.
+      Fixes the 09-17 booked heat↔cool chase at the root: the cooling release line
+      can no longer coincide with the heating line at any setting, and a cooling hall
+      cannot be relit by its own cold-end probe. Full reasoning in the regime-commit
+      bullet; tests in `tests/test_fans_follow_state.py` + `tests/test_zone_a.py`.
     - **Rec 3 (drift from intended setpoint, never `preset_mode`)** is already the
       `_setpoint_matches` fallback, but its 0.3 tolerance is failed by the
       stale-cache off-by-one — it becomes correct once PR 1 lands; do not touch
@@ -1503,11 +1518,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the unified `_room_wants_heat` gate; the season only pauses the condensation
   watch. This is the F1/F6 decoupling carried through to the heat side too.)
   **Reversals stay rare
-  via hysteresis, not the season:** `warm` is computed with a `COOLING_DIRECTION_HYST`
-  (1.0 °C) band keyed off the previous `fan_mode` — once cooling has started the
-  room must drop a full degree below `cooling_temp_high` before the direction
-  flips back, so a hall hovering at the threshold can't flap the heavy fans
-  forward↔reverse. `_summer_active` was removed: the hall-pause breeze exception
+  via the release band, not the season (v1.38.0):** both lines hang off
+  `_cooling_reference()` — cooling enters at reference + `cooling_above_comfort` and,
+  keyed off the previous `fan_mode`, holds until the room falls to reference + half
+  that offset (floored `COOLING_RELEASE_FLOOR` above the reference), so a hall
+  hovering at the boundary can't flap the heavy fans forward↔reverse **and** the
+  release can never land on the heating line. See the regime-commit bullet. `_summer_active` was removed: the hall-pause breeze exception
   is now `allow_destrat` (a pause suppresses the reverse regime, leaves the
   forward breeze — so a warm paused hall gets its breeze in *any* season), the
   overheat/breeze notifications gate on `_fan_cooling_wanted`, and warm-up-rate
@@ -1538,7 +1554,10 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   cool decision*). **Owner-set values (2026-09-08, evidence-based):** `hall_comfort_temp`
   19.5 → **19**, `cooling_temp_high` 21 → **20** (fans are the right tool for sweaty
   active kids — air movement gives ~2–3 °C of felt cooling, most effective when they
-  are warm — so cool *early* rather than chilling the air). First-season watch:
+  are warm — so cool *early* rather than chilling the air). **Since v1.38.0 the
+  cooling line is the OFFSET `cooling_above_comfort` (1.0) on top of comfort, so
+  "19 and 20" is now set with one number, not two** — see the fix note below.
+  First-season watch:
   confirm no rapid heat↔cool cycling on an active occupied evening (`cooling_hold`
   events in the audit), and that the sitting parts don't feel cold at comfort 19
   (nudge back up if so).
@@ -1553,12 +1572,34 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the radiators and the fans doing each other's work. The 15-min `cooling_hold` is
   occupancy-only and would not have helped anyway (the flip came 45 min into
   cooling). **The structural cause is the zero gap between the cooling STOP line
-  (`cooling_temp_high` − hysteresis = 19.0) and the heating START line (comfort 19).**
-  Levers, cheapest first, owner's comfort call: (1) `cooling_temp_high` 20 → **20.5**
-  (slider; stop line becomes 19.5, a 0.5 band the breeze cannot cross on its own);
-  (2) the cooling stop could be floored at comfort + 0.5 in code so the two lines can
-  never meet whatever the sliders say; (3) extend the regime dwell to the booking
-  rung (weakest — a dwell only delays). One instance, mild day; recorded, not changed.
+  (`cooling_temp_high` − hysteresis = 19.0) and the heating START line (comfort 19)**
+  — two independent sliders that could be, and were, set into conflict.
+  **FIXED, both halves (v1.38.0, Q25 PR 9 — owner's framing: "what are we actually
+  currently trying to achieve?").** (a) *One reference.* The absolute
+  `cooling_temp_high` is gone, replaced by the **offset** `cooling_above_comfort`
+  (default 1.0, min 1.0), and both cooling lines hang off `_cooling_reference()` —
+  what the hall is meant to feel like right now. Cooling enters at reference +
+  offset and releases at reference + half the offset, floored `COOLING_RELEASE_FLOOR`
+  (0.5) above it, so **the release line can never reach the heating line at any
+  slider setting**; raise comfort and the whole cooling band follows. The reference
+  is `hall_comfort_temp` + `boost_offset` while a Boost runs (someone asked for
+  warmer; the breeze must not fight it — belt-and-braces, since a boost also forces
+  the heating preset, which suppresses cooling anyway) and is **NOT** lowered by an
+  ECO-keyword booking: the keyword lowers what we will *spend*, not what the people
+  in the room find pleasant, so a hirer at 21 gets the breeze on the same line as
+  anyone else. Defaults reproduce the owner's 19/20 exactly. (b) *The commit covers
+  bookings.* `_cool_regime_holds_heat` now guards the booking/pre-heat rung too, not
+  just occupancy, judged against **that rung's own goal** — and against the *bare*
+  goal, not the booking hold's raised target (the hold margin is anticipatory, not a
+  comfort requirement, so letting it lift the override floor would cancel the guard
+  on exactly the cold evenings the margin is largest). Verified against the field
+  case: coldest 19.0 with comfort 19 → floor 17.5 → held, so the 10:27Z relight and
+  both reversals would not have happened. `cooling_temp_high` becomes an orphaned
+  entity to delete owner-side. **First-shoulder-season watch:** confirm no
+  `cooling_hold` on a booking where the hall genuinely needed heat (the shortfall at
+  `booking_end` is the check), and that a 0.5 release band is wide enough to keep
+  reversals rare (widen `cooling_above_comfort` to 2.0 if not — the band scales with
+  it).
 - **The heaters are driven to target, not trusted (`drive_to_target` = on).**
   The Rointes settle a fraction *below* the setpoint we give them (field
   2026-08-06: a hall probe held ~0.5 below a 19.5 comfort setpoint on a cold
@@ -2211,7 +2252,9 @@ cause of the 2026-07-14 commissioning fault-latching). ~350 clears 255 W with
 margin yet stays far below a locked-rotor draw; measure a real stall to refine.
 The reference script (`docs/reference/fan_reverse_supervised.js`) already
 carries these corrected values. Tag a release after updating;
-delete the two orphaned "learned heat-loss rate" entities; possible future
+delete the two orphaned "learned heat-loss rate" entities, and (after the v1.38.0
+deploy) the orphaned **`cooling_temp_high`** number — it is replaced by the offset
+`cooling_above_comfort`, whose 1.0 default reproduces the current 19/20 pair; possible future
 hardware — office split/heat-pump pilot (a *modulating* device, so classic
 weather compensation would apply to it — see the weather-comp note under Q17),
 wall extractor fans, hall window contacts (they join the vent override

@@ -145,7 +145,7 @@ _FAN_TUNING = [
     ("fan_min_run_minutes", "Minimum run time"),
     ("fan_min_off_minutes", "Minimum off time"),
     ("fan_sensor_stale_minutes", "Sensor stale after"),
-    ("cooling_temp_high", "Cooling warm-enough temperature"),
+    ("cooling_above_comfort", "Cooling: degrees above comfort"),
     ("cooling_mix_max_temp", "Max useful breeze temperature"),
     ("heat_demand_watts", "Heat-demand power threshold"),
     ("fan_recirc_max_floor_temp", "Recirculate until floor reaches"),
