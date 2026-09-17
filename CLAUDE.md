@@ -1263,13 +1263,28 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       unchecked acks, silent no-op controls, `coordinator.data` emptying, whole-poll
       failure on one bad field, expose `last_sync_datetime_device` / surface
       freshness / `active_power`.
-    - **Open (owner's):** surfaces 33–47.5 °C at 12:22Z with 7 °C setpoints and
-      +1.84 kWh 11:22–12:19Z, with HA writing to every heater at 12:03Z without
-      changing the setpoint — from our side a write-to-all that changes nothing is a
-      preset **re-apply** (restart/reload, or `_zone_offline_apply` after a blip);
-      the warm panels + energy look like an occupancy-heating episode that had
-      already iced before the snapshot. Needs the 11:00–12:30Z export. Also: is
-      `active_power` (Hall Left + Ladies only) an hourly average; overnight sync
+    - **Open (owner's) — the 12:03Z write-to-all RESOLVED from the 09-17 export
+      (7-day trace covers it):** it was ours and it was ordinary. The 09-16 late
+      morning was a string of short occupancy-heating episodes — hall PIR at 10:29,
+      11:31, 12:22 and 12:38Z, office PIR at 10:30, 10:48, 11:13, 11:31 and 12:22Z
+      — each flipping the hall ice→comfort (`motion`) or ice→eco (`others_present`)
+      and back to ice on `building_empty` 15 min after the last trip (13 hall preset
+      writes in two hours). The hall was in comfort 10:29–10:45Z (all four firing,
+      `drive_off` 0.5, `hall_maint` 3) and 11:31–11:48Z (one firing, 0.5), with eco
+      demand in between (`hall_surface` 38 at 11:03Z). **12:02:59Z = hall + shared
+      eco→ice on `building_empty`** (seven heaters; the office was already on ice
+      since the 11:19Z restart re-apply — all three zones re-applied with no
+      `previous`), so from our side the 12:03Z write DID change the setpoint (eco →
+      7) on those seven, and the office got nothing. The surfaces of 33–47.5 °C at
+      12:22Z with 7 °C setpoints are the 11:31–11:48Z burn's panel tail (`hall_surface`
+      32.25 at 12:04 and 12:19Z, 23.6 by 12:34Z) — the same ~45-min panel release PR 7
+      now waits out — and the Nexa snapshot landed within seconds of the 12:22:06Z
+      ice→comfort motion flip, i.e. the instant before the next write. The +1.84 kWh
+      11:22–12:19Z is those burns: `hall_kwh` posted +0.95 at 11:19Z and +1.06 at
+      12:19Z (0.8× the zone estimate → zone ≈ +1.2, +1.3, hour-lagged). Nothing
+      unexplained; the cost is the eager 15-min occupancy churn on a half-empty
+      building (Q22's asymmetric preset dwell is the lever, not built). Still open:
+      is `active_power` (Hall Left + Ladies only) an hourly average; overnight sync
       gaps; which heater is at −78 dBm; what `block_remote` does.
     - **Also from the 09-16 boost export (partial audit, verification pending):**
       the cross-probe sanity rule (`DRIVE_PROBE_SANE_BELOW` 4) withdrew hall_front —
@@ -2116,9 +2131,8 @@ runs — the 7 °C Rointe air floor protects room air, not pipes in cold voids; 
 cycle for Legionella on the ≤15 L point-of-use unit) and that the hygiene clock
 guarantees it. **Rointe (2026-09-16, Q25):** decide on the interim six-day
 Rointe-integration reload automation (the 7-day token); raise the upstream issues;
-send the 11:00–12:30Z export for the 12:03Z write-to-all question; identify the
-−78 dBm heater; and give the go for PR 1 (the `set_temperature` write path),
-tested on one heater first.
+identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was given
+2026-09-17; the 12:03Z write-to-all question is resolved under Q25.)
 
 ## Architecture pointers
 
