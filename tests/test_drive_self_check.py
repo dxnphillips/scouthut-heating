@@ -106,31 +106,54 @@ def test_satisfied_idle_at_target_is_not_flagged():
     assert CLIMATE in ctrl._drive_rejected
 
 
-def test_energy_rise_since_push_clears_flag_despite_idle_action():
-    # Field 2026-09-08: hvac_action reads idle through a real firing on these
-    # Rointes, so the action gate can't rescue a genuinely-heating heater. The
-    # energy accumulator is the truthful proof: risen since the push -> it fired.
+def test_surface_rise_since_push_clears_flag_despite_idle_action():
+    # Rointe/Nexa findings (2026-09-16): hvac_action is probe-vs-setpoint, not the
+    # element, so it can't vouch for a heater. The panel SURFACE is the per-heater
+    # firing signal: warmed since the push -> the element fired -> the command
+    # landed, whatever the action says.
     ctrl, hass = make_controller()
-    ctrl._heater_sensors = {CLIMATE: {"energy": "sensor.hb_energy"}}
-    now = _settled_push(ctrl, hass, pushed=22.0, reported=20.0)  # setpoint lags
+    ctrl._heater_sensors = {CLIMATE: {"surface": "sensor.hb_surface"}}
+    now = _settled_push(ctrl, hass, pushed=22.0, reported=20.0)  # setpoint short
     hass.states.set(CLIMATE, "heat", {"temperature": 20.0, "hvac_action": "idle"})
-    ctrl._drive_pushed_energy[CLIMATE] = 10.0
-    hass.states.set("sensor.hb_energy", "10.2")  # +0.2 kWh since the push -> fired
-    # Short (probe 18) and action idle, but energy rose -> not flagged.
+    ctrl._drive_pushed_surface[CLIMATE] = 19.0
+    hass.states.set("sensor.hb_surface", "26.0")  # +7 °C since the push -> fired
     ctrl._check_setpoint_readback(CLIMATE, 22.0, 18.0, now)
     assert CLIMATE not in ctrl._drive_rejected
 
 
-def test_flat_energy_still_flags_a_genuinely_stuck_heater():
-    # The fail-safe: a real phantom-push heater draws no power, so its energy
-    # stays flat and it is still flagged (the energy proof only rescues a
-    # demonstrably-consuming heater).
+def test_hot_panel_clears_flag_without_a_baseline():
     ctrl, hass = make_controller()
-    ctrl._heater_sensors = {CLIMATE: {"energy": "sensor.hb_energy"}}
+    ctrl._heater_sensors = {CLIMATE: {"surface": "sensor.hb_surface"}}
     now = _settled_push(ctrl, hass, pushed=22.0, reported=20.0)
     hass.states.set(CLIMATE, "heat", {"temperature": 20.0, "hvac_action": "idle"})
-    ctrl._drive_pushed_energy[CLIMATE] = 10.0
-    hass.states.set("sensor.hb_energy", "10.0")  # flat — no firing
+    hass.states.set("sensor.hb_surface", "58.0")  # a panel this hot has fired
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, 18.0, now)
+    assert CLIMATE not in ctrl._drive_rejected
+
+
+def test_cold_panel_still_flags_a_genuinely_stuck_heater():
+    # The fail-safe: a real phantom-push heater's element never fires, so its
+    # panel stays at room temperature and it is still flagged.
+    ctrl, hass = make_controller()
+    ctrl._heater_sensors = {CLIMATE: {"surface": "sensor.hb_surface"}}
+    now = _settled_push(ctrl, hass, pushed=22.0, reported=20.0)
+    hass.states.set(CLIMATE, "heat", {"temperature": 20.0, "hvac_action": "idle"})
+    ctrl._drive_pushed_surface[CLIMATE] = 19.0
+    hass.states.set("sensor.hb_surface", "19.5")  # cold — no firing
+    ctrl._check_setpoint_readback(CLIMATE, 22.0, 18.0, now)
+    assert CLIMATE in ctrl._drive_rejected
+
+
+def test_hvac_action_cannot_rescue_when_a_surface_sensor_exists():
+    # With a surface sensor mapped, "heating" from hvac_action is not consulted —
+    # on this hardware it just says the probe is below a (stale) setpoint, which
+    # is exactly the fault being looked for.
+    ctrl, hass = make_controller()
+    ctrl._heater_sensors = {CLIMATE: {"surface": "sensor.hb_surface"}}
+    now = _settled_push(ctrl, hass, pushed=22.0, reported=20.0)
+    hass.states.set(CLIMATE, "heat", {"temperature": 20.0, "hvac_action": "heating"})
+    ctrl._drive_pushed_surface[CLIMATE] = 19.0
+    hass.states.set("sensor.hb_surface", "19.5")  # ...but the panel is cold
     ctrl._check_setpoint_readback(CLIMATE, 22.0, 18.0, now)
     assert CLIMATE in ctrl._drive_rejected
 

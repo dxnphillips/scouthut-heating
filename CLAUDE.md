@@ -1216,10 +1216,19 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       `max_flat_min`. Trade accepted: a real opening that follows a ≥90-min flat
       spell is suppressed (audited, not pushed). The independent room sensor (Q19)
       remains the durable fix.
-    - **PR 6 — read-back on surface rise (rec 5).** Drop the `hvac_action` and
-      `energy` proofs; a driven heater whose panel `surface` is rising has adopted
-      the command. Rename/annotate `hall_fire`/`hall_maint`/`effective` as the
-      probe-below-setpoint proxy they are.
+    - **PR 6 — read-back on surface rise (rec 5). BUILT v1.37.0
+      (`DRIVE_SURFACE_ADOPTED_C` = 5, `DRIVE_SURFACE_HOT_C` = 35).** The read-back's
+      proof-of-adoption is now the heater's own panel `surface`: warmed ≥ 5 °C since
+      the push (`_drive_pushed_surface` stamps the baseline) or ≥ 35 °C outright =
+      the element fired = the command landed. `hvac_action` is consulted only on an
+      install with no surface sensor (and never when one exists — on this hardware
+      it is exactly the fault being looked for); the `energy` proof is retired
+      (per-Rointe-zone, 30–120 min late — never inside the settle window).
+      `_hall_heaters_firing` / `_hall_heaters_maintaining` are annotated as the
+      probe-vs-setpoint proxies they are. Surface caveat: cloud-lagged ≥28 min at
+      burn start, which the 30-min settle window covers. **First-winter watch:** no
+      `drive_setpoint_rejected` should now appear on a heater whose panel is warm;
+      one on a genuinely cold panel after a settled mismatch is the real fault.
     - **Rec 3 (drift from intended setpoint, never `preset_mode`)** is already the
       `_setpoint_matches` fallback, but its 0.3 tolerance is failed by the
       stale-cache off-by-one — it becomes correct once PR 1 lands; do not touch

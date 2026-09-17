@@ -314,7 +314,13 @@ DRIVE_SETPOINT_TOL = 0.3  # °C; our pushes and the Rointe are 0.5-quantised
 # has risen by more than this (kWh) since the push has demonstrably fired, so it
 # adopted the command whatever the (unreliable) hvac_action says. Small, only to
 # clear reporting jitter — any real burn over the 30-min settle window clears it.
-DRIVE_ENERGY_ADOPTED_KWH = 0.05
+DRIVE_ENERGY_ADOPTED_KWH = 0.05  # retired v1.37.0 (per-zone, late); kept for reference
+# Surface proof-of-adoption (v1.37.0). An idle Rointe panel sits ~1 °C above the
+# room; a fired one climbs into the 40–80 °C range within minutes (field
+# 2026-09-16: 16 → 58 °C; ladies 80.5). A rise of this much since the push, or a
+# panel this hot outright, is an element that has fired — the command landed.
+DRIVE_SURFACE_ADOPTED_C = 5.0
+DRIVE_SURFACE_HOT_C = 35.0
 # Grace after (re)start before the drive self-checks may fire. The Rointe cloud
 # is much slower to reflect a pushed setpoint just after a restart than in
 # steady state: a 2026-08-07 export caught the read-back flagging all four hall
@@ -669,7 +675,11 @@ class ScoutController:
         # The heater's own energy accumulator (kWh) at push time — the read-back
         # clears a heater whose energy has risen since, a truthful proof it is
         # firing that does not depend on the Rointe's unreliable hvac_action.
-        self._drive_pushed_energy: dict[str, float] = {}
+        # The heater's panel surface temperature at push time: a panel that has
+        # since warmed is an element that fired — the one per-heater proof of
+        # adoption this hardware gives (energy is per Rointe zone and 30–120 min
+        # late; hvac_action is probe-vs-setpoint, not the element).
+        self._drive_pushed_surface: dict[str, float] = {}
         # Heaters currently in the driven (comfort) state. A heater that flips
         # OUT of comfort and back must restart its read-back settle window and
         # re-assert the comfort preset — otherwise a stale settle stamp from a
@@ -3211,15 +3221,14 @@ class ScoutController:
     def _hall_heaters_firing(self) -> int:
         """How many hall heaters report ``hvac_action == heating`` right now.
 
-        Recorded in the trace so a later export can attribute a climb: a warm-up
-        that reached target with ``hall_fire`` 0 was free gain (fans + occupancy
-        + solar), not the radiators, while a non-zero count over the climb is the
-        heaters doing the work. Floor temperature alone cannot tell them apart —
-        which is why the 2026-08-27 climb could not be credited to the drive
-        rather than the fans. ``hvac_action`` is two-valued (heating/idle) and is
-        the always-available fallback; the throttled *maintaining* half-power
-        state is captured separately as ``hall_maint`` from the Rointe
-        ``heating_status`` sensor, so full-power ~= ``hall_fire`` − ``hall_maint``.
+        Recorded in the trace as a cheap attribution hint — but READ IT FOR WHAT
+        IT IS (Rointe/Nexa findings, 2026-09-16): the Rointe integration derives
+        ``hvac_action`` as "probe below the (possibly stale) live setpoint", not
+        from the element, so this counts heaters whose setpoint sits above their
+        probe (0 through a confirmed firing on 09-08 when probes had caught up;
+        4/4 on 09-16 twelve minutes into a 6 °C deficit). The honest per-heater
+        firing signal is the panel ``surface`` (``hall_surface`` in the trace);
+        the honest duty signal is the ``hall_kwh`` delta read over a window.
         """
         n = 0
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
@@ -3231,13 +3240,14 @@ class ScoutController:
     def _hall_heaters_maintaining(self) -> int:
         """How many hall heaters report Rointe ``heating_status == maintaining``.
 
-        The saturation discriminator ``hvac_action`` cannot give (Q17): a heater
-        at *maintaining* has reached its OWN local target and throttled to half
-        power. If the hall floor is still short while heaters sit at maintaining,
-        heat is reaching the probes but not the far field (stratification / a
-        satisfied local probe), NOT a capacity wall — where heaters would pin at
-        full ``heating`` and never back off. 0 when no status sensor is
-        discovered (the field is simply absent from those installs' analysis).
+        Intended as the Q17 saturation discriminator, but on this hardware it is
+        NOT one (2026-09-16 audit): ``maintaining`` = probe < setpoint AND the
+        device's ``status_warming`` == 1, and that status carries no deficit
+        information — all four hall heaters read *maintaining* 6 °C short at the
+        start of a cold burn, and two heaters with identical 2 °C deficits read
+        *heating* and *maintaining*. Kept in the trace as cheap corroboration
+        only; the modelled ``effective`` power (nominal × 1 / 0.5 / 0 by this
+        status) inherits the same limitation. 0 when no status sensor maps.
         """
         n = 0
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
@@ -4165,13 +4175,13 @@ class ScoutController:
         self._drive_pushed[climate] = value
         # Stamp the push so the read-back self-check waits a full settle window
         # before judging whether the device adopted this new value (Q20), and
-        # capture the heater's energy baseline so a later rise proves it fired.
+        # capture the panel surface baseline so a later rise proves it fired.
         self._drive_pushed_at[climate] = self._now()
-        energy = self._num_state(self._heater_sensor(climate, "energy"))
-        if energy is not None:
-            self._drive_pushed_energy[climate] = energy
+        surface = self._num_state(self._heater_sensor(climate, "surface"))
+        if surface is not None:
+            self._drive_pushed_surface[climate] = surface
         else:
-            self._drive_pushed_energy.pop(climate, None)
+            self._drive_pushed_surface.pop(climate, None)
         ok = await self._async_heater_call(
             "number", "set_value", {"entity_id": number, "value": value}, climate=climate
         )
@@ -4484,36 +4494,33 @@ class ScoutController:
         setpoint is unreadable, the check abstains (drops the heater from the
         rejected set) so ordinary lag never false-flags.
 
-        A divergence once settled is only genuine when the heater is BOTH short of
-        target AND idle. The phantom-push failure (v1.14.2) is "the command never
-        reached the radiator", whose signature is a heater sitting idle at a
-        stale-low setpoint *while the room is still cold*. Two independent proofs
-        that the command DID land, either of which clears the flag:
+        A divergence once settled is only genuine when the heater is short of
+        target AND its element has not fired. The phantom-push failure (v1.14.2)
+        is "the command never reached the radiator", whose signature is a heater
+        sitting cold at a stale-low setpoint *while the room is still cold*. Two
+        independent proofs that the command DID land, either of which clears:
 
           * the heater's own probe has reached the pushed target (``probe >=
-            pushed - tol``): it is idle because it is SATISFIED, not because it
+            pushed - tol``): it stopped because it is SATISFIED, not because it
             rejected us — reaching the target could only happen if the setpoint was
             adopted (2026-08-09 export: three hall heaters flagged while idle at
-            the 20.0 target the room had reached, their live setpoint merely
-            lagging through the cloud — the action gate can't catch a *satisfied*
-            heater because a satisfied heater is idle, not heating);
-          * the heater's ``energy`` accumulator has RISEN since the push
-            (``> DRIVE_ENERGY_ADOPTED_KWH``): it has drawn power, so it is firing
-            and has adopted the command — the truthful proof that does NOT depend
-            on ``hvac_action``, which reads ``idle`` through a real firing on these
-            Rointes (field 2026-09-08 Cubs: 0 status, panel 30 °C, +1.1 kWh; the
-            09-03/09-06 hall_back flags coincided with the hall burning +0.9/+1.8
-            kWh). Lumpy/cloud-delayed, so it clears a late-reporting burn on a
-            later tick rather than instantly — a brief blip, not a standing flag.
-          * the heater reports ``hvac_action == heating``: kept as a fallback for
-            installs with no energy sensor, but under-reports here — it is
-            demonstrably working toward target, its live setpoint just lagging our
-            push by a quantum while the drive staircases upward.
+            the 20.0 target the room had reached);
+          * the heater's PANEL SURFACE has warmed since the push
+            (``>= DRIVE_SURFACE_ADOPTED_C``) or is hot outright
+            (``>= DRIVE_SURFACE_HOT_C``): an element has fired, so the command was
+            adopted. This is the one per-heater firing signal this hardware gives
+            (Rointe/Nexa findings, 2026-09-16, and the 09-16 audit): ``hvac_action``
+            is derived as probe < (possibly stale) setpoint — circular here, since
+            the stale-low setpoint IS the fault — and ``energy`` is a per-Rointe-zone
+            estimate posted 30–120 min after the consuming hour, never inside the
+            settle window and unable to single out one heater. The surface is
+            live (a panel moves 20 °C in minutes) though cloud-lagged at burn start
+            (≥28 min seen), which the 30-min settle window already covers.
 
-        Only a heater that is short of the pushed target AND has drawn no power AND
-        has gone idle AND is not reporting our setpoint is genuinely not accepting
-        it. The energy proof is fail-safe: a truly stuck heater draws nothing, so
-        its energy stays flat and it is still flagged.
+        ``hvac_action == heating`` survives only as the fallback for an install
+        with no surface sensor, and is never consulted when one exists. Since
+        v1.37.0 the push is landed with ``set_temperature`` (no more stale-cache
+        off-by-one), so a settled mismatch is a real signal again.
         """
         at = self._drive_pushed_at.get(climate)
         if (
@@ -4527,22 +4534,29 @@ class ScoutController:
         if reported is None or abs(reported - pushed) <= DRIVE_SETPOINT_TOL:
             self._drive_rejected.discard(climate)
             return
-        # Reached the pushed target -> idle because satisfied, and the room could
-        # not have got there unless the setpoint landed. Not the fault this is for.
+        # Reached the pushed target -> stopped because satisfied, and the room
+        # could not have got there unless the setpoint landed. Not the fault.
         if probe is not None and probe >= pushed - DRIVE_SETPOINT_TOL:
             self._drive_rejected.discard(climate)
             return
-        # Short of the pushed setpoint. Truthful proof first: if the heater's own
-        # energy has risen since the push it has fired, so it adopted the command
-        # whatever hvac_action says (the Rointe status under-reports firing here).
-        base = self._drive_pushed_energy.get(climate)
-        energy = self._num_state(self._heater_sensor(climate, "energy"))
-        if base is not None and energy is not None and energy - base > DRIVE_ENERGY_ADOPTED_KWH:
-            self._drive_rejected.discard(climate)
+        # Short of the pushed setpoint. The element is the witness: a panel that
+        # has warmed since the push (or is hot) has fired and so adopted the
+        # command; a panel that stayed cold has not.
+        surface_id = self._heater_sensor(climate, "surface")
+        if surface_id:
+            surface = self._num_state(surface_id)
+            base = self._drive_pushed_surface.get(climate)
+            fired = surface is not None and (
+                surface >= DRIVE_SURFACE_HOT_C
+                or (base is not None and surface - base >= DRIVE_SURFACE_ADOPTED_C)
+            )
+            if fired:
+                self._drive_rejected.discard(climate)
+            else:
+                self._drive_rejected.add(climate)
             return
-        # Fallback for installs without an energy sensor: a heater actively heating
-        # has clearly accepted the command; only one gone IDLE while still short
-        # (and having drawn no power) is genuinely not accepting it.
+        # No surface sensor on this install: fall back to hvac_action, a weak
+        # probe-vs-setpoint signal on Rointes, but the only one left.
         st = self.hass.states.get(climate)
         action = st.attributes.get("hvac_action") if st else None
         if action == "heating":
@@ -4673,7 +4687,7 @@ class ScoutController:
         self._drive_approach.clear()
         self._drive_pushed.clear()
         self._drive_pushed_at.clear()
-        self._drive_pushed_energy.clear()
+        self._drive_pushed_surface.clear()
         self._drive_driven.clear()
         self._drive_cap_since.clear()
         self._drive_rejected.clear()
