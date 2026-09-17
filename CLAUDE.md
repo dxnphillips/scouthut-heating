@@ -315,9 +315,10 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    the room) and the lead doubled to 70 with only 29.5 min left. The second climb ran
    08:30–09:06Z (36 min, 32 min/°C, fans reverse, drive to +1.0) and the room was on
    target six minutes after the start. **Three things this settles:** (a) persist
-   `_preheat_open_for` (candidate PR 8 — trivial, restores the documented latch
-   across restarts; the "at most one benign cycle" claim in the latch note was wrong
-   for a restart that lands during the post-heating shed); (b) the pre-heat lead reads
+   `_preheat_open_for` — **BUILT v1.37.1 (Q25 PR 8)**: the latch rides in the store
+   with `cal_window`, a stale one (event already started) is dropped on restore; the
+   "at most one benign cycle" claim in the latch note was wrong for a restart that
+   lands during the post-heating shed; (b) the pre-heat lead reads
    the same panel-inflated probe the cool-off learning now waits out (PR 7) — for
    ~45 min after a heating episode `indoor_coldest` runs warm and the lead short,
    the cold-arrival direction; **decision rule:** if another booking arrives short
@@ -2058,11 +2059,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   pause-clear still fire only on the first open. Trade-off: the room sits at
   comfort a little early if it reaches target before its booking — it cannot
   overheat past setpoint, and it removes the cold-arrival risk of the window
-  closing mid-lead. (`_preheat_open_for` is not persisted; after a restart mid-
-  pre-heat the next refresh re-derives it, at most one benign comfort↔eco cycle at
-  the near-target boundary — **NOT always benign: the 2026-09-17 07:43Z deploy
-  restart re-derived the window off a panel-inflated reading and the 09:00Z booking
-  arrived +1.0 short; persist the latch — see Q2.**)
+  closing mid-lead. **`_preheat_open_for` is persisted with `cal_window` (v1.37.1,
+  Q25 PR 8)** — it used not to be, and a restart mid-pre-heat re-derived the window
+  on a bare `gap <= lead`; the 2026-09-17 07:43Z deploy restart did that off a
+  panel-inflated reading, closed the window and the 09:00Z booking arrived +1.0
+  short (Q2). A saved latch whose event has already started is dropped on restore,
+  so it can never hold a window open for a past event.
 - **Warm-enough reads reject a frozen Rointe value (2026-08-06).** The Rointe
   cloud can freeze while the entity still reads `available`, so every path that
   decides "is the room warm enough?" — pre-heat sizing (`_zone_preheat_minutes`),

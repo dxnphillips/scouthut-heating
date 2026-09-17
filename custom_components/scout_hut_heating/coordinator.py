@@ -2225,6 +2225,15 @@ class ScoutController:
             # reads True->True (no edge). Mirrors the _cal_running_prev guard
             # the booking-edge path already uses against the same hazard.
             "cal_window": dict(self.cal_window),
+            # The pre-heat latch (which event the window opened for) rides with
+            # it: without this a restart mid-pre-heat re-derives the window on a
+            # bare `gap <= lead`, and if that lands during the post-heating panel
+            # shed the inflated reading closes it and the booking arrives short
+            # (field 2026-09-17: +1.0 after the 07:43Z deploy restart).
+            "preheat_open_for": {
+                zone: start.isoformat() if start else None
+                for zone, start in self._preheat_open_for.items()
+            },
             # Restart hardening: the anti-short-cycle timers and the seasonal
             # flag survive a reload, so a restart cannot stutter the fans or
             # re-announce the lockout.
@@ -2265,6 +2274,13 @@ class ScoutController:
         for zone in (ZONE_A, ZONE_B):
             if zone in saved_window:
                 self.cal_window[zone] = bool(saved_window[zone])
+        saved_latch = data.get("preheat_open_for") or {}
+        for zone in (ZONE_A, ZONE_B):
+            start = _dt(saved_latch.get(zone))
+            # A latch for an event already in the past is stale (the event ran
+            # or was dropped while HA was down): the next refresh re-derives.
+            if start is not None and start > self._now():
+                self._preheat_open_for[zone] = start
         self.seasonal_lockout = bool(data.get("seasonal_lockout", False))
         self.fan_last_on = _dt(data.get("fan_last_on"))
         self.fan_last_off = _dt(data.get("fan_last_off"))
