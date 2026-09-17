@@ -1149,7 +1149,11 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     changed yet — the write-path change is hardware-facing and waits for the
     owner's go, tested on one heater first.** Verdict on the owner's nine
     recommendations, in the order to ship them (one PR each):
-    - **PR 1 — make the push actually land (recs 1 + 2 + 4).** In `_drive_push`
+    - **PR 1 — make the push actually land (recs 1 + 2 + 4). BUILT v1.37.0 —
+      see the drive bullet; first-run watch: the live setpoint must now equal
+      the pushed number within seconds on every driven heater (`preset null`
+      + one-step-behind gone), a hall eco-low booking must land 14 not 16, and
+      no `write_failed` should appear in normal running.** In `_drive_push`
       and in `_async_set_preset` for comfort/eco: write the number `blocking=True`,
       then `climate.set_temperature` with the *intended* value (same fields as a
       preset on Nexa, but our number, not the stale cache); keep `set_preset_mode`
@@ -1396,18 +1400,35 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   quantised (no derivative) and the plant is slow and model-free (a continuous
   integral winds up and overshoots). The wait between steps IS the anti-windup.
   A heat-loss **feedforward** gives a cold-night head-start, capped at one step so
-  it can't overshoot a non-drooping heater. **A Rointe only adopts a changed
-  comfort *number* when the comfort *preset* is re-applied, so each drive push is
-  followed by a per-heater `set_preset_mode` re-assert** — without it the boost
-  writes the number but never reaches the radiator (v1.14.2 shipped that no-op;
-  v1.14.3 fixed it: the heaters sat at the last-applied setpoint while the drive
-  logged phantom pushes). The existing slider-change path
-  (`async_hall_temps_changed`) always did push-number-then-re-apply for the same
-  reason. It only ever drives *harder* than the
+  it can't overshoot a non-drooping heater. **A Rointe never adopts a changed
+  comfort *number* on its own, so each drive push is LANDED on the live setpoint
+  with `climate.set_temperature` (v1.37.0, Q25 PR 1).** The v1.14.3–v1.36.0
+  sequence re-applied the comfort *preset* instead — which on the Nexa integration
+  copies the integration's *cached* comfort number, unrefreshed for ~10 s after a
+  number write, so it routinely landed the *previous* value one step behind (the
+  "cloud lag" every read-back workaround was sized against; v1.14.2 had shipped
+  the number-only no-op). The same landing is done for the hall's eco value on
+  every eco apply / eco-low re-push, for the plain comfort value when the drive
+  is off, for an in-comfort withdrawal and for the last-will reset; ice needs
+  none (its cached 7 is a constant). Every heater write now blocks, a raise is
+  audited (`write_failed` once per failing write, `write_recovered` on success)
+  and the value is retried next tick rather than believed; consecutive pushes
+  are spaced `HEATER_WRITE_SPACING_S` (1 s) apart because each command makes the
+  Rointe integration refresh all 8 heaters. It only ever drives *harder* than the
   owner's setpoint; clamped to `[target, target + drive_max_offset]` (default
   offset 4.5 → hall cap 24) and the 30 Rointe max. **Safety net:** stale/glitched
   probe withdraws that heater to the plain target (fail-safe); cross-probe sanity
-  (a probe > 4 below the zone median is distrusted); **last-will reset** on
+  (a probe > 4 below the zone median is distrusted — and since v1.37.0 an
+  *insane* withdrawal **holds** the staircase and its clock rather than zeroing
+  them, because on 09-16 the rule fired on the hall's genuinely coldest heater
+  when its siblings freeze-jumped +4 °C and forfeited 1.0 °C of committed
+  overdrive on the cold end; a merely-late probe now keeps its overdrive for
+  when it catches up, a probe that stays insane is driven at the plain target
+  and never harder; every withdrawal is audited as `drive_withdrawn` with its
+  reason, and an insane probe is left out of the approach guard's zone average);
+  a **target drop** (boost expiry, hold collapse) resets that heater's staircase
+  (`drive_target_drop`) instead of re-pushing the old overdrive on the lower
+  target; **last-will reset** on
   unload AND on startup (a crash can't leave an overdrive — the staircase is not
   persisted); a `drive_capped` audit + persistent alert if a heater sits pinned
   at the cap while still short for `DRIVE_CAP_ALARM_MINUTES` (60) — a real

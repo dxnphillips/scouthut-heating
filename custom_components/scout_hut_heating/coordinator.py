@@ -330,6 +330,11 @@ DRIVE_STARTUP_GRACE_MINUTES = 25.0
 # movement epsilon so a room already holding steady at target never trips it.
 DRIVE_NO_RESPONSE_MINUTES = 45.0
 DRIVE_NO_RESPONSE_EPS = 0.3  # °C of movement that counts as "responding"
+# Heater write path (Rointe/Nexa findings, 2026-09-16). Every climate command
+# makes the Rointe integration refresh all 8 heaters (~17 cloud connections), so
+# consecutive per-heater writes are spaced out rather than fired in a burst. The
+# offline tests zero this.
+HEATER_WRITE_SPACING_S = 1.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -656,6 +661,12 @@ class ScoutController:
         # comfort setpoint, a false `drive_setpoint_rejected`.
         self._drive_driven: set[str] = set()
         self._drive_rejected: set[str] = set()
+        # The target each heater was last driven toward, so a DROP in target
+        # (a boost expiring, a booking hold collapsing) resets the staircase
+        # instead of re-pushing the old overdrive on top of the lower target.
+        self._drive_target: dict[str, float] = {}
+        # Heater writes whose last attempt raised; audited on the edges only.
+        self._write_failing: set[str] = set()
         self._drive_reject_notified = False
         self._opening_notified: set[str] = set()
         # Fire fallback latch: on a panel fire the fans are hardware-cut, but this
@@ -3372,6 +3383,9 @@ class ScoutController:
         eco_temp = self._hall_eco_target(eco_low)
         if self._hall_temps_pushed != (comfort_temp, eco_temp):
             await self._async_push_hall_temps(eco_low=eco_low)
+            # A changed number alone never moves the live setpoint on this
+            # hardware — land the new eco / (undriven) comfort value too.
+            await self._async_land_zone(ZONE_A, self.applied[ZONE_A])
 
     async def _reconcile_shared(self) -> None:
         desired = self._desired_shared()
@@ -3578,6 +3592,9 @@ class ScoutController:
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
             await self._async_push_hall_temps(eco_low=self._eco_keyword_active(zone))
         await self._async_apply_climate(climates, preset)
+        # The preset copies a possibly-stale cached number into the live
+        # setpoint; land the intended value explicitly (see _async_land_zone).
+        await self._async_land_zone(zone, preset)
         self.applied[zone] = preset
         self.expected_preset[zone] = preset
         self._last_apply[zone] = self._now()
@@ -3650,30 +3667,114 @@ class ScoutController:
         # still runs so the comfort setpoint is always placed even if the drive
         # cannot resolve a per-heater number.
         if comfort_numbers:
-            await self.hass.services.async_call(
+            await self._async_heater_call(
                 "number",
                 "set_value",
                 {"entity_id": comfort_numbers, "value": comfort_temp},
-                blocking=False,
+                climate=",".join(comfort_numbers),
             )
         if eco_numbers:
-            await self.hass.services.async_call(
+            await self._async_heater_call(
                 "number",
                 "set_value",
                 {"entity_id": eco_numbers, "value": eco_temp},
-                blocking=False,
+                climate=",".join(eco_numbers),
             )
 
     async def _async_apply_climate(self, entities: Any, preset: str) -> None:
         climates = self._as_list(entities)
         if not climates:
             return
-        await self.hass.services.async_call(
+        await self._async_heater_call(
             "climate",
             "set_preset_mode",
             {"entity_id": climates, "preset_mode": preset},
-            blocking=False,
+            climate=",".join(climates),
         )
+
+    async def _async_land_zone(self, zone: str, preset: str) -> None:
+        """Set the hall heaters' LIVE setpoint to the value the preset is meant
+        to carry (Rointe/Nexa findings, 2026-09-16).
+
+        On this integration ``set_preset_mode`` copies the integration's CACHED
+        comfort/eco number into the live setpoint, and a number write does not
+        refresh that cache for ~10 s — so "write the eco number, then apply eco"
+        routinely applied the PREVIOUS eco value (an eco-keyword booking landing
+        at 16 instead of 14). ``climate.set_temperature`` writes our value
+        directly, so after every hall comfort/eco apply the intended value is
+        landed explicitly. Comfort is landed here only when the drive loop is
+        off — with it on, ``_reconcile_drive`` lands each heater's own
+        (target + trim) value in the same reconcile. Ice needs nothing: the
+        cached anti-frost value is a constant 7. The office eco and the shared
+        eco live on the devices and are never pushed, so there is nothing to
+        land for them.
+        """
+        if zone != ZONE_A:
+            return
+        if preset == PRESET_ECO:
+            value = self._hall_eco_target(self._eco_keyword_active(zone))
+        elif preset == PRESET_COMFORT and not self.switch_on(
+            "drive_to_target", default=True
+        ):
+            value = self.number("hall_comfort_temp")
+        else:
+            return
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+            await self._async_set_live_setpoint(climate, value)
+
+    async def _async_set_live_setpoint(self, climate: str, value: float) -> bool:
+        """Write a heater's live target temperature (``climate.set_temperature``)."""
+        return await self._async_heater_call(
+            "climate",
+            "set_temperature",
+            {"entity_id": climate, "temperature": value},
+            climate=climate,
+        )
+
+    async def _async_heater_call(
+        self, domain: str, service: str, data: dict[str, Any], *, climate: str
+    ) -> bool:
+        """One heater write, blocking, with failure surfaced.
+
+        Rointe/Nexa findings (2026-09-16): the integration does not check the
+        cloud's write acknowledgements, so a service call *returning* is not
+        proof the write landed — but a call *raising* is proof it did not, and
+        the old fire-and-forget (``blocking=False``) calls threw that evidence
+        away while ``applied``/``expected`` were being recorded as if the write
+        had happened. Now every heater write blocks, and a failure is recorded
+        in the audit trail (``write_failed`` on the first failure of a given
+        write, ``write_recovered`` once it succeeds again) instead of being
+        silently lost. Returns True when the call completed.
+        """
+        key = f"{climate}|{domain}.{service}"
+        value = data.get("value", data.get("temperature", data.get("preset_mode")))
+        try:
+            await self.hass.services.async_call(domain, service, data, blocking=True)
+        except Exception as err:  # noqa: BLE001 — any raise on a hardware write is a failed write
+            _LOGGER.warning(
+                "Heater write %s.%s to %s (%s) failed: %s", domain, service, climate, value, err
+            )
+            if key not in self._write_failing:
+                self._write_failing.add(key)
+                self.audit.record(
+                    "write_failed",
+                    self._now(),
+                    heater=climate,
+                    service=f"{domain}.{service}",
+                    value=value,
+                    error=f"{type(err).__name__}: {err}",
+                )
+            return False
+        if key in self._write_failing:
+            self._write_failing.discard(key)
+            self.audit.record(
+                "write_recovered",
+                self._now(),
+                heater=climate,
+                service=f"{domain}.{service}",
+                value=value,
+            )
+        return True
 
     # ------------------------------------------------------------------
     # Drive to target (outer per-heater setpoint trim loop)
@@ -3788,24 +3889,35 @@ class ScoutController:
         climate: str,
         number: str,
         value: float,
-        reassert: bool = False,
+        land: bool = False,
         force: bool = False,
     ) -> None:
         """Write a heater's comfort setpoint, only when it actually changes.
 
-        ``reassert``: after writing the number, re-apply the comfort preset to
-        the heater. A Rointe only adopts a changed comfort setpoint when the
-        comfort preset is (re-)selected — writing the number alone leaves the
-        live target unchanged (the existing slider-change path does both, see
-        ``async_hall_temps_changed``). The drive must do the same or its boost
-        never reaches the radiator. Only used on the driving (comfort) path; the
-        withdrawal path just stores the plain target for the next real apply.
+        ``land``: after writing the comfort number, set the heater's LIVE
+        setpoint to the same value with ``climate.set_temperature``. The comfort
+        number alone never moves the live target on a Rointe; the old sequence
+        re-applied the comfort *preset* to make it adopt — but on the Nexa
+        integration a preset copies the integration's CACHED comfort number, and
+        a number write does not refresh that cache for ~10 s, so the re-assert
+        routinely landed the PREVIOUS value one step behind (field 2026-09-16:
+        four heaters live 22.0 vs pushed 22.5 for 30+ min, and every "cloud lag"
+        the read-back was sized against). ``set_temperature`` writes our value
+        directly. Landed on the driving path and on an in-comfort withdrawal; a
+        not-comfort withdrawal only stores the number (the ice/eco preset owns
+        the live setpoint then).
 
-        ``force``: push (and re-assert, and restamp the settle clock) even when
-        the number is unchanged. Used when a heater (re-)enters the driven state:
+        ``force``: push (and land, and restamp the settle clock) even when the
+        number is unchanged. Used when a heater (re-)enters the driven state:
         its live setpoint may have been on ice while the withdrawal left the
-        comfort *number* already at this value, so the reassert is what actually
+        comfort *number* already at this value, so the landing is what actually
         moves the radiator, and the fresh stamp restarts the read-back window.
+
+        A failed write leaves no record of the value as pushed, so the next
+        reconcile retries it (the failure itself is audited by
+        ``_async_heater_call``). Consecutive heater writes are spaced by
+        ``HEATER_WRITE_SPACING_S`` because each one triggers a full 8-heater
+        refresh inside the Rointe integration.
         """
         if self._drive_pushed.get(climate) == value and not force:
             return
@@ -3819,19 +3931,65 @@ class ScoutController:
             self._drive_pushed_energy[climate] = energy
         else:
             self._drive_pushed_energy.pop(climate, None)
-        await self.hass.services.async_call(
-            "number",
-            "set_value",
-            {"entity_id": number, "value": value},
-            blocking=True,
+        ok = await self._async_heater_call(
+            "number", "set_value", {"entity_id": number, "value": value}, climate=climate
         )
-        if reassert:
-            await self.hass.services.async_call(
-                "climate",
-                "set_preset_mode",
-                {"entity_id": climate, "preset_mode": PRESET_COMFORT},
-                blocking=False,
+        if land:
+            ok = await self._async_set_live_setpoint(climate, value) and ok
+        if not ok:
+            # Retry on the next reconcile rather than believing a write that raised.
+            self._drive_pushed.pop(climate, None)
+        if HEATER_WRITE_SPACING_S > 0:
+            await asyncio.sleep(HEATER_WRITE_SPACING_S)
+
+    async def _drive_withdraw(
+        self,
+        zone: str,
+        climate: str,
+        number: str,
+        target: float,
+        reason: str,
+        probe: float | None,
+        median: float | None,
+    ) -> None:
+        """Fail-safe withdrawal of one heater from the drive.
+
+        ``reason``: ``not_comfort`` (the zone left comfort — the episode is over,
+        the preset owns the live setpoint, only the comfort number is restored);
+        ``unreadable`` (probe lost/None — restore and land the plain target);
+        ``insane`` (probe more than ``DRIVE_PROBE_SANE_BELOW`` under the zone
+        median — the plain target is landed, but the staircase and its clock are
+        HELD rather than zeroed). The hold is the 2026-09-16 lesson: the rule
+        fired on the hall's genuinely coldest heater when its two siblings
+        freeze-jumped +4 °C in one cloud batch, and zeroing forfeited 1.0 °C of
+        committed overdrive on the cold end — in the cold-arrival direction. A
+        merely LATE probe (the common case on this hardware) keeps its
+        overdrive for when it catches up; a probe that stays insane keeps being
+        driven at the plain target, never harder. Audited on the driven →
+        withdrawn edge as ``drive_withdrawn`` — this used to be the one drive
+        decision that left no mark on the instrument.
+        """
+        if climate in self._drive_driven:
+            self.audit.record(
+                "drive_withdrawn",
+                self._now(),
+                zone=zone,
+                heater=climate,
+                reason=reason,
+                stair=self._drive_stair.get(climate, 0.0),
+                probe=probe,
+                median=median,
             )
+        self._drive_driven.discard(climate)
+        self._drive_cap_since[climate] = None
+        self._drive_rejected.discard(climate)
+        self._drive_frozen.discard(climate)
+        self._drive_approach.discard(climate)
+        if reason != "insane":
+            self._drive_stair[climate] = 0.0
+            self._drive_step_probe.pop(climate, None)
+            self._drive_target.pop(climate, None)
+        await self._drive_push(climate, number, target, land=(reason != "not_comfort"))
 
     async def _reconcile_drive(self) -> None:
         """Drive each comfort heater's setpoint until its own probe reaches target.
@@ -3879,7 +4037,14 @@ class ScoutController:
             # the laggy coldest probe) has reached within a step of target, stop
             # escalating the overdrive on any heater. Uses the probes already read
             # here, so it works uniformly for all three zones (hall/office/shared).
-            zone_avg = sum(readable) / len(readable) if readable else None
+            # A probe the sanity rule rejects is left out of the average too — a
+            # frozen-low reading would otherwise hold the average under the line
+            # while its siblings are already at target (field 2026-09-16).
+            sane_vals = [
+                v for v in readable
+                if median is None or v >= median - DRIVE_PROBE_SANE_BELOW
+            ]
+            zone_avg = sum(sane_vals) / len(sane_vals) if sane_vals else None
             near_target = zone_avg is not None and zone_avg >= target - DRIVE_APPROACH_BAND
             for climate in climates:
                 number = self._heater_comfort_number(climate)
@@ -3892,16 +4057,38 @@ class ScoutController:
                 if not comfort or not sane:
                     # Fail-safe withdrawal: not being heated, or the probe is
                     # lost/glitched — restore the plain target, never leave it
-                    # boosted on a reading we cannot trust.
-                    self._drive_stair[climate] = 0.0
-                    self._drive_cap_since[climate] = None
-                    self._drive_rejected.discard(climate)
-                    self._drive_driven.discard(climate)
-                    self._drive_step_probe.pop(climate, None)
-                    self._drive_frozen.discard(climate)
-                    self._drive_approach.discard(climate)
-                    await self._drive_push(climate, number, target)
+                    # boosted on a reading we cannot trust (see _drive_withdraw).
+                    reason = (
+                        "not_comfort" if not comfort
+                        else "unreadable" if probe is None
+                        else "insane"
+                    )
+                    await self._drive_withdraw(
+                        zone, climate, number, target, reason, probe, median
+                    )
                     continue
+                # A target DROP (a boost expiring, a booking hold collapsing)
+                # restarts the staircase: carrying the old trim across would
+                # re-push (new target + old overdrive) — 20.5 after a 21 → 19
+                # drop — and only ease it down a step per interval. From zero
+                # the initial climb still steps at once if the room is short.
+                prev_target = self._drive_target.get(climate)
+                if (
+                    prev_target is not None
+                    and target < prev_target - 1e-9
+                    and self._drive_stair.get(climate, 0.0) > 0
+                ):
+                    self.audit.record(
+                        "drive_target_drop",
+                        now,
+                        zone=zone,
+                        heater=climate,
+                        previous=prev_target,
+                        target=target,
+                        stair=self._drive_stair[climate],
+                    )
+                    self._drive_stair[climate] = 0.0
+                self._drive_target[climate] = target
                 since = self._drive_minutes_since_step(climate, now)
                 # Response-keyed anti-windup: has the probe moved since the step we
                 # last evaluated against? (True when we have no baseline yet.)
@@ -3947,7 +4134,7 @@ class ScoutController:
                 entering = climate not in self._drive_driven
                 self._drive_driven.add(climate)
                 await self._drive_push(
-                    climate, number, pushed, reassert=True, force=entering
+                    climate, number, pushed, land=True, force=entering
                 )
                 self._check_setpoint_readback(climate, pushed, probe, now)
                 # Cap-pinned watch: at the cap AND still a full step short.
@@ -4221,16 +4408,23 @@ class ScoutController:
             # Restore the owner's PLAIN comfort setpoint, never a transient Boost
             # or booking-hold bump — the last will exists to undo overdrive.
             target = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
+            # The number alone never moves the live setpoint on this hardware;
+            # a zone that is in comfort right now gets the plain target landed
+            # too, or the radiator would keep the last overdrive after unload.
+            land = self.applied.get(zone) == PRESET_COMFORT
             for climate in self._as_list(self.config.get(cfg_key)):
                 number = self._heater_comfort_number(climate)
                 if number is None:
                     continue
-                await self.hass.services.async_call(
+                await self._async_heater_call(
                     "number",
                     "set_value",
                     {"entity_id": number, "value": target},
-                    blocking=True,
+                    climate=climate,
                 )
+                if land:
+                    await self._async_set_live_setpoint(climate, target)
+        self._drive_target.clear()
         self._drive_stair.clear()
         self._drive_step_at.clear()
         self._drive_step_probe.clear()

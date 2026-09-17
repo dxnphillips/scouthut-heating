@@ -134,9 +134,15 @@ reconciler, and they change how several entries above should be read:
   (`_drive_push`) and the slider path (`_async_push_hall_temps` →
   `_async_apply_climate`) sends the **previous** value unless the debounced
   refresh happens to win the race. Commands reach the heaters in 2–5 s: every
-  "cloud lag" in the drive / read-back entries is this bug. Not yet fixed
-  (planned: `climate.set_temperature` with the intended value after the number
-  write; `set_preset_mode` kept for ice only).
+  "cloud lag" in the drive / read-back entries is this bug. **Fixed v1.37.0:**
+  every intended comfort/eco value is now *landed* on the live setpoint with
+  `climate.set_temperature` after the number write (drive pushes, hall eco
+  applies and eco-low re-pushes, undriven comfort, in-comfort withdrawals, the
+  last-will reset); `set_preset_mode` still selects the preset (ice needs
+  nothing more — its cached 7 is constant). All heater writes block; a raise is
+  audited (`write_failed` / `write_recovered`) and retried next tick; pushes are
+  spaced 1 s apart. An insane-probe withdrawal holds the staircase
+  (`drive_withdrawn` audited); a target drop resets it (`drive_target_drop`).
 - `last_reported` / `last_updated` are refreshed every poll regardless of data,
   so the freshness guards above are inert (planned: a flat-reading detector).
 - `status_warming` is always 2: `heating_status` carries no information,
