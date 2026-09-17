@@ -237,13 +237,22 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # default suits a battery Shelly H&T, which sleeps aggressively and can go
     # well over an hour between reports when the temperature is steady.
     "fan_sensor_stale_minutes": (5, 240, 5, 120, "min"),
-    # Summer: the head-height comfort estimate (0.75 x floor + 0.25 x ceiling —
-    # the air an occupant actually feels) above this is "warm enough" to want a
-    # breeze. Judged there, not at the low floor sensor, which under-reads the
-    # occupied room on a still hot day under a hot ceiling. A degree under the
-    # sedentary norm because hall users are active — moving bodies want the
-    # airflow earlier than seated ones.
-    "cooling_temp_high": (18, 30, 0.5, 23, "°C"),
+    # Summer: how far ABOVE what the hall is meant to feel like the head-height
+    # comfort estimate (0.75 x floor + 0.25 x ceiling — the air an occupant
+    # actually feels) has to sit before the breeze is wanted. An OFFSET, not an
+    # absolute: the cooling line is derived from the same comfort reference the
+    # heating aims at, so the two can never be set into conflict (v1.38.0 —
+    # before this the absolute `cooling_temp_high` and `hall_comfort_temp` were
+    # independent sliders and the release line landed exactly on the heating
+    # line, so a booked hall chased itself breeze->heat->breeze; field
+    # 2026-09-17). Judged at head height, not at the low floor sensor, which
+    # under-reads the occupied room on a still hot day under a hot ceiling. Small
+    # by default because hall users are active — moving bodies want the airflow
+    # earlier than seated ones.
+    # Floored at 1.0 so the release line (half the offset above the reference) is
+    # always at least COOLING_RELEASE_FLOOR clear of it — a smaller offset would
+    # collapse the enter and release lines onto each other and flap the fans.
+    "cooling_above_comfort": (1.0, 8, 0.5, 1.0, "°C"),
     # Hot-breeze guard: hold the summer fans (and suggest opening the doors)
     # once the MIXED air they would fold down to head height — estimated as
     # 0.75 x floor + 0.25 x ceiling — reaches this. Between here and the hard
@@ -308,7 +317,7 @@ NUMBER_ICONS: dict[str, str] = {
     "fan_min_run_minutes": "mdi:timer-play",
     "fan_min_off_minutes": "mdi:timer-off",
     "fan_sensor_stale_minutes": "mdi:timer-alert",
-    "cooling_temp_high": "mdi:thermometer-high",
+    "cooling_above_comfort": "mdi:thermometer-high",
     "cooling_mix_max_temp": "mdi:weather-windy-variant",
     "heat_demand_watts": "mdi:flash",
     "fan_recirc_max_floor_temp": "mdi:thermometer-chevron-up",
@@ -325,12 +334,19 @@ BOOST_DEFAULT = "60 min"
 # Cooling direction is fully automatic — no toggle, no season. The fans read the
 # room and decide (`_fan_cooling_regime` / `fan_decision`): active heating always
 # destratifies (reverse), a genuinely warm occupied hall gets a cooling breeze
-# (forward), a cool one destratifies. COOLING_DIRECTION_HYST is the hysteresis
-# band on the warm/cool boundary: once cooling has started the room must drop
-# this far below `cooling_temp_high` before the direction flips back, so a hall
-# hovering at the threshold cannot flap the heavy fans forward<->reverse (each
-# reversal is a ~5-min coast-down; reversals must stay rare).
-COOLING_DIRECTION_HYST = 1.0  # °C
+# (forward), a cool one destratifies.
+#
+# Both lines hang off ONE reference — what the hall is currently meant to feel
+# like (`_cooling_reference`): cooling ENTERS at reference + `cooling_above_comfort`
+# and RELEASES at reference + half that offset, so a hall hovering at the boundary
+# cannot flap the heavy fans forward<->reverse (each reversal is a ~5-min
+# coast-down; reversals must stay rare). The release is floored this far above the
+# reference so it can never coincide with the HEATING line — when it did (field
+# 2026-09-17: release 19.0 with comfort 19.0), the breeze cooled a booked hall onto
+# its own heating trigger and the radiators relit, two reversals and a re-heat in
+# 80 min. Deriving both from one reference makes that unreachable by construction,
+# whatever the sliders are set to.
+COOLING_RELEASE_FLOOR = 0.5  # °C above the reference, minimum
 
 # User-facing switches: key -> default state (True = on)
 SWITCH_DEFS: dict[str, bool] = {

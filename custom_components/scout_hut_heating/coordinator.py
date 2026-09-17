@@ -68,7 +68,7 @@ from .preheat import (
     warmup_rate_is_outlier,
 )
 from .const import (
-    COOLING_DIRECTION_HYST,
+    COOLING_RELEASE_FLOOR,
     CONF_ALARM_MAIN,
     CONF_ALARM_OFFICE,
     CONF_CALENDAR_HALL,
@@ -162,8 +162,8 @@ FAN_DIRECTION_SETTLE = 1.5  # seconds
 # observed blips (~9-12 min) while not sitting on the wrong direction for long. It
 # only ever DELAYS a confirmed reversal — never blocks one, and never keeps the
 # fans on when they should stop (a fire/fault/stop returns off upstream and
-# bypasses it). COOLING_DIRECTION_HYST guards the warm/cool line; this guards the
-# heat-state->direction line it does not cover.
+# bypasses it). The cooling enter/release band guards the warm/cool line; this
+# guards the heat-state->direction line it does not cover.
 FAN_DIRECTION_DEBOUNCE_MIN = 15.0
 
 # Heat/cool regime commit. For an intermittent-activity children's hall the active
@@ -530,6 +530,9 @@ class ScoutController:
         # ambiguous between "nobody there" and "not warm enough").
         self._fan_occupied: bool | None = None
         self._fan_warm: bool | None = None
+        # The comfort reference the last cooling decision was judged against
+        # (diagnostics only — the live value comes from `_cooling_reference`).
+        self._cooling_ref: float | None = None
         # Whether the fans wanted the cooling (forward) regime this tick — used
         # to gate the overheat/breeze notifications (they only matter when the
         # fans are trying to cool). State-derived, replacing the old season flag.
@@ -2491,6 +2494,7 @@ class ScoutController:
                     "overheated": self.fan_overheated,
                     "breeze_hot": self.fan_breeze_hot,
                     "mix": self.fan_mix,
+                    "cooling_ref": self._cooling_ref,
                     "cooling_wanted": self._fan_cooling_wanted,
                     "last_on": _iso(self.fan_last_on),
                     "last_off": _iso(self.fan_last_off),
@@ -2726,24 +2730,48 @@ class ScoutController:
             return self.number("hall_eco_low_temp")
         return self._zone_target(zone)
 
-    def _cool_regime_holds_heat(self, zone: str) -> bool:
+    def _cooling_reference(self) -> float:
+        """What the hall is meant to feel like right now — the single reference
+        both the cooling breeze and the heating are judged against.
+
+        This is a COMFORT reference, not the heating goal, and the two differ on
+        purpose. An ECO-keyword booking lowers what we are willing to *spend*
+        (the heating goal drops to eco-low), but it says nothing about what the
+        people in the room find pleasant: a hirer sitting in a 21 °C hall is as
+        warm as any other group at 21, so the breeze belongs at the same line.
+        A Boost is the opposite case — an occupant has explicitly asked for
+        warmer, so the reference rises with it and the breeze must not fight the
+        heat they asked for (belt-and-braces: a boost also forces the heating
+        preset, which already suppresses the cooling regime).
+        """
+        base = self.number("hall_comfort_temp")
+        if self._boosting(ZONE_A):
+            base += self.number("boost_offset")
+        return base
+
+    def _cool_regime_holds_heat(self, zone: str, target: float | None = None) -> bool:
         """Whether the heat/cool regime commit should hold HEATING off right now.
 
         True only for the hall, only within ``REGIME_DWELL_MIN`` of the last cooling
         tick, and only while the room is not GENUINELY cold — a coldest probe more
-        than ``REGIME_HEAT_OVERRIDE`` below comfort overrides the commit and heats
-        (games really over, not a rest). This is what lets the comfort and
-        cooling-enough thresholds sit close together without the two hunting: a
-        brief between-games dip holds the cooling regime instead of firing the
+        than ``REGIME_HEAT_OVERRIDE`` below the goal it is being asked for overrides
+        the commit and heats (games really over, not a rest). This is what lets the
+        comfort and cooling-enough lines sit close together without the two hunting:
+        a brief between-games dip holds the cooling regime instead of firing the
         radiators. Frost protection is unaffected (ice still holds the 7 °C floor).
+
+        ``target`` is the goal the calling rung asked for, so an ECO-keyword
+        booking is judged against its own eco-low floor: a hall warm enough to be
+        having a breeze is unimaginably far above that, so a booked eco session can
+        never relight heat mid-breeze. Defaults to comfort (the occupancy rung).
         """
         if zone != ZONE_A or self._hall_cooling_until is None:
             return False
         if self._now() >= self._hall_cooling_until:
             return False
         coldest = self._zone_room_temp(ZONE_A, coldest=True)
-        floor = self.number("hall_comfort_temp") - REGIME_HEAT_OVERRIDE
-        if coldest is not None and coldest < floor:
+        goal = self.number("hall_comfort_temp") if target is None else target
+        if coldest is not None and coldest < goal - REGIME_HEAT_OVERRIDE:
             return False  # a genuine cold-drop overrides the commit
         return True
 
@@ -2969,12 +2997,32 @@ class ScoutController:
             # the slow drive catches up. The gate engages at that raised target so
             # the hall does not ice while still above bare comfort; the margin is 0
             # for eco bookings, pre-heat (not yet running) and mild nights.
-            booking_target = self._booking_target(zone) + self._booking_hold_margin(zone)
+            booking_goal = self._booking_target(zone)
+            booking_target = booking_goal + self._booking_hold_margin(zone)
             if not self._room_wants_heat(zone, booking_target):
                 # Already warm enough for what this booking asked — no heat, and
                 # ice lets the cooling fans run if the room is genuinely hot.
                 self._note_coasting(zone, False)
                 return self._reason(zone, "booking_warm", PRESET_ICE)
+            # Just cooled (or still cooling): hold the regime so the breeze cannot
+            # push the hall onto its own heating trigger and have the radiators
+            # relight into it. A booking is exactly where this bites — the mix is
+            # a head-height blend while the gate reads the COLDEST probe, so a
+            # cooling hall can read "wants heat" at the cold end while the people
+            # are still warm (field 2026-09-17: breeze from 09:42Z cooled the hall
+            # to coldest 19.0, the booking relit comfort at 10:27Z, two reversals
+            # and a re-heat inside a session that was too warm throughout). A
+            # genuine cold-drop below this booking's own goal still overrides, and
+            # the manual occupied-override always heats. Judged against the BARE
+            # goal, not the booking hold's raised target: the hold margin is an
+            # anticipatory nudge against a cooling evening, not a comfort
+            # requirement, so letting it lift the override floor would cancel this
+            # guard on exactly the cold evenings the margin is largest.
+            if not self.switch_on(f"{zone}_occupied_override") and self._cool_regime_holds_heat(
+                zone, booking_goal
+            ):
+                self._note_coasting(zone, False)
+                return self._reason(zone, "cooling_hold", PRESET_ICE)
             # "Will it get there / stay there on its own?" Hold at eco instead of
             # firing the radiators when free gain (sun on the roof, occupancy,
             # warm fabric) is doing the work — comfort kept, delivered free:
@@ -3032,7 +3080,9 @@ class ScoutController:
             if self._room_wants_heat(zone, self._zone_target(zone)):
                 # Just cooled: hold the regime so a rest between games can't flip
                 # the hall straight to heating (a manual override still heats).
-                if not occupied_override and self._cool_regime_holds_heat(zone):
+                if not occupied_override and self._cool_regime_holds_heat(
+                    zone, self._zone_target(zone)
+                ):
                     return self._reason(zone, "cooling_hold", PRESET_ICE)
                 reason = (
                     "occupied_override"
@@ -5342,9 +5392,9 @@ class ScoutController:
         Fully automatic from live room state — no toggle, no season:
           * active hall heating -> False (destratify: never wind-chill the people
             being warmed; the caller passes `heating`);
-          * a genuinely warm (`warm`, head-height above `cooling_temp_high` with
-            hysteresis) hall that is NOT being heated -> True (a cooling breeze
-            for the people who are hot);
+          * a genuinely warm (`warm`, head-height above the comfort reference by
+            `cooling_above_comfort`, with the release band) hall that is NOT being
+            heated -> True (a cooling breeze for the people who are hot);
           * a cool hall, or an unknown reading -> False (destratify / off; a warm
             reading is REQUIRED, so unknown warmth never blows a draught on
             assumption).
@@ -5432,19 +5482,24 @@ class ScoutController:
         # the air a fan would deliver hits skin temperature a breeze heats
         # people, whatever the floor lags at.
         comfort = self.fan_mix if self.fan_mix is not None else ft
-        # Warm-enough-to-cool, with hysteresis on the DIRECTION boundary: enter
-        # cooling above `cooling_temp_high`, but once cooling has started stay
-        # cooling until the room drops COOLING_DIRECTION_HYST below it. Keyed off
-        # the previous tick's mode (`fan_mode`), this stops a hall hovering at
-        # the threshold from flapping the heavy fans forward<->reverse — the
-        # stability the old season gate gave for free, now from the thermometer.
-        high = self.number("cooling_temp_high")
+        # Warm-enough-to-cool, measured against the SAME reference the heating
+        # aims at (`_cooling_reference`) rather than an independent absolute
+        # slider: enter cooling `cooling_above_comfort` above it, and once cooling
+        # has started stay cooling until the room falls to half that offset above
+        # it (floored at COOLING_RELEASE_FLOOR, so the release can never land on
+        # the heating line). Keyed off the previous tick's mode (`fan_mode`), the
+        # band stops a hall hovering at the boundary from flapping the heavy fans
+        # forward<->reverse — the stability the old season gate gave for free.
+        self._cooling_ref = reference = self._cooling_reference()
+        offset = self.number("cooling_above_comfort")
+        enter = reference + offset
+        release = reference + max(offset / 2, COOLING_RELEASE_FLOOR)
         if comfort is None:
             warm: bool | None = None
         elif self.fan_mode == "summer":
-            warm = comfort > high - COOLING_DIRECTION_HYST
+            warm = comfort > release
         else:
-            warm = comfort > high
+            warm = comfort > enter
         overheated = comfort is not None and comfort >= FAN_COOLING_MAX_TEMP
         self.fan_overheated = overheated
         self._fan_warm = warm

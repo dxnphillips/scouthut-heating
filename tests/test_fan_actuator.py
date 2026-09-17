@@ -181,7 +181,7 @@ def test_boost_during_summer_lockout_reverses_the_fans_not_forward():
     ctrl.seasonal_lockout = True  # summer regime engaged
     for eid in E["hall"]:
         hass.states.set(eid, "heat", {"current_temperature": 22.0})  # floor 22 < cap
-    hass.states.set("sensor.ceiling", "28.0")  # dt 6, mix 23.5 (> cooling_temp_high)
+    hass.states.set("sensor.ceiling", "28.0")  # dt 6, mix 23.5 (over the cooling enter line)
     motion(ctrl, "hall")  # occupied
 
     # Not heating: the summer breeze blows forward as before.
@@ -212,6 +212,9 @@ def test_hall_fans_ignore_a_neighbours_demand_while_hall_is_iced():
     )
     off(hass, MASTER)
     ctrl.seasonal_lockout = False  # winter regime
+    # Well short of the cooling enter line, so the only question this test asks is
+    # whose heating runs the DESTRAT fans (mix 20.75 vs an enter line of 23.5).
+    ctrl._numbers["cooling_above_comfort"].native_value = 4.0
     for eid in E["hall"]:
         hass.states.set(eid, "heat", {"current_temperature": 20.0})  # warm floor
     hass.states.set("sensor.ceiling", "23.0")  # dt 3.0 > dt_on (stratified)

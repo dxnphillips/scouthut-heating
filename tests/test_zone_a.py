@@ -60,6 +60,63 @@ def test_occupied_override_beats_the_cooling_hold():
     assert ctrl._desired_zone(ZA) == PRESET_COMFORT
 
 
+# --- ...and the same commit now covers a BOOKING (field 2026-09-17) ----------
+# The breeze reads a head-height MIX while the heat gate reads the COLDEST probe,
+# so a cooling hall can read "wants heat" at the cold end while the people are
+# still warm. Uncovered, that relit a booked hall mid-breeze: two reversals and a
+# re-heat inside a session that was too warm throughout.
+
+
+def test_cooling_hold_defers_a_booking_relight_mid_breeze():
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.0)  # coldest 0.5 below comfort: the gate wants heat...
+    ctrl._hall_cooling_until = ctrl._now() + timedelta(minutes=10)
+    assert ctrl._desired_zone(ZA) == PRESET_ICE  # ...but the hall is being cooled
+    assert ctrl._preset_reason[ZA] == "cooling_hold"
+
+
+def test_a_booked_hall_heats_again_once_the_breeze_has_let_go():
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.0)
+    ctrl._hall_cooling_until = ctrl._now() - timedelta(minutes=1)  # dwell elapsed
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_a_genuinely_cold_booked_hall_overrides_the_cooling_hold():
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 17.5)  # 2.0 below comfort 19.5 — the breeze has gone too far
+    ctrl._hall_cooling_until = ctrl._now() + timedelta(minutes=10)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_occupied_override_beats_the_cooling_hold_on_a_booking_too():
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA)
+    ctrl._switches["zone_a_occupied_override"].is_on = True
+    hall_temp(ctrl, 19.0)
+    ctrl._hall_cooling_until = ctrl._now() + timedelta(minutes=10)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_an_eco_booking_is_judged_against_its_own_low_goal():
+    # A hall warm enough to be having a breeze is far above an eco-low 14, so it
+    # lands on booking_warm before the hold is even reached — an eco session can
+    # never relight heat mid-breeze, whichever gate you look at.
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA, "sal-vation cleaning")
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.0)
+    ctrl._hall_cooling_until = ctrl._now() + timedelta(minutes=10)
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_warm"
+
+
 def test_booking_with_motion_is_comfort():
     ctrl, _ = make_controller()
     booking(ctrl, ZA)
