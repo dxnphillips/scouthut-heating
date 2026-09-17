@@ -74,6 +74,9 @@ def _install_stubs() -> None:
     )
     const.EntityCategory = type("EntityCategory", (), {"CONFIG": "config", "DIAGNOSTIC": "diagnostic"})
 
+    exc = _mod("homeassistant.exceptions")
+    exc.HomeAssistantError = type("HomeAssistantError", (Exception,), {})
+
     ce = _mod("homeassistant.config_entries")
 
     class _ConfigEntry:

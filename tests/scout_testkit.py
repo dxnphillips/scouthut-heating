@@ -38,6 +38,10 @@ from custom_components.scout_hut_heating.const import (
     ZONE_B,
 )
 
+# Heater writes are spaced ~1 s apart in the field (each one triggers a full
+# 8-heater refresh in the Rointe integration); the offline tests need no pause.
+C.HEATER_WRITE_SPACING_S = 0.0
+
 # Re-export so tests can `from scout_testkit import ZONE_A, PRESET_ICE, ...`
 PRESET_ICE = C.PRESET_ICE
 PRESET_ECO = C.PRESET_ECO
@@ -101,6 +105,9 @@ class FakeServices:
         # domain -> {service_name: None}; tests can register e.g. a companion-app
         # notify service to exercise the mobile push path.
         self._registry = {}
+        # Optional failure injector: a callable (domain, service, data) -> bool;
+        # when it returns True the call raises, like a heater write that failed.
+        self.fail_when = None
 
     def register(self, domain, service):
         self._registry.setdefault(domain, {})[service] = None
@@ -119,8 +126,18 @@ class FakeServices:
         **kw,
     ):
         self.calls.append(
-            {"domain": domain, "service": service, "data": data or {}, "target": target}
+            {
+                "domain": domain,
+                "service": service,
+                "data": data or {},
+                "target": target,
+                "blocking": blocking,
+            }
         )
+        if self.fail_when is not None and self.fail_when(domain, service, data or {}):
+            from homeassistant.exceptions import HomeAssistantError
+
+            raise HomeAssistantError(f"{domain}.{service} failed")
         # Echo switch commands into the fake state machine, like a real switch
         # would: the coordinator now reconciles against actual states.
         if (
@@ -313,7 +330,13 @@ def advance(ctrl, minutes):
             ctrl._warmup_start[zone] = (sample[0] - delta, *sample[1:])
     for zone, sample in ctrl._cooloff_start.items():
         if sample is not None:
-            ctrl._cooloff_start[zone] = (sample[0] - delta, *sample[1:])
+            aged = list(sample)
+            aged[0] = sample[0] - delta
+            if len(aged) > 10 and aged[10] is not None:  # flat_since (freeze clock)
+                aged[10] = aged[10] - delta
+            ctrl._cooloff_start[zone] = tuple(aged)
+    for climate, ts in list(ctrl._probe_changed_at.items()):
+        ctrl._probe_changed_at[climate] = ts - delta
     for zone, ts in ctrl._cooloff_cooling_since.items():
         if ts is not None:
             ctrl._cooloff_cooling_since[zone] = ts - delta

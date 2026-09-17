@@ -216,3 +216,16 @@ def test_far_from_target_escalates_despite_the_flag_being_available():
     )
     assert approach is False
     assert stair == 1.5
+
+
+def test_frozen_and_near_target_reports_the_approach_hold():
+    # A heater that is BOTH frozen and in a zone that has arrived is reported as
+    # approach-held: the outcome (hold) is identical, but "approach_held empty"
+    # must mean the guard was not needed, not that a freeze masked it (field
+    # 2026-09-16: two frozen-low probes, approach_held [] all boost).
+    _, stair, _, frozen, approach = update_drive(
+        19.0, 18.0, 8.0, 0.09, 24.0, 1.0, READY, probe_moved=False, near_target=True
+    )
+    assert approach is True
+    assert frozen is False
+    assert stair == 1.0

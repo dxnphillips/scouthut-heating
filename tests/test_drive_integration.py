@@ -74,21 +74,30 @@ def test_drives_setpoint_above_target_when_room_is_short():
     assert _pushed(hass, _comfort_number("climate.hall_back")) > target
 
 
-def test_drive_reasserts_the_comfort_preset_so_the_setpoint_lands():
-    # A Rointe only adopts a changed comfort number when comfort is re-applied,
-    # so a drive push must be followed by a set_preset_mode on that heater —
-    # otherwise the boost never reaches the radiator (v1.14.3 fix).
+def _landed(hass, climate):
+    """Last live setpoint written to a heater via climate.set_temperature."""
+    val = None
+    for c in hass.services.calls:
+        if c["domain"] == "climate" and c["service"] == "set_temperature":
+            ids = c["data"].get("entity_id")
+            ids = ids if isinstance(ids, list) else [ids]
+            if climate in ids:
+                val = c["data"].get("temperature")
+    return val
+
+
+def test_drive_lands_the_pushed_value_on_the_live_setpoint():
+    # A Rointe never adopts a changed comfort NUMBER on its own, and re-applying
+    # the comfort preset copies the integration's stale cached number (Rointe/Nexa
+    # findings 2026-09-16) — so a drive push must LAND its value with
+    # climate.set_temperature, or the boost never reaches the radiator.
     _wire_numbers()
     ctrl, hass = make_controller()
     _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 18.0})
     run(ctrl.async_reconcile())
-    reasserts = [
-        c for c in hass.services.calls
-        if c["domain"] == "climate" and c["service"] == "set_preset_mode"
-        and "climate.hall_back" in (c["data"].get("entity_id") if isinstance(c["data"].get("entity_id"), list) else [c["data"].get("entity_id")])
-        and c["data"].get("preset_mode") == PRESET_COMFORT
-    ]
-    assert reasserts  # the driven heater had comfort re-applied after the push
+    assert _landed(hass, "climate.hall_back") == _pushed(
+        hass, _comfort_number("climate.hall_back")
+    )
 
 
 def test_boost_drives_the_room_above_comfort():
@@ -146,14 +155,9 @@ def test_reentering_comfort_does_not_false_reject_readback():
 
     # The read-back must ABSTAIN (window restarted on entry), not flag a reject.
     assert not ctrl._drive_rejected
-    # And comfort was re-asserted so the radiator actually adopts the setpoint.
-    reasserts = [
-        c for c in hass.services.calls
-        if c["domain"] == "climate" and c["service"] == "set_preset_mode"
-        and hb in (c["data"].get("entity_id") if isinstance(c["data"].get("entity_id"), list) else [c["data"].get("entity_id")])
-        and c["data"].get("preset_mode") == PRESET_COMFORT
-    ]
-    assert reasserts
+    # And the value was landed on the live setpoint (force on entry, even though
+    # the comfort number was unchanged) so the radiator actually adopts it.
+    assert _landed(hass, hb) == _pushed(hass, _comfort_number(hb))
 
 
 def test_per_heater_independent_drive():
@@ -182,18 +186,21 @@ def test_setpoint_never_exceeds_the_cap():
 
 
 # --- Safety net: freshness ----------------------------------------------------
-def test_stale_probe_withdraws_to_plain_target():
+def test_old_entity_timestamps_do_not_withdraw_a_heater():
+    # The Rointe integration rewrites last_reported every poll (2026-09-16
+    # findings), so an entity timestamp says nothing about the probe — and a
+    # value-flat probe is handled by the freeze-guard (hold), never by a
+    # withdrawal that would forfeit the cold end's overdrive.
     _wire_numbers()
     ctrl, hass = make_controller()
     _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 18.0})
-    # Age one heater's report beyond the staleness window.
     old = dt_util.utcnow() - timedelta(hours=3)
     st = hass.states.get("climate.hall_back")
     st.last_reported = old
     st.last_updated = old
     run(ctrl.async_reconcile())
     target = ctrl.number("hall_comfort_temp")
-    assert _pushed(hass, _comfort_number("climate.hall_back")) == target  # not boosted
+    assert _pushed(hass, _comfort_number("climate.hall_back")) > target  # still driven
 
 
 # --- Freeze-guard: don't wind the overdrive up against a stuck probe ----------

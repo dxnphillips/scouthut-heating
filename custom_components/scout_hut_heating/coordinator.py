@@ -115,6 +115,7 @@ from .const import (
     NOTIFY_FAN_TOO_HOT,
     NOTIFY_INTERNAL_DOOR,
     NOTIFY_FIRE,
+    NOTIFY_HEATERS_OFFLINE,
     NOTIFY_OPENING_INFERRED,
     NOTIFY_SEASONAL,
     NOTIFY_SHARED_OPENING,
@@ -268,7 +269,9 @@ ROINTE_COMFORT_MAX = 30.0
 # A heater's probe is "lost" for driving if it has not reported within this
 # window — the Rointe cloud can freeze while looking alive, so a stale reading
 # must not keep driving. A lost probe withdraws that heater to its plain target.
-DRIVE_PROBE_STALE_MINUTES = 30.0
+# (DRIVE_PROBE_STALE_MINUTES, the drive's last_reported age test, was retired in
+# v1.37.0: the Rointe entity's timestamps advance every poll, and a stuck probe
+# is held by the freeze-guard rather than withdrawn.)
 # Cross-probe sanity: a probe reading more than this far BELOW its zone's median
 # is treated as a glitch and not driven on, so one shorted/stuck sensor cannot
 # force a heater to the cap.
@@ -311,7 +314,13 @@ DRIVE_SETPOINT_TOL = 0.3  # °C; our pushes and the Rointe are 0.5-quantised
 # has risen by more than this (kWh) since the push has demonstrably fired, so it
 # adopted the command whatever the (unreliable) hvac_action says. Small, only to
 # clear reporting jitter — any real burn over the 30-min settle window clears it.
-DRIVE_ENERGY_ADOPTED_KWH = 0.05
+DRIVE_ENERGY_ADOPTED_KWH = 0.05  # retired v1.37.0 (per-zone, late); kept for reference
+# Surface proof-of-adoption (v1.37.0). An idle Rointe panel sits ~1 °C above the
+# room; a fired one climbs into the 40–80 °C range within minutes (field
+# 2026-09-16: 16 → 58 °C; ladies 80.5). A rise of this much since the push, or a
+# panel this hot outright, is an element that has fired — the command landed.
+DRIVE_SURFACE_ADOPTED_C = 5.0
+DRIVE_SURFACE_HOT_C = 35.0
 # Grace after (re)start before the drive self-checks may fire. The Rointe cloud
 # is much slower to reflect a pushed setpoint just after a restart than in
 # steady state: a 2026-08-07 export caught the read-back flagging all four hall
@@ -330,6 +339,17 @@ DRIVE_STARTUP_GRACE_MINUTES = 25.0
 # movement epsilon so a room already holding steady at target never trips it.
 DRIVE_NO_RESPONSE_MINUTES = 45.0
 DRIVE_NO_RESPONSE_EPS = 0.3  # °C of movement that counts as "responding"
+# Heater write path (Rointe/Nexa findings, 2026-09-16). Every climate command
+# makes the Rointe integration refresh all 8 heaters (~17 cloud connections), so
+# consecutive per-heater writes are spaced out rather than fired in a burst. The
+# offline tests zero this.
+HEATER_WRITE_SPACING_S = 1.0
+# Sustained heater outage alert (Q18). The Rointe integration's Nexa token
+# lasts 7 days and is never renewed, so every heater goes `unavailable` until
+# the integration is reloaded — the 29 Jul 27-h outage left no mark on the
+# audit trail. Routine cloud blips are single polls (seconds), so a zone whose
+# EVERY heater has been offline this long is a real outage, not a hiccup.
+HEATERS_OFFLINE_MINUTES = 10.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -386,6 +406,14 @@ COOL_OVERWARM_MARGIN = 2.0
 # never corrupts — and overnight cool-offs (the bulk) lose 20 min of a multi-hour
 # window, nothing material.
 COOL_SETTLE_MINUTES = 20.0
+# Freeze signature for a cool-off (2026-09-16). An out-of-family sample whose
+# reading had sat UNCHANGED for at least this long is the Rointe probe freezing
+# then dumping its catch-up, not an unsensored opening: the office's recurring
+# 3am false alarm held one value for 3–6 h before the "drop". A genuinely slow
+# insulated room dwells 1–2 h on one 0.5 °C quantum, but such a decay is never
+# out-of-family, so the flat test only ever bites on a sample that would
+# otherwise have cried wolf. Sized above the longest legitimate dwell seen.
+COOL_FREEZE_FLAT_MINUTES = 90.0
 # Cold-conditions gate on warm-up learning (2026-09-11, field). A warm-up timed
 # in mild weather reads implausibly fast because solar gain on the big uninsulated
 # roof (plus occupancy) does much of the work the radiators are credited with.
@@ -401,7 +429,23 @@ COOL_SETTLE_MINUTES = 20.0
 # not-cold (fail-safe: keep the conservative rate rather than fold an
 # unattributable climb). Sits well below the ~15-18 °C contamination band and the
 # UK heating base (15.5) while capturing real cold mornings.
-WARMUP_COLD_MAX_OUTDOOR = 12.0
+# Raised 12 → 14 and judged on the sample's AVERAGE outdoor (2026-09-17): a
+# pre-dawn cold-fabric pre-heat (outdoor 13.5 at 06:00Z) was rejected as "mild"
+# because the outdoor read 15.2 at the sample's END after sunrise — the exact
+# case the Q3 decision rule anticipated ("autumn cold mornings rejected at
+# 12-14 → nudge toward 13-14"). The reset-40 rate is now known to over-lead a
+# 4 °C cold start ~2× (77 min actual vs a 181-min lead), which is wasted energy.
+WARMUP_COLD_MAX_OUTDOOR = 14.0
+# A cool-off sample anchors only once the zone's radiators have cooled: while a
+# panel is still this far above the room it is releasing stored heat past the
+# mid-wall probe beside it, and the "decay" is the panel, not the fabric. The
+# fixed COOL_SETTLE_MINUTES (20) was sized to an ordinary cut-off; a hard drive
+# leaves panels at 60 °C for 45+ min (field 2026-09-16: surface 61 → 26 over
+# 08:03–09:03Z) and the sample anchored at the coast peak then read the panel
+# shed as a 5.7× "opening" — two false pushes in one day (hall 09:11Z, office
+# 19:03Z). The panel surface is live on this hardware (the one signal the Rointe
+# review trusts), so it is the physical gate; the time floor remains beneath it.
+COOL_SETTLE_SURFACE_C = 5.0
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
@@ -647,7 +691,11 @@ class ScoutController:
         # The heater's own energy accumulator (kWh) at push time — the read-back
         # clears a heater whose energy has risen since, a truthful proof it is
         # firing that does not depend on the Rointe's unreliable hvac_action.
-        self._drive_pushed_energy: dict[str, float] = {}
+        # The heater's panel surface temperature at push time: a panel that has
+        # since warmed is an element that fired — the one per-heater proof of
+        # adoption this hardware gives (energy is per Rointe zone and 30–120 min
+        # late; hvac_action is probe-vs-setpoint, not the element).
+        self._drive_pushed_surface: dict[str, float] = {}
         # Heaters currently in the driven (comfort) state. A heater that flips
         # OUT of comfort and back must restart its read-back settle window and
         # re-assert the comfort preset — otherwise a stale settle stamp from a
@@ -656,6 +704,30 @@ class ScoutController:
         # comfort setpoint, a false `drive_setpoint_rejected`.
         self._drive_driven: set[str] = set()
         self._drive_rejected: set[str] = set()
+        # The target each heater was last driven toward, so a DROP in target
+        # (a boost expiring, a booking hold collapsing) resets the staircase
+        # instead of re-pushing the old overdrive on top of the lower target.
+        self._drive_target: dict[str, float] = {}
+        # Heater writes whose last attempt raised; audited on the edges only.
+        self._write_failing: set[str] = set()
+        # Sustained heater outage watch (Q18): when a zone's heaters ALL went
+        # offline, which zones have ever been seen online (so a boot into an
+        # unconfigured/slow start does not cry wolf), and which are alerted.
+        self._heaters_offline_since: dict[str, datetime | None] = {}
+        self._heaters_seen_online: set[str] = set()
+        self._heaters_offline_notified: set[str] = set()
+        # Freeze detector: each heater's last room reading and when it last
+        # CHANGED (the Rointe entity's own timestamps are always fresh).
+        self._probe_last_value: dict[str, float] = {}
+        self._probe_changed_at: dict[str, datetime] = {}
+        # Per-probe discontinuity tracking for the warm-up sample: the zone
+        # AVERAGE dilutes a single probe's freeze-then-jump 4× (a +4.0 read as
+        # +1.0 on 2026-09-16), so each heater's reading is watched too.
+        self._warmup_probe_prev: dict[str, dict[str, float]] = {}
+        self._warmup_probe_jump: dict[str, float] = {}
+        # Outdoor readings accumulated over a warm-up sample, so the cold gate
+        # judges the sample's conditions, not the last tick's.
+        self._warmup_outdoor: dict[str, list[float]] = {}
         self._drive_reject_notified = False
         self._opening_notified: set[str] = set()
         # Fire fallback latch: on a panel fire the fans are hardware-cut, but this
@@ -1112,24 +1184,25 @@ class ScoutController:
     ) -> list[float]:
         """All readable room temperatures from a zone's own heaters.
 
-        ``stale_min``: drop a heater whose reading has not updated within this
-        many minutes. The Rointe cloud can FREEZE while the entity still reads
-        ``available`` (CLAUDE.md: "readings can freeze while looking alive"), so
-        any path that decides whether the room is warm enough — pre-heat sizing,
-        the cold-booking pierce, the summer setback — must reject a frozen value
-        rather than trust it (a stale-high reading otherwise under-leads a cold
-        start into a cold arrival). Omit it where a frozen value is harmless
-        (the fan ΔT reference, the diagnostic spread).
+        ``stale_min``: drop a heater whose reading has been FROZEN — its value
+        unchanged — for this many minutes. The Rointe cloud can freeze while the
+        entity still reads ``available``, so any path that decides whether the
+        room is warm enough — pre-heat sizing, the unified heat gate — must
+        reject a frozen value rather than trust it (a stale-high reading
+        otherwise under-leads a cold start into a cold arrival). Omit it where a
+        frozen value is harmless (the fan ΔT reference, the diagnostic spread).
+        Rointe/Nexa findings (2026-09-16): the integration rewrites entity state
+        every 15-s poll, so ``last_reported``/``last_updated`` are ALWAYS fresh
+        and the pre-1.37.0 timestamp test never rejected anything; freshness is
+        now judged from the value itself (``_probe_frozen``).
         """
         vals: list[float] = []
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            if stale_min is not None:
-                ts = getattr(st, "last_reported", None) or st.last_updated
-                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
-                    continue
+            if stale_min is not None and self._probe_frozen(climate, stale_min):
+                continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:
@@ -1162,10 +1235,55 @@ class ScoutController:
         return sum(vals) / len(vals) if vals else None
 
     def _rointe_stale_min(self) -> float:
-        """The window (minutes) after which an un-updated Rointe reading is
+        """The window (minutes) after which an UNCHANGED Rointe reading is
         treated as frozen on the warm-enough decision paths — reuses the fan
-        floor-staleness slider so there is one Rointe freshness knob, not two."""
+        floor-staleness slider so there is one Rointe freshness knob, not two.
+        Long on purpose (120 by default): an insulated room can legitimately sit
+        on one 0.5 °C quantum for an hour or two, and a false "frozen" only ever
+        errs WARM (an unreadable room heats), so the threshold favours trusting
+        the reading."""
         return self.number("fan_sensor_stale_minutes")
+
+    def _track_probe_changes(self) -> None:
+        """Note when each heater's room reading last CHANGED (freeze detector).
+
+        The only freshness signal this hardware gives is the value itself: the
+        Rointe integration re-publishes every 15 s whether or not the device
+        synced, so a probe that has frozen through the cloud looks alive. Every
+        reconcile compares each mapped heater's ``current_temperature`` with the
+        last one seen and stamps the change; ``_probe_frozen`` reads the age.
+        """
+        now = self._now()
+        climates = (
+            self._as_list(self.config.get(CONF_HALL_CLIMATES))
+            + self._as_list(self.config.get(CONF_OFFICE_CLIMATES))
+            + self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+        )
+        for climate in climates:
+            st = self.hass.states.get(climate)
+            if st is None or st.state in ("unavailable", "unknown"):
+                # Offline: forget the value so the clock restarts when it returns
+                # (an outage is not a freeze; it is surfaced separately).
+                self._probe_last_value.pop(climate, None)
+                self._probe_changed_at.pop(climate, None)
+                continue
+            try:
+                value = float(st.attributes.get("current_temperature"))
+            except (TypeError, ValueError):
+                continue
+            if self._probe_last_value.get(climate) != value:
+                self._probe_last_value[climate] = value
+                self._probe_changed_at[climate] = now
+
+    def _probe_flat_minutes(self, climate: str) -> float | None:
+        """Minutes since this heater's reading last changed, or None if untracked."""
+        at = self._probe_changed_at.get(climate)
+        return None if at is None else (self._now() - at).total_seconds() / 60
+
+    def _probe_frozen(self, climate: str, minutes: float) -> bool:
+        """Has this heater's reading sat unchanged for at least ``minutes``?"""
+        flat = self._probe_flat_minutes(climate)
+        return flat is not None and flat >= minutes
 
     @property
     def hall_temp_spread(self) -> float | None:
@@ -1381,6 +1499,10 @@ class ScoutController:
                 if comfort and temp is not None and temp < target - 0.5:
                     fans = 1 if self._fans_running() else 0
                     w = self._o1_watts() if zone == ZONE_A else None
+                    self._warmup_probe_prev[zone] = self._zone_probe_readings(zone)
+                    self._warmup_probe_jump[zone] = 0.0
+                    out0 = self._outdoor_temp()
+                    self._warmup_outdoor[zone] = [out0, 1.0] if out0 is not None else [0.0, 0.0]
                     self._warmup_start[zone] = (
                         now,
                         temp,
@@ -1412,6 +1534,12 @@ class ScoutController:
                     if prev_temp is not None:
                         max_tick_rise = max(max_tick_rise, temp - prev_temp)
                     prev_temp = temp
+                self._note_warmup_probe_jump(zone)
+                out_now = self._outdoor_temp()
+                if out_now is not None:
+                    acc = self._warmup_outdoor.setdefault(zone, [0.0, 0.0])
+                    acc[0] += out_now
+                    acc[1] += 1
                 self._warmup_start[zone] = (
                     started,
                     start_temp,
@@ -1429,6 +1557,7 @@ class ScoutController:
             # fan-assisted one when the fans ran for most of the warm-up.
             self._warmup_start[zone] = None
             if temp is None:
+                self._warmup_outdoor.pop(zone, None)
                 self.audit.record(
                     "warmup_discarded",
                     now,
@@ -1441,6 +1570,9 @@ class ScoutController:
             rise = temp - start_temp
             if prev_temp is not None:  # count the final tick's rise too
                 max_tick_rise = max(max_tick_rise, temp - prev_temp)
+            self._note_warmup_probe_jump(zone)
+            probe_jump = self._warmup_probe_jump.pop(zone, 0.0)
+            self._warmup_probe_prev.pop(zone, None)
             assisted = fan_ticks * 2 >= ticks
             rate_key = self._warmup_rate_key(zone, assisted=assisted)
             old_rate = self.number(rate_key)
@@ -1453,12 +1585,25 @@ class ScoutController:
             # (WARMUP_COLD_MAX_OUTDOOR — the same outdoor gave 44 vs 12 min/°C by
             # time of day, so only cold-morning conditions are trusted). Flagged
             # for the audit; no push (the sun helping is not something to act on).
-            outdoor = self._outdoor_temp()
+            # Judge the cold gate on the AVERAGE outdoor over the climb: a
+            # pre-dawn sample must not be thrown away because the sun was up by
+            # the time it closed (2026-09-17: 13.5 at start, 15.2 at the end).
+            # The closing tick counts too, like its rise.
+            acc = self._warmup_outdoor.pop(zone, None) or [0.0, 0.0]
+            out_now = self._outdoor_temp()
+            if out_now is not None:
+                acc[0] += out_now
+                acc[1] += 1
+            outdoor = (acc[0] / acc[1]) if acc[1] else None
             mild = outdoor is None or outdoor > WARMUP_COLD_MAX_OUTDOOR
+            # The tick guard is applied to the zone average AND to every single
+            # probe: a +4.0 freeze-then-jump on one of four hall probes reads as
+            # +1.0 on the average and used to pass (2026-09-16).
             quality = (
                 rise >= MIN_SAMPLE_RISE
                 and minutes >= MIN_SAMPLE_MINUTES
                 and max_tick_rise < MAX_WARMUP_TICK_RISE
+                and probe_jump < MAX_WARMUP_TICK_RISE
                 and not mild
             )
             new_rate = updated_rate(old_rate, minutes, rise, max_tick_rise) if quality else old_rate
@@ -1480,6 +1625,7 @@ class ScoutController:
                 fan_ticks=fan_ticks,
                 ticks=ticks,
                 max_tick_rise=max_tick_rise,
+                max_probe_tick_rise=probe_jump,
                 o1_avg_w=(watt_sum / watt_n) if watt_n else None,
                 outdoor=outdoor,
                 mild=mild,
@@ -1493,6 +1639,50 @@ class ScoutController:
             write = getattr(entity, "write_value", None)
             if write is not None and new_rate != old_rate:
                 write(new_rate)
+
+    def _zone_panels_hot(self, zone: str, room: float) -> bool:
+        """Is any radiator panel in the zone still releasing stored heat?
+
+        True while the hottest panel surface sits more than
+        ``COOL_SETTLE_SURFACE_C`` above the room reading — the decay measured
+        then is the panel cooling past the probe beside it, not the fabric. No
+        surface sensor → False (the time floor alone applies, as before).
+        """
+        hottest: float | None = None
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+            surface = self._num_state(self._heater_sensor(climate, "surface"))
+            if surface is not None and (hottest is None or surface > hottest):
+                hottest = surface
+        return hottest is not None and hottest - room > COOL_SETTLE_SURFACE_C
+
+    def _zone_probe_readings(self, zone: str) -> dict[str, float]:
+        """Each readable heater's own room reading, keyed by climate."""
+        out: dict[str, float] = {}
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+            st = self.hass.states.get(climate)
+            if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            try:
+                value = st.attributes.get("current_temperature")
+                if value is not None:
+                    out[climate] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _note_warmup_probe_jump(self, zone: str) -> None:
+        """Track the largest single-tick rise of any ONE probe in a warm-up."""
+        prev = self._warmup_probe_prev.get(zone)
+        if prev is None:
+            return
+        current = self._zone_probe_readings(zone)
+        biggest = self._warmup_probe_jump.get(zone, 0.0)
+        for climate, value in current.items():
+            before = prev.get(climate)
+            if before is not None:
+                biggest = max(biggest, value - before)
+        self._warmup_probe_jump[zone] = biggest
+        self._warmup_probe_prev[zone] = current
 
     def _update_cooloff_learning(self) -> None:
         """Measure how fast an unheated zone loses heat (retention learning).
@@ -1520,9 +1710,7 @@ class ScoutController:
             outdoor = self._outdoor_temp()
             sample = self._cooloff_start[zone]
 
-            def _anchor(
-                anchor_temp: float,
-            ) -> tuple[datetime, float, float, int, int, int, float, int, float, float]:
+            def _anchor(anchor_temp: float) -> tuple[Any, ...]:
                 w = self._o1_watts() if zone == ZONE_A else None
                 return (
                     now,
@@ -1535,6 +1723,8 @@ class ScoutController:
                     1 if w is not None else 0,
                     anchor_temp,  # prev_temp: last tick's reading
                     0.0,  # max_tick_drop: largest single-tick fall so far
+                    now,  # flat_since: when the reading last changed
+                    0.0,  # max_flat_min: longest unchanged run seen (freeze signature)
                 )
 
             if sample is None:
@@ -1545,7 +1735,10 @@ class ScoutController:
                     since = self._cooloff_cooling_since[zone]
                     if since is None:
                         self._cooloff_cooling_since[zone] = now
-                    elif (now - since).total_seconds() / 60 >= COOL_SETTLE_MINUTES:
+                    elif (
+                        (now - since).total_seconds() / 60 >= COOL_SETTLE_MINUTES
+                        and not self._zone_panels_hot(zone, temp)
+                    ):
                         self._cooloff_start[zone] = _anchor(temp)
                 else:
                     # Heating (or reading lost): a later cool-off re-settles.
@@ -1554,7 +1747,7 @@ class ScoutController:
 
             (
                 started, start_temp, out_sum, out_n, fan_ticks, ticks,
-                watt_sum, watt_n, prev_temp, max_tick_drop,
+                watt_sum, watt_n, prev_temp, max_tick_drop, flat_since, max_flat_min,
             ) = sample
             # Accumulate the outdoor reading every tick: the sample's average
             # gap is what normalises the observed loss into the constant. The
@@ -1584,6 +1777,16 @@ class ScoutController:
                 tick_drop = prev_temp - temp
                 if tick_drop > max_tick_drop:
                     max_tick_drop = tick_drop
+                # Freeze signature: a genuine decay steps down a quantum at a
+                # time, a frozen probe holds one value for hours then dumps the
+                # catch-up as a fast drop. The longest unchanged run is kept
+                # so _fold_cooloff can tell that from an opening.
+                if temp == prev_temp:
+                    max_flat_min = max(
+                        max_flat_min, (now - flat_since).total_seconds() / 60
+                    )
+                else:
+                    flat_since = now
                 prev_temp = temp
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
@@ -1604,6 +1807,7 @@ class ScoutController:
                         watt_sum,
                         watt_n,
                         max_tick_drop,
+                        max_flat_min,
                     )
                 continue
 
@@ -1612,7 +1816,7 @@ class ScoutController:
                 continue
             self._cooloff_start[zone] = (
                 started, start_temp, out_sum, out_n, fan_ticks, ticks,
-                watt_sum, watt_n, prev_temp, max_tick_drop,
+                watt_sum, watt_n, prev_temp, max_tick_drop, flat_since, max_flat_min,
             )
             drop = start_temp - temp
             hours = (now - started).total_seconds() / 3600
@@ -1623,7 +1827,7 @@ class ScoutController:
             if drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS:
                 self._fold_cooloff(
                     zone, hours, drop, start_temp, temp, out_sum, out_n,
-                    fan_ticks, ticks, watt_sum, watt_n, max_tick_drop,
+                    fan_ticks, ticks, watt_sum, watt_n, max_tick_drop, max_flat_min,
                 )
                 self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
@@ -1641,6 +1845,7 @@ class ScoutController:
         watt_sum: float,
         watt_n: int,
         max_tick_drop: float = 0.0,
+        max_flat_min: float = 0.0,
     ) -> None:
         key = f"{zone}_heatloss_pct"
         current = self.number(key)
@@ -1689,7 +1894,14 @@ class ScoutController:
         new = current if new_k == k else new_k * 100
         observed = cooling_observed_k(hours, drop, gap)
         outlier = quality_ok and observed is not None and cooling_sample_is_outlier(k, observed)
-        if quality_ok:
+        # An out-of-family sample whose reading sat FLAT for a long spell is the
+        # probe freeze-then-catch-up, not an opening (the office's recurring 3am
+        # false "window/door open?" push, 2026-09-14/15: a value held for hours,
+        # then the compressed catch-up read as 4× the fabric loss). It is still
+        # rejected (k untouched) but says nothing about an opening, so the latch
+        # is left as it was rather than raised.
+        frozen = outlier and max_flat_min >= COOL_FREEZE_FLAT_MINUTES
+        if quality_ok and not frozen:
             self._opening_inferred[zone] = outlier
         self.audit.record(
             "cooloff_sample",
@@ -1700,12 +1912,14 @@ class ScoutController:
             gap=gap,
             accepted=quality_ok and not outlier,
             outlier=outlier,
+            frozen=frozen,
             over_warm=over_warm,
             old_pct=current,
             new_pct=new,
             fan_ticks=fan_ticks,
             ticks=ticks,
             max_tick_drop=max_tick_drop,
+            max_flat_min=max_flat_min,
             o1_avg_w=(watt_sum / watt_n) if watt_n else None,
         )
         entity = self._numbers.get(key)
@@ -1921,7 +2135,18 @@ class ScoutController:
     # Boost API (called by the button platform)
     # ------------------------------------------------------------------
     async def async_boost(self, zone: str) -> None:
-        self.boost_until[zone] = self._now() + timedelta(minutes=self.boost_minutes())
+        minutes = self.boost_minutes()
+        self.boost_until[zone] = self._now() + timedelta(minutes=minutes)
+        # A boost used to be visible only through the preset events it caused;
+        # the press (and its expiry/cancel) are now first-class audit events.
+        self.audit.record(
+            "boost",
+            self._now(),
+            zone=zone,
+            minutes=minutes,
+            coldest=self._zone_room_temp(zone, coldest=True),
+            target=self._drive_comfort_target(zone),
+        )
         # Boost and the hall pause are opposite intents; the newer one wins. A
         # hall boost is an explicit "I want heat now", so it lifts the pause.
         if zone == ZONE_A:
@@ -1929,6 +2154,8 @@ class ScoutController:
         await self.async_reconcile()
 
     async def async_cancel_boost(self, zone: str) -> None:
+        if self.boost_until.get(zone) is not None:
+            self.audit.record("boost_cancelled", self._now(), zone=zone)
         self.boost_until[zone] = None
         await self.async_reconcile()
 
@@ -2124,7 +2351,11 @@ class ScoutController:
         if shared_climates:
             zones["shared"] = {
                 "heaters": {c: self._heater_detail(c) for c in shared_climates},
-                "average": self._shared_room_temp(),
+                # `average` used to carry the coldest probe (mislabelled — the
+                # 2026-09-16 audit); it is now the mean the drive's approach
+                # guard uses, with the coldest alongside like the other zones.
+                "average": self._shared_room_avg(),
+                "coldest": self._shared_room_temp(),
             }
 
         stale_min = self.number("fan_sensor_stale_minutes")
@@ -2158,6 +2389,14 @@ class ScoutController:
         openings["internal_door"] = {internal: self._is_on(internal)} if internal else {}
         openings["any_open"] = self._any_opening_open()
 
+        # The alarm panels decide the empty-building (ice) rung and the
+        # sleepover heat, yet their state was never exported — every "why did
+        # it ice at expiry?" question in the 2026-09-16 audit had to infer it.
+        alarms = {
+            "main": self._entity_state(self.config.get(CONF_ALARM_MAIN)),
+            "office": self._entity_state(self.config.get(CONF_ALARM_OFFICE)),
+        }
+
         return {
             "generated": _iso(self._now()),
             "config": dict(self.config),
@@ -2189,9 +2428,17 @@ class ScoutController:
                 "boost_until": {z: _iso(t) for z, t in self.boost_until.items()},
                 "hall_heating_paused": self.hall_heating_paused,
                 "fire_hold": self._fire_hold,
+                # Zones whose heaters are ALL unreachable right now, and since
+                # when (the Q18 outage watch; alerted after HEATERS_OFFLINE_MINUTES).
+                "heaters_offline": {
+                    z: _iso(t) for z, t in self._heaters_offline_since.items() if t
+                },
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
-                "cal_title": dict(self.cal_title),
+                # Booking titles carry hirer names; the export keeps only what
+                # the controller acted on (the eco-keyword match).
+                "cal_title": {z: self._redact_title(t) for z, t in self.cal_title.items()},
+                "alarms": alarms,
                 "drive": {
                     "enabled": self.switch_on("drive_to_target", default=True),
                     "pushed": dict(self._drive_pushed),
@@ -2253,10 +2500,47 @@ class ScoutController:
                 "fan_o1_w": self._o1_watts(),
                 "ceiling_rh": self._ceiling_humidity(),
                 "heat_demand": self.heat_demand,
+                # One representative accumulator per Rointe cloud zone (the
+                # per-heater values are identical within a zone — see
+                # _hall_energy_kwh); the hall's zone includes the office.
+                "energy_kwh": {
+                    "hall_office_zone": self._hall_energy_kwh(),
+                    "shared_zone": self._shared_energy_kwh(),
+                },
             },
-            "events": self.audit.to_list(),
+            "events": [self._redact_event(e) for e in self.audit.to_list()],
             "trace": self.trace.to_list(),
         }
+
+    def _entity_state(self, entity_id: str | None) -> str | None:
+        if not entity_id:
+            return None
+        st = self.hass.states.get(entity_id)
+        return None if st is None else st.state
+
+    def _redact_title(self, title: str | None) -> str | None:
+        """Reduce a booking title to what the controller used it for.
+
+        Calendar titles are hirer names (a group, sometimes a person), and the
+        diagnostics export is pasted into support sessions — so the export
+        never carries the raw title (Rointe/Nexa review rec 9, 2026-09-16).
+        The only thing the controller reads from a title is the eco-keyword
+        match, and that is what is kept: ``eco:<keywords>`` for a match,
+        ``redacted`` otherwise; an empty/None title is passed through.
+        """
+        if not title:
+            return title
+        lowered = str(title).lower()
+        hits = [kw for kw in self.eco_keywords() if kw and kw in lowered]
+        return f"eco:{','.join(hits)}" if hits else "redacted"
+
+    def _redact_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """A copy of an audit event with any booking title redacted."""
+        if "title" not in event:
+            return event
+        redacted = dict(event)
+        redacted["title"] = self._redact_title(event.get("title"))
+        return redacted
 
     async def async_reset_tunables(self) -> None:
         """Restore every tunable helper to its built-in default.
@@ -2813,22 +3097,30 @@ class ScoutController:
         on the warm-enough decision path (`_shared_wants_heat`), omitted for the
         frost/diagnostic reads where a stale value is harmless.
         """
+        vals = self._shared_climate_temps(stale_min)
+        return min(vals) if vals else None
+
+    def _shared_climate_temps(self, stale_min: float | None = None) -> list[float]:
+        """All readable room temperatures from the shared-zone heaters."""
         vals: list[float] = []
         for climate in self._as_list(self.config.get(CONF_SHARED_CLIMATES)):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            if stale_min is not None:
-                ts = getattr(st, "last_reported", None) or st.last_updated
-                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
-                    continue
+            if stale_min is not None and self._probe_frozen(climate, stale_min):
+                continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:
                     vals.append(float(temp))
             except (TypeError, ValueError):
                 continue
-        return min(vals) if vals else None
+        return vals
+
+    def _shared_room_avg(self) -> float | None:
+        """Mean of the shared-zone heaters' readings (the drive's zone average)."""
+        vals = self._shared_climate_temps()
+        return sum(vals) / len(vals) if vals else None
 
     def _shared_wants_heat(self) -> bool:
         """True when the shared zone is genuinely below its comfort target — the
@@ -2952,7 +3244,9 @@ class ScoutController:
         self._reconciling = True
         try:
             self._refresh_motion_from_states()
+            self._track_probe_changes()
             await self._evaluate_openings()
+            await self._update_heaters_offline()
             self._record_booking_edges()
             self._update_passive_rise()
             await self._reconcile_zones()
@@ -2981,15 +3275,14 @@ class ScoutController:
     def _hall_heaters_firing(self) -> int:
         """How many hall heaters report ``hvac_action == heating`` right now.
 
-        Recorded in the trace so a later export can attribute a climb: a warm-up
-        that reached target with ``hall_fire`` 0 was free gain (fans + occupancy
-        + solar), not the radiators, while a non-zero count over the climb is the
-        heaters doing the work. Floor temperature alone cannot tell them apart —
-        which is why the 2026-08-27 climb could not be credited to the drive
-        rather than the fans. ``hvac_action`` is two-valued (heating/idle) and is
-        the always-available fallback; the throttled *maintaining* half-power
-        state is captured separately as ``hall_maint`` from the Rointe
-        ``heating_status`` sensor, so full-power ~= ``hall_fire`` − ``hall_maint``.
+        Recorded in the trace as a cheap attribution hint — but READ IT FOR WHAT
+        IT IS (Rointe/Nexa findings, 2026-09-16): the Rointe integration derives
+        ``hvac_action`` as "probe below the (possibly stale) live setpoint", not
+        from the element, so this counts heaters whose setpoint sits above their
+        probe (0 through a confirmed firing on 09-08 when probes had caught up;
+        4/4 on 09-16 twelve minutes into a 6 °C deficit). The honest per-heater
+        firing signal is the panel ``surface`` (``hall_surface`` in the trace);
+        the honest duty signal is the ``hall_kwh`` delta read over a window.
         """
         n = 0
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
@@ -3001,13 +3294,14 @@ class ScoutController:
     def _hall_heaters_maintaining(self) -> int:
         """How many hall heaters report Rointe ``heating_status == maintaining``.
 
-        The saturation discriminator ``hvac_action`` cannot give (Q17): a heater
-        at *maintaining* has reached its OWN local target and throttled to half
-        power. If the hall floor is still short while heaters sit at maintaining,
-        heat is reaching the probes but not the far field (stratification / a
-        satisfied local probe), NOT a capacity wall — where heaters would pin at
-        full ``heating`` and never back off. 0 when no status sensor is
-        discovered (the field is simply absent from those installs' analysis).
+        Intended as the Q17 saturation discriminator, but on this hardware it is
+        NOT one (2026-09-16 audit): ``maintaining`` = probe < setpoint AND the
+        device's ``status_warming`` == 1, and that status carries no deficit
+        information — all four hall heaters read *maintaining* 6 °C short at the
+        start of a cold burn, and two heaters with identical 2 °C deficits read
+        *heating* and *maintaining*. Kept in the trace as cheap corroboration
+        only; the modelled ``effective`` power (nominal × 1 / 0.5 / 0 by this
+        status) inherits the same limitation. 0 when no status sensor maps.
         """
         n = 0
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
@@ -3030,22 +3324,33 @@ class ScoutController:
         return round(max(offsets), 2) if offsets else 0.0
 
     def _hall_energy_kwh(self) -> float | None:
-        """Sum of the hall heaters' Rointe energy accumulators (kWh), or None.
+        """One representative hall energy accumulator (kWh), or None.
 
         Recorded so a climb's consumption is a delta within the trace itself (the
         Q10 duty/saving signal), without needing to cross-reference HA long-term
-        statistics. The accumulators are TOTAL_INCREASING, so only differences
-        between trace points are meaningful. None when no energy sensor resolved
-        or none carried a number this tick.
+        statistics. Rointe/Nexa findings (2026-09-16): the ``energy`` sensor is an
+        installation-level ESTIMATE split by Rointe cloud zone and then equally
+        per heater regardless of rating — every heater in a zone reports the same
+        number, and the hall shares its zone ("Hall and Office") with the office.
+        So the accumulators are never summed (pre-1.37.0 ``hall_kwh`` was one
+        value × 4); one heater's value is recorded, i.e. the zone estimate ÷ the
+        heaters in that Rointe zone. TOTAL_INCREASING in intent but it can DROP
+        (a cloud re-estimate reads as a meter reset), so only positive
+        differences between trace points are meaningful, and it posts 30–120 min
+        after the consuming clock hour. None when nothing resolved/readable.
         """
-        total = 0.0
-        seen = False
-        for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])):
+        return self._zone_energy_kwh(self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A])))
+
+    def _shared_energy_kwh(self) -> float | None:
+        """One representative shared-zone energy accumulator (kWh), or None."""
+        return self._zone_energy_kwh(self._as_list(self.config.get(CONF_SHARED_CLIMATES)))
+
+    def _zone_energy_kwh(self, climates: list[str]) -> float | None:
+        for climate in climates:
             value = self._num_state(self._heater_sensor(climate, "energy"))
             if value is not None:
-                total += value
-                seen = True
-        return round(total, 3) if seen else None
+                return round(value, 3)
+        return None
 
     def _hall_surface_temp(self) -> float | None:
         """Average of the hall heaters' Rointe surface-temperature probes, or None.
@@ -3104,6 +3409,7 @@ class ScoutController:
             # (Q10). Both absent on installs whose status/energy sensors don't map.
             hall_maint=self._hall_heaters_maintaining(),
             hall_kwh=self._hall_energy_kwh(),
+            shared_kwh=self._shared_energy_kwh(),
             # Independent probe: the Rointe surface temperature, to compare against
             # the freeze-then-jump `current_temperature` the `floor` is built from.
             hall_surface=self._hall_surface_temp(),
@@ -3372,6 +3678,9 @@ class ScoutController:
         eco_temp = self._hall_eco_target(eco_low)
         if self._hall_temps_pushed != (comfort_temp, eco_temp):
             await self._async_push_hall_temps(eco_low=eco_low)
+            # A changed number alone never moves the live setpoint on this
+            # hardware — land the new eco / (undriven) comfort value too.
+            await self._async_land_zone(ZONE_A, self.applied[ZONE_A])
 
     async def _reconcile_shared(self) -> None:
         desired = self._desired_shared()
@@ -3435,6 +3744,13 @@ class ScoutController:
             until = self.boost_until.get(zone)
             if until is not None and now >= until:
                 self.boost_until[zone] = None
+                self.audit.record(
+                    "boost_expired",
+                    now,
+                    zone=zone,
+                    coldest=self._zone_room_temp(zone, coldest=True),
+                    average=self._zone_room_temp(zone),
+                )
                 self._reconcile_pending = True
 
     def _detect_drift(self) -> None:
@@ -3578,6 +3894,9 @@ class ScoutController:
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
             await self._async_push_hall_temps(eco_low=self._eco_keyword_active(zone))
         await self._async_apply_climate(climates, preset)
+        # The preset copies a possibly-stale cached number into the live
+        # setpoint; land the intended value explicitly (see _async_land_zone).
+        await self._async_land_zone(zone, preset)
         self.applied[zone] = preset
         self.expected_preset[zone] = preset
         self._last_apply[zone] = self._now()
@@ -3650,30 +3969,114 @@ class ScoutController:
         # still runs so the comfort setpoint is always placed even if the drive
         # cannot resolve a per-heater number.
         if comfort_numbers:
-            await self.hass.services.async_call(
+            await self._async_heater_call(
                 "number",
                 "set_value",
                 {"entity_id": comfort_numbers, "value": comfort_temp},
-                blocking=False,
+                climate=",".join(comfort_numbers),
             )
         if eco_numbers:
-            await self.hass.services.async_call(
+            await self._async_heater_call(
                 "number",
                 "set_value",
                 {"entity_id": eco_numbers, "value": eco_temp},
-                blocking=False,
+                climate=",".join(eco_numbers),
             )
 
     async def _async_apply_climate(self, entities: Any, preset: str) -> None:
         climates = self._as_list(entities)
         if not climates:
             return
-        await self.hass.services.async_call(
+        await self._async_heater_call(
             "climate",
             "set_preset_mode",
             {"entity_id": climates, "preset_mode": preset},
-            blocking=False,
+            climate=",".join(climates),
         )
+
+    async def _async_land_zone(self, zone: str, preset: str) -> None:
+        """Set the hall heaters' LIVE setpoint to the value the preset is meant
+        to carry (Rointe/Nexa findings, 2026-09-16).
+
+        On this integration ``set_preset_mode`` copies the integration's CACHED
+        comfort/eco number into the live setpoint, and a number write does not
+        refresh that cache for ~10 s — so "write the eco number, then apply eco"
+        routinely applied the PREVIOUS eco value (an eco-keyword booking landing
+        at 16 instead of 14). ``climate.set_temperature`` writes our value
+        directly, so after every hall comfort/eco apply the intended value is
+        landed explicitly. Comfort is landed here only when the drive loop is
+        off — with it on, ``_reconcile_drive`` lands each heater's own
+        (target + trim) value in the same reconcile. Ice needs nothing: the
+        cached anti-frost value is a constant 7. The office eco and the shared
+        eco live on the devices and are never pushed, so there is nothing to
+        land for them.
+        """
+        if zone != ZONE_A:
+            return
+        if preset == PRESET_ECO:
+            value = self._hall_eco_target(self._eco_keyword_active(zone))
+        elif preset == PRESET_COMFORT and not self.switch_on(
+            "drive_to_target", default=True
+        ):
+            value = self.number("hall_comfort_temp")
+        else:
+            return
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+            await self._async_set_live_setpoint(climate, value)
+
+    async def _async_set_live_setpoint(self, climate: str, value: float) -> bool:
+        """Write a heater's live target temperature (``climate.set_temperature``)."""
+        return await self._async_heater_call(
+            "climate",
+            "set_temperature",
+            {"entity_id": climate, "temperature": value},
+            climate=climate,
+        )
+
+    async def _async_heater_call(
+        self, domain: str, service: str, data: dict[str, Any], *, climate: str
+    ) -> bool:
+        """One heater write, blocking, with failure surfaced.
+
+        Rointe/Nexa findings (2026-09-16): the integration does not check the
+        cloud's write acknowledgements, so a service call *returning* is not
+        proof the write landed — but a call *raising* is proof it did not, and
+        the old fire-and-forget (``blocking=False``) calls threw that evidence
+        away while ``applied``/``expected`` were being recorded as if the write
+        had happened. Now every heater write blocks, and a failure is recorded
+        in the audit trail (``write_failed`` on the first failure of a given
+        write, ``write_recovered`` once it succeeds again) instead of being
+        silently lost. Returns True when the call completed.
+        """
+        key = f"{climate}|{domain}.{service}"
+        value = data.get("value", data.get("temperature", data.get("preset_mode")))
+        try:
+            await self.hass.services.async_call(domain, service, data, blocking=True)
+        except Exception as err:  # noqa: BLE001 — any raise on a hardware write is a failed write
+            _LOGGER.warning(
+                "Heater write %s.%s to %s (%s) failed: %s", domain, service, climate, value, err
+            )
+            if key not in self._write_failing:
+                self._write_failing.add(key)
+                self.audit.record(
+                    "write_failed",
+                    self._now(),
+                    heater=climate,
+                    service=f"{domain}.{service}",
+                    value=value,
+                    error=f"{type(err).__name__}: {err}",
+                )
+            return False
+        if key in self._write_failing:
+            self._write_failing.discard(key)
+            self.audit.record(
+                "write_recovered",
+                self._now(),
+                heater=climate,
+                service=f"{domain}.{service}",
+                value=value,
+            )
+        return True
 
     # ------------------------------------------------------------------
     # Drive to target (outer per-heater setpoint trim loop)
@@ -3766,16 +4169,19 @@ class ScoutController:
         return found or None
 
     def _heater_probe(self, climate: str) -> float | None:
-        """This heater's own current temperature, or None if unavailable/stale.
+        """This heater's own current temperature, or None if unavailable.
 
-        Freshness matters: a frozen Rointe reading looks alive but must not keep
-        driving, so a report older than DRIVE_PROBE_STALE_MINUTES counts as lost.
+        No freshness test here any more. The pre-1.37.0 ``last_reported`` age
+        check (DRIVE_PROBE_STALE_MINUTES) never fired — the Rointe integration
+        re-publishes every poll — and a value-flatness withdrawal would be the
+        wrong tool anyway: on this hardware a probe that reads flat for 30 min is
+        usually merely LATE (2026-09-16: hall_front flat 15.5 for 31 min mid-climb),
+        and withdrawing it forfeits the cold end's overdrive. The drive's own
+        freeze-guard (``probe_moved``) is what handles a stuck reading: it holds
+        the staircase, which is exactly right for late and frozen alike.
         """
         st = self.hass.states.get(climate)
         if st is None or st.state in ("unavailable", "unknown"):
-            return None
-        ts = getattr(st, "last_reported", None) or st.last_updated
-        if (dt_util.utcnow() - ts).total_seconds() > DRIVE_PROBE_STALE_MINUTES * 60:
             return None
         temp = st.attributes.get("current_temperature")
         try:
@@ -3788,50 +4194,107 @@ class ScoutController:
         climate: str,
         number: str,
         value: float,
-        reassert: bool = False,
+        land: bool = False,
         force: bool = False,
     ) -> None:
         """Write a heater's comfort setpoint, only when it actually changes.
 
-        ``reassert``: after writing the number, re-apply the comfort preset to
-        the heater. A Rointe only adopts a changed comfort setpoint when the
-        comfort preset is (re-)selected — writing the number alone leaves the
-        live target unchanged (the existing slider-change path does both, see
-        ``async_hall_temps_changed``). The drive must do the same or its boost
-        never reaches the radiator. Only used on the driving (comfort) path; the
-        withdrawal path just stores the plain target for the next real apply.
+        ``land``: after writing the comfort number, set the heater's LIVE
+        setpoint to the same value with ``climate.set_temperature``. The comfort
+        number alone never moves the live target on a Rointe; the old sequence
+        re-applied the comfort *preset* to make it adopt — but on the Nexa
+        integration a preset copies the integration's CACHED comfort number, and
+        a number write does not refresh that cache for ~10 s, so the re-assert
+        routinely landed the PREVIOUS value one step behind (field 2026-09-16:
+        four heaters live 22.0 vs pushed 22.5 for 30+ min, and every "cloud lag"
+        the read-back was sized against). ``set_temperature`` writes our value
+        directly. Landed on the driving path and on an in-comfort withdrawal; a
+        not-comfort withdrawal only stores the number (the ice/eco preset owns
+        the live setpoint then).
 
-        ``force``: push (and re-assert, and restamp the settle clock) even when
-        the number is unchanged. Used when a heater (re-)enters the driven state:
+        ``force``: push (and land, and restamp the settle clock) even when the
+        number is unchanged. Used when a heater (re-)enters the driven state:
         its live setpoint may have been on ice while the withdrawal left the
-        comfort *number* already at this value, so the reassert is what actually
+        comfort *number* already at this value, so the landing is what actually
         moves the radiator, and the fresh stamp restarts the read-back window.
+
+        A failed write leaves no record of the value as pushed, so the next
+        reconcile retries it (the failure itself is audited by
+        ``_async_heater_call``). Consecutive heater writes are spaced by
+        ``HEATER_WRITE_SPACING_S`` because each one triggers a full 8-heater
+        refresh inside the Rointe integration.
         """
         if self._drive_pushed.get(climate) == value and not force:
             return
         self._drive_pushed[climate] = value
         # Stamp the push so the read-back self-check waits a full settle window
         # before judging whether the device adopted this new value (Q20), and
-        # capture the heater's energy baseline so a later rise proves it fired.
+        # capture the panel surface baseline so a later rise proves it fired.
         self._drive_pushed_at[climate] = self._now()
-        energy = self._num_state(self._heater_sensor(climate, "energy"))
-        if energy is not None:
-            self._drive_pushed_energy[climate] = energy
+        surface = self._num_state(self._heater_sensor(climate, "surface"))
+        if surface is not None:
+            self._drive_pushed_surface[climate] = surface
         else:
-            self._drive_pushed_energy.pop(climate, None)
-        await self.hass.services.async_call(
-            "number",
-            "set_value",
-            {"entity_id": number, "value": value},
-            blocking=True,
+            self._drive_pushed_surface.pop(climate, None)
+        ok = await self._async_heater_call(
+            "number", "set_value", {"entity_id": number, "value": value}, climate=climate
         )
-        if reassert:
-            await self.hass.services.async_call(
-                "climate",
-                "set_preset_mode",
-                {"entity_id": climate, "preset_mode": PRESET_COMFORT},
-                blocking=False,
+        if land:
+            ok = await self._async_set_live_setpoint(climate, value) and ok
+        if not ok:
+            # Retry on the next reconcile rather than believing a write that raised.
+            self._drive_pushed.pop(climate, None)
+        if HEATER_WRITE_SPACING_S > 0:
+            await asyncio.sleep(HEATER_WRITE_SPACING_S)
+
+    async def _drive_withdraw(
+        self,
+        zone: str,
+        climate: str,
+        number: str,
+        target: float,
+        reason: str,
+        probe: float | None,
+        median: float | None,
+    ) -> None:
+        """Fail-safe withdrawal of one heater from the drive.
+
+        ``reason``: ``not_comfort`` (the zone left comfort — the episode is over,
+        the preset owns the live setpoint, only the comfort number is restored);
+        ``unreadable`` (probe lost/None — restore and land the plain target);
+        ``insane`` (probe more than ``DRIVE_PROBE_SANE_BELOW`` under the zone
+        median — the plain target is landed, but the staircase and its clock are
+        HELD rather than zeroed). The hold is the 2026-09-16 lesson: the rule
+        fired on the hall's genuinely coldest heater when its two siblings
+        freeze-jumped +4 °C in one cloud batch, and zeroing forfeited 1.0 °C of
+        committed overdrive on the cold end — in the cold-arrival direction. A
+        merely LATE probe (the common case on this hardware) keeps its
+        overdrive for when it catches up; a probe that stays insane keeps being
+        driven at the plain target, never harder. Audited on the driven →
+        withdrawn edge as ``drive_withdrawn`` — this used to be the one drive
+        decision that left no mark on the instrument.
+        """
+        if climate in self._drive_driven:
+            self.audit.record(
+                "drive_withdrawn",
+                self._now(),
+                zone=zone,
+                heater=climate,
+                reason=reason,
+                stair=self._drive_stair.get(climate, 0.0),
+                probe=probe,
+                median=median,
             )
+        self._drive_driven.discard(climate)
+        self._drive_cap_since[climate] = None
+        self._drive_rejected.discard(climate)
+        self._drive_frozen.discard(climate)
+        self._drive_approach.discard(climate)
+        if reason != "insane":
+            self._drive_stair[climate] = 0.0
+            self._drive_step_probe.pop(climate, None)
+            self._drive_target.pop(climate, None)
+        await self._drive_push(climate, number, target, land=(reason != "not_comfort"))
 
     async def _reconcile_drive(self) -> None:
         """Drive each comfort heater's setpoint until its own probe reaches target.
@@ -3879,7 +4342,14 @@ class ScoutController:
             # the laggy coldest probe) has reached within a step of target, stop
             # escalating the overdrive on any heater. Uses the probes already read
             # here, so it works uniformly for all three zones (hall/office/shared).
-            zone_avg = sum(readable) / len(readable) if readable else None
+            # A probe the sanity rule rejects is left out of the average too — a
+            # frozen-low reading would otherwise hold the average under the line
+            # while its siblings are already at target (field 2026-09-16).
+            sane_vals = [
+                v for v in readable
+                if median is None or v >= median - DRIVE_PROBE_SANE_BELOW
+            ]
+            zone_avg = sum(sane_vals) / len(sane_vals) if sane_vals else None
             near_target = zone_avg is not None and zone_avg >= target - DRIVE_APPROACH_BAND
             for climate in climates:
                 number = self._heater_comfort_number(climate)
@@ -3892,16 +4362,38 @@ class ScoutController:
                 if not comfort or not sane:
                     # Fail-safe withdrawal: not being heated, or the probe is
                     # lost/glitched — restore the plain target, never leave it
-                    # boosted on a reading we cannot trust.
-                    self._drive_stair[climate] = 0.0
-                    self._drive_cap_since[climate] = None
-                    self._drive_rejected.discard(climate)
-                    self._drive_driven.discard(climate)
-                    self._drive_step_probe.pop(climate, None)
-                    self._drive_frozen.discard(climate)
-                    self._drive_approach.discard(climate)
-                    await self._drive_push(climate, number, target)
+                    # boosted on a reading we cannot trust (see _drive_withdraw).
+                    reason = (
+                        "not_comfort" if not comfort
+                        else "unreadable" if probe is None
+                        else "insane"
+                    )
+                    await self._drive_withdraw(
+                        zone, climate, number, target, reason, probe, median
+                    )
                     continue
+                # A target DROP (a boost expiring, a booking hold collapsing)
+                # restarts the staircase: carrying the old trim across would
+                # re-push (new target + old overdrive) — 20.5 after a 21 → 19
+                # drop — and only ease it down a step per interval. From zero
+                # the initial climb still steps at once if the room is short.
+                prev_target = self._drive_target.get(climate)
+                if (
+                    prev_target is not None
+                    and target < prev_target - 1e-9
+                    and self._drive_stair.get(climate, 0.0) > 0
+                ):
+                    self.audit.record(
+                        "drive_target_drop",
+                        now,
+                        zone=zone,
+                        heater=climate,
+                        previous=prev_target,
+                        target=target,
+                        stair=self._drive_stair[climate],
+                    )
+                    self._drive_stair[climate] = 0.0
+                self._drive_target[climate] = target
                 since = self._drive_minutes_since_step(climate, now)
                 # Response-keyed anti-windup: has the probe moved since the step we
                 # last evaluated against? (True when we have no baseline yet.)
@@ -3947,7 +4439,7 @@ class ScoutController:
                 entering = climate not in self._drive_driven
                 self._drive_driven.add(climate)
                 await self._drive_push(
-                    climate, number, pushed, reassert=True, force=entering
+                    climate, number, pushed, land=True, force=entering
                 )
                 self._check_setpoint_readback(climate, pushed, probe, now)
                 # Cap-pinned watch: at the cap AND still a full step short.
@@ -4056,36 +4548,33 @@ class ScoutController:
         setpoint is unreadable, the check abstains (drops the heater from the
         rejected set) so ordinary lag never false-flags.
 
-        A divergence once settled is only genuine when the heater is BOTH short of
-        target AND idle. The phantom-push failure (v1.14.2) is "the command never
-        reached the radiator", whose signature is a heater sitting idle at a
-        stale-low setpoint *while the room is still cold*. Two independent proofs
-        that the command DID land, either of which clears the flag:
+        A divergence once settled is only genuine when the heater is short of
+        target AND its element has not fired. The phantom-push failure (v1.14.2)
+        is "the command never reached the radiator", whose signature is a heater
+        sitting cold at a stale-low setpoint *while the room is still cold*. Two
+        independent proofs that the command DID land, either of which clears:
 
           * the heater's own probe has reached the pushed target (``probe >=
-            pushed - tol``): it is idle because it is SATISFIED, not because it
+            pushed - tol``): it stopped because it is SATISFIED, not because it
             rejected us — reaching the target could only happen if the setpoint was
             adopted (2026-08-09 export: three hall heaters flagged while idle at
-            the 20.0 target the room had reached, their live setpoint merely
-            lagging through the cloud — the action gate can't catch a *satisfied*
-            heater because a satisfied heater is idle, not heating);
-          * the heater's ``energy`` accumulator has RISEN since the push
-            (``> DRIVE_ENERGY_ADOPTED_KWH``): it has drawn power, so it is firing
-            and has adopted the command — the truthful proof that does NOT depend
-            on ``hvac_action``, which reads ``idle`` through a real firing on these
-            Rointes (field 2026-09-08 Cubs: 0 status, panel 30 °C, +1.1 kWh; the
-            09-03/09-06 hall_back flags coincided with the hall burning +0.9/+1.8
-            kWh). Lumpy/cloud-delayed, so it clears a late-reporting burn on a
-            later tick rather than instantly — a brief blip, not a standing flag.
-          * the heater reports ``hvac_action == heating``: kept as a fallback for
-            installs with no energy sensor, but under-reports here — it is
-            demonstrably working toward target, its live setpoint just lagging our
-            push by a quantum while the drive staircases upward.
+            the 20.0 target the room had reached);
+          * the heater's PANEL SURFACE has warmed since the push
+            (``>= DRIVE_SURFACE_ADOPTED_C``) or is hot outright
+            (``>= DRIVE_SURFACE_HOT_C``): an element has fired, so the command was
+            adopted. This is the one per-heater firing signal this hardware gives
+            (Rointe/Nexa findings, 2026-09-16, and the 09-16 audit): ``hvac_action``
+            is derived as probe < (possibly stale) setpoint — circular here, since
+            the stale-low setpoint IS the fault — and ``energy`` is a per-Rointe-zone
+            estimate posted 30–120 min after the consuming hour, never inside the
+            settle window and unable to single out one heater. The surface is
+            live (a panel moves 20 °C in minutes) though cloud-lagged at burn start
+            (≥28 min seen), which the 30-min settle window already covers.
 
-        Only a heater that is short of the pushed target AND has drawn no power AND
-        has gone idle AND is not reporting our setpoint is genuinely not accepting
-        it. The energy proof is fail-safe: a truly stuck heater draws nothing, so
-        its energy stays flat and it is still flagged.
+        ``hvac_action == heating`` survives only as the fallback for an install
+        with no surface sensor, and is never consulted when one exists. Since
+        v1.37.0 the push is landed with ``set_temperature`` (no more stale-cache
+        off-by-one), so a settled mismatch is a real signal again.
         """
         at = self._drive_pushed_at.get(climate)
         if (
@@ -4099,22 +4588,29 @@ class ScoutController:
         if reported is None or abs(reported - pushed) <= DRIVE_SETPOINT_TOL:
             self._drive_rejected.discard(climate)
             return
-        # Reached the pushed target -> idle because satisfied, and the room could
-        # not have got there unless the setpoint landed. Not the fault this is for.
+        # Reached the pushed target -> stopped because satisfied, and the room
+        # could not have got there unless the setpoint landed. Not the fault.
         if probe is not None and probe >= pushed - DRIVE_SETPOINT_TOL:
             self._drive_rejected.discard(climate)
             return
-        # Short of the pushed setpoint. Truthful proof first: if the heater's own
-        # energy has risen since the push it has fired, so it adopted the command
-        # whatever hvac_action says (the Rointe status under-reports firing here).
-        base = self._drive_pushed_energy.get(climate)
-        energy = self._num_state(self._heater_sensor(climate, "energy"))
-        if base is not None and energy is not None and energy - base > DRIVE_ENERGY_ADOPTED_KWH:
-            self._drive_rejected.discard(climate)
+        # Short of the pushed setpoint. The element is the witness: a panel that
+        # has warmed since the push (or is hot) has fired and so adopted the
+        # command; a panel that stayed cold has not.
+        surface_id = self._heater_sensor(climate, "surface")
+        if surface_id:
+            surface = self._num_state(surface_id)
+            base = self._drive_pushed_surface.get(climate)
+            fired = surface is not None and (
+                surface >= DRIVE_SURFACE_HOT_C
+                or (base is not None and surface - base >= DRIVE_SURFACE_ADOPTED_C)
+            )
+            if fired:
+                self._drive_rejected.discard(climate)
+            else:
+                self._drive_rejected.add(climate)
             return
-        # Fallback for installs without an energy sensor: a heater actively heating
-        # has clearly accepted the command; only one gone IDLE while still short
-        # (and having drawn no power) is genuinely not accepting it.
+        # No surface sensor on this install: fall back to hvac_action, a weak
+        # probe-vs-setpoint signal on Rointes, but the only one left.
         st = self.hass.states.get(climate)
         action = st.attributes.get("hvac_action") if st else None
         if action == "heating":
@@ -4221,16 +4717,23 @@ class ScoutController:
             # Restore the owner's PLAIN comfort setpoint, never a transient Boost
             # or booking-hold bump — the last will exists to undo overdrive.
             target = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
+            # The number alone never moves the live setpoint on this hardware;
+            # a zone that is in comfort right now gets the plain target landed
+            # too, or the radiator would keep the last overdrive after unload.
+            land = self.applied.get(zone) == PRESET_COMFORT
             for climate in self._as_list(self.config.get(cfg_key)):
                 number = self._heater_comfort_number(climate)
                 if number is None:
                     continue
-                await self.hass.services.async_call(
+                await self._async_heater_call(
                     "number",
                     "set_value",
                     {"entity_id": number, "value": target},
-                    blocking=True,
+                    climate=climate,
                 )
+                if land:
+                    await self._async_set_live_setpoint(climate, target)
+        self._drive_target.clear()
         self._drive_stair.clear()
         self._drive_step_at.clear()
         self._drive_step_probe.clear()
@@ -4238,7 +4741,7 @@ class ScoutController:
         self._drive_approach.clear()
         self._drive_pushed.clear()
         self._drive_pushed_at.clear()
-        self._drive_pushed_energy.clear()
+        self._drive_pushed_surface.clear()
         self._drive_driven.clear()
         self._drive_cap_since.clear()
         self._drive_rejected.clear()
@@ -4399,10 +4902,10 @@ class ScoutController:
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            if stale_min is not None:
-                ts = getattr(st, "last_reported", None) or st.last_updated
-                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
-                    continue
+            # Freshness by VALUE (see _probe_frozen): the Rointe entity's
+            # timestamps advance every poll whether or not the device synced.
+            if stale_min is not None and self._probe_frozen(climate, stale_min):
+                continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:
@@ -4618,6 +5121,97 @@ class ScoutController:
     def _all_zone_online(self, zone: str) -> bool:
         climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
         return bool(climates) and all(self._climate_online(c) for c in climates)
+
+    _OFFLINE_ZONE_CLIMATES = {
+        ZONE_A: CONF_HALL_CLIMATES,
+        ZONE_B: CONF_OFFICE_CLIMATES,
+        "shared": CONF_SHARED_CLIMATES,
+    }
+
+    async def _update_heaters_offline(self) -> None:
+        """Surface a SUSTAINED loss of every heater in a zone (Q18).
+
+        The coordinator tolerates an offline heater silently on purpose (a
+        cloud blip is routine and self-heals), but a zone whose heaters have ALL
+        been unreachable for ``HEATERS_OFFLINE_MINUTES`` is a different thing: in
+        winter it is a cold snap or a booking arriving with no heat and no
+        warning, and the 29 Jul 27-h outage — the Rointe integration's 7-day
+        Nexa token expiring unrenewed — left no mark on the audit trail. Raises a
+        persistent notification + companion push and an audit event
+        (``heaters_offline`` with zone, minutes and whether every zone is down —
+        the token signature), dismissed and audited (``heaters_online``) on
+        recovery. A zone never yet seen online is not judged inside the startup
+        grace, so a slow boot does not cry wolf.
+        """
+        now = self._now()
+        all_down = True
+        watched = 0
+        for zone, key in self._OFFLINE_ZONE_CLIMATES.items():
+            climates = self._as_list(self.config.get(key))
+            if not climates:
+                continue
+            watched += 1
+            if any(self._climate_online(c) for c in climates):
+                all_down = False
+                self._heaters_seen_online.add(zone)
+                since = self._heaters_offline_since.get(zone)
+                if since is not None:
+                    self._heaters_offline_since[zone] = None
+                    if zone in self._heaters_offline_notified:
+                        self._heaters_offline_notified.discard(zone)
+                        self.audit.record(
+                            "heaters_online",
+                            now,
+                            zone=zone,
+                            minutes=round((now - since).total_seconds() / 60, 1),
+                        )
+                        persistent_notification.async_dismiss(
+                            self.hass, NOTIFY_HEATERS_OFFLINE[zone]
+                        )
+                continue
+            if zone not in self._heaters_seen_online and self._within_startup_grace(now):
+                continue
+            if self._heaters_offline_since.get(zone) is None:
+                self._heaters_offline_since[zone] = now
+        if not watched:
+            return
+        for zone, since in list(self._heaters_offline_since.items()):
+            if since is None or zone in self._heaters_offline_notified:
+                continue
+            minutes = (now - since).total_seconds() / 60
+            if minutes < HEATERS_OFFLINE_MINUTES:
+                continue
+            self._heaters_offline_notified.add(zone)
+            self.audit.record(
+                "heaters_offline",
+                now,
+                zone=zone,
+                minutes=round(minutes, 1),
+                all_zones=all_down,
+            )
+            label = "shared kitchen/toilets" if zone == "shared" else ZONE_LABEL[zone]
+            title = "🏕 Scout Hut – Heaters offline"
+            message = (
+                f"Every {label} radiator has been unreachable for "
+                f"{minutes:.0f} minutes. The heating cannot be controlled "
+                "(the radiators frost-protect on their own if they still have "
+                "power)."
+            )
+            if all_down:
+                message += (
+                    " Every zone is down at once, which is the Rointe cloud "
+                    "session expiring (its token lasts 7 days) — reload the "
+                    "Rointe integration."
+                )
+            persistent_notification.async_create(
+                self.hass,
+                message,
+                title=title,
+                notification_id=NOTIFY_HEATERS_OFFLINE[zone],
+            )
+            await self._push_companion(
+                title, message, icon="mdi:radiator-off", channel="Scout Hut alerts"
+            )
 
     def _mapped_fault(self) -> bool:
         """The Shelly-published fault boolean, when mapped and readable."""

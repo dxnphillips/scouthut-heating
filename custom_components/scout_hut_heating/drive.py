@@ -150,12 +150,17 @@ def update_drive(
             # (soften-final-approach). Each only ever *withholds extra* overdrive —
             # never blocks the climb or a step-down — so neither can leave the room
             # short of comfort; they can only reduce overshoot.
+            # The approach hold is judged first: a heater that is BOTH frozen and
+            # in a zone that has arrived is reported as approach-held (the outcome
+            # — hold — is the same; only the diagnostic differs, but "approach_held
+            # empty" must mean the guard was not needed, not that a freeze masked
+            # it — field 2026-09-16).
             if prev_stair <= 0:
                 stair = prev_stair + STEP
-            elif not probe_moved:
-                frozen_held = True
             elif near_target:
                 approach_held = True
+            elif not probe_moved:
+                frozen_held = True
             else:
                 stair = prev_stair + STEP
         elif error <= -STEP:  # a full step over target: ease down

@@ -187,7 +187,9 @@ def test_trace_records_maintaining_count_and_hall_kwh():
     ctrl._sample_trace()
     (point,) = ctrl.trace.to_list()
     assert point["hall_maint"] == 1  # only the throttled one
-    assert point["hall_kwh"] == 10.0  # summed accumulators
+    # One representative accumulator, never a sum: every heater in a Rointe
+    # zone reports the same per-zone estimate (Rointe/Nexa findings 2026-09-16).
+    assert point["hall_kwh"] == 4.0
 
 
 def test_heater_detail_includes_rointe_sensors_in_snapshot():
