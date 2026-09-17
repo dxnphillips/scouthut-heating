@@ -1161,6 +1161,19 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     cannot cause a cold arrival; it would have cut ~20 min of over-firing here. Build
     when `peak_over` shows the same pattern on a cold booking, or sooner if the owner
     judges the "too hot then fans" complaint worth pre-empting.
+    **Superseded by the COAST-AWARE approach, which is what actually shipped (fix #4,
+    v1.39.0 — see the drive bullet).** Working the "collapse at arrival" idea through
+    showed it is *wrong in steady state*: the drive exists precisely because a Rointe
+    at setpoint 19 settles the room at ~18.5, so zeroing the overdrive on arrival
+    would re-introduce the droop it was built to cancel. The real problem is not the
+    overdrive per se but that **the elements fire until each probe reaches target and
+    the oil mass then releases on top**. So the easing has to be *transient and
+    conditioned on stored heat*: while the panels are measurably hot and the room
+    average has reached the last fraction of the climb, push `target − coast` so the
+    elements cut early and the mass lands the room ON target; the staircase is left
+    intact underneath so steady-state droop compensation returns untouched the moment
+    the easing lets go. That subsumes the "20 min of over-firing" benefit without the
+    steady-state cost.
     **Measured (`booking_end` 11:00Z): `peak_over` 1.62, `minutes_over` 110.9** — over
     the 0.5 band for 111 of the ~150 min episode (pre-heat + slot). Fourth mild-weather
     instance (09-09 +2.25, 09-10 +2.0, 09-14 +2.12, 09-17 +1.62): **mild persistence is
@@ -1707,6 +1720,41 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   complaint is too-warm). Records `drive_approach_hold`; diagnostics
   `drive.approach_held`. Removes the drive-over-push part of the overshoot (and the
   fan flip it seeds); the ~0.5–1 °C oil-mass coast remains (Q23, measured by `peak_over`).
+  **Coast-aware final approach: land ON target, not past it (v1.39.0,
+  `DRIVE_COAST_ALLOWANCE` = 0.5, `DRIVE_COAST_MAX_MINUTES` = 20 — owner's framing:
+  "with our measured values we then coast and bring the drive down so we end up at
+  the desired temperature").** The two guards above stop the drive *adding*
+  overdrive, but the elements still fire until each probe reaches target and the
+  Rointe oil mass then releases ON TOP — the residual neither can touch (`peak_over`
+  1.62 for 111 of a 150-min booking, 2026-09-17, the fourth mild instance in nine
+  days). So on the last fraction of the climb `update_drive` takes a `coast` and
+  pushes **`target − coast`**: the Rointes fire to their own probes, so the heaters
+  that have effectively arrived cut out while the genuinely colder end keeps firing,
+  and the stored panel heat carries the last fraction instead of the elements
+  pushing through it. **Why not simply collapse the overdrive at arrival** (the
+  earlier Q23 candidate): the drive exists *because* a Rointe at setpoint 19 settles
+  the room at ~18.5, so zeroing the trim on arrival would re-introduce that droop —
+  the easing must be transient and keyed to *stored heat*, not to arrival.
+  **Every safety property is a gate, not a guess:** it engages only while
+  `_zone_panels_hot` (measurable stored heat; an install with no surface sensor never
+  engages), only once the zone AVERAGE is within the allowance of target (so a
+  genuine cold climb is untouchable), and it is **time-boxed once per approach** so
+  the room can never sit short indefinitely if the tail fails to appear. The
+  staircase underneath is **left intact**, so withdrawing the allowance restores the
+  full committed drive on the next 30-s tick rather than over a staircase climb, and
+  it clears the instant the average falls more than the allowance below target.
+  Escalation is withheld while easing (the same rule as the approach hold). Worst
+  case is bounded at 0.5 °C, briefly, while the panels are hot. **The allowance is a
+  conservative SEED, not a measurement** — the tail has never been measured directly,
+  so every episode audits `drive_coast_ease` on the engaging edge and
+  `drive_coast_end` with `start` / `peak` / `rise` / `minutes`: the rise the mass
+  actually delivered. **Set `DRIVE_COAST_ALLOWANCE` from that data rather than
+  guessing it twice**, exactly as the learned rates are set. Diagnostics carry
+  `drive.coast_eased`. **First-winter watch:** `drive_coast_end.rise` should cluster
+  near the allowance (well under → lower it, consistently over → raise it toward the
+  measured tail); and `booking_start.shortfall` must not go positive on a session
+  that saw an easing — if it does, the gates are too loose for cold weather and the
+  allowance should scale down with the indoor-outdoor gap.
   **The 15-min trace now carries `hall_fire` and `drive_off` (2026-08-28) so a
   climb is retrospectively attributable** — `hall_fire` is the count of hall
   heaters reporting `hvac_action == heating`, `drive_off` the largest overdrive

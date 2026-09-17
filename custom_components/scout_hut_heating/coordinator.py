@@ -294,6 +294,34 @@ DRIVE_CAP_ALARM_MINUTES = 60.0
 # cold climb the average sits far below target and this never engages.
 DRIVE_APPROACH_BAND = DRIVE_STEP  # avg within this of target → hold, don't escalate
 
+# --- Land ON target, not past it: the coast-aware final approach (v1.39.0).
+# The approach hold above stops the drive ADDING overdrive once the room arrives,
+# but the elements still fire until each probe reaches target and the Rointe oil
+# mass then releases ON TOP of that — the residual the freeze-guard and the
+# approach hold cannot touch (measured: `peak_over` 1.62 °C for 111 of a 150-min
+# booking, 2026-09-17, the fourth mild instance in nine days). So on the last
+# fraction of the climb the pushed setpoint is eased BELOW target by this much,
+# cutting the elements early and letting the stored panel heat carry the room in.
+#
+# Every safety property is a gate, not a guess:
+#   * it engages only while `_zone_panels_hot` — there is measurably stored heat to
+#     deliver; with no surface sensor mapped it never engages at all;
+#   * only once the zone AVERAGE has reached within the allowance of target, so it
+#     can never touch a genuine cold climb;
+#   * it is time-boxed (`DRIVE_COAST_MAX_MINUTES`, sized to the ~15–20 min the oil
+#     mass takes to coast down), once per approach, so the room can never sit short
+#     indefinitely if the tail fails to materialise;
+#   * the staircase underneath is left intact, so withdrawing it restores the full
+#     committed drive on the next 30-s tick, not over a staircase climb;
+#   * it clears the instant the average falls more than the allowance below target.
+# Worst case is therefore bounded at the allowance, briefly, while the panels are
+# hot. **The allowance is a conservative SEED, not a measurement** — the tail has
+# never been measured directly, so every easing episode audits `drive_coast_end`
+# with the rise it actually delivered; set this from that data rather than guessing
+# it twice (the same discipline as the learned rates).
+DRIVE_COAST_ALLOWANCE = 0.5
+DRIVE_COAST_MAX_MINUTES = 20.0
+
 # --- Drive self-validation (Q20): does the loop know its commands are working?
 # Two independent checks, both reading signals the Rointe cloud cannot fake.
 #
@@ -676,6 +704,13 @@ class ScoutController:
         # the drive escalating the overdrive against a stuck reading and sailing
         # past target when it unfreezes. Not persisted (like the staircase).
         self._drive_step_probe: dict[str, float] = {}
+        # Coast-aware final approach, per zone: when the easing episode began, the
+        # room average it began from, the peak it reached, and whether this
+        # approach has already had its (time-boxed) go.
+        self._drive_coast_since: dict[str, datetime] = {}
+        self._drive_coast_from: dict[str, float] = {}
+        self._drive_coast_peak: dict[str, float] = {}
+        self._drive_coast_done: set[str] = set()
         self._drive_frozen: set[str] = set()
         # Heaters whose overdrive escalation is being held because the zone average
         # has reached the top of the approach (soften-final-approach anti-overshoot).
@@ -1643,6 +1678,89 @@ class ScoutController:
             if write is not None and new_rate != old_rate:
                 write(new_rate)
 
+    def _drive_coast(
+        self,
+        zone: str,
+        target: float,
+        zone_avg: float | None,
+        comfort: bool,
+        now: datetime,
+    ) -> float:
+        """°C the drive may ease BELOW target this tick so the hot panel mass lands
+        the room on target instead of the elements pushing it past (v1.39.0).
+
+        Returns 0.0 — the old never-below-target behaviour — unless every gate is
+        satisfied: the zone is being driven to comfort, its own panels are
+        measurably hot (so there IS stored heat to deliver, and an install with no
+        surface sensor never qualifies), the room AVERAGE has reached within the
+        allowance of target, and this approach has not already used its time-boxed
+        easing. Any of those failing ends the episode immediately and restores the
+        full committed drive on the next tick.
+
+        Each episode is audited on both edges: `drive_coast_ease` when it engages
+        and `drive_coast_end` with the rise the mass actually delivered — the
+        measurement that should set `DRIVE_COAST_ALLOWANCE`, which is currently a
+        deliberately conservative seed.
+        """
+        ready = (
+            comfort
+            and zone_avg is not None
+            and zone_avg >= target - DRIVE_COAST_ALLOWANCE
+            and self._zone_panels_hot(zone, zone_avg)
+        )
+        if not ready:
+            self._end_drive_coast(zone, now, zone_avg)
+            # Out of the band / panels cold: the next approach gets a fresh go.
+            self._drive_coast_done.discard(zone)
+            return 0.0
+        if zone in self._drive_coast_done:
+            return 0.0  # this approach has had its window
+        started = self._drive_coast_since.get(zone)
+        if started is None:
+            self._drive_coast_since[zone] = now
+            self._drive_coast_from[zone] = zone_avg
+            self._drive_coast_peak[zone] = zone_avg
+            self.audit.record(
+                "drive_coast_ease",
+                now,
+                zone=zone,
+                target=target,
+                zone_avg=zone_avg,
+                coast=DRIVE_COAST_ALLOWANCE,
+            )
+            return DRIVE_COAST_ALLOWANCE
+        self._drive_coast_peak[zone] = max(
+            self._drive_coast_peak.get(zone, zone_avg), zone_avg
+        )
+        if (now - started).total_seconds() / 60 >= DRIVE_COAST_MAX_MINUTES:
+            # Time-boxed: the oil mass coasts down in ~15-20 min, so a tail that has
+            # not landed the room by now is not coming. Hand the drive back.
+            self._end_drive_coast(zone, now, zone_avg)
+            self._drive_coast_done.add(zone)
+            return 0.0
+        return DRIVE_COAST_ALLOWANCE
+
+    def _end_drive_coast(
+        self, zone: str, now: datetime, zone_avg: float | None
+    ) -> None:
+        """Close an easing episode and record what the mass actually delivered."""
+        started = self._drive_coast_since.pop(zone, None)
+        began = self._drive_coast_from.pop(zone, None)
+        peak = self._drive_coast_peak.pop(zone, None)
+        if started is None:
+            return
+        self.audit.record(
+            "drive_coast_end",
+            now,
+            zone=zone,
+            minutes=round((now - started).total_seconds() / 60, 2),
+            start=began,
+            peak=peak,
+            ended=zone_avg,
+            rise=None if (peak is None or began is None) else round(peak - began, 2),
+            coast=DRIVE_COAST_ALLOWANCE,
+        )
+
     def _zone_panels_hot(self, zone: str, room: float) -> bool:
         """Is any radiator panel in the zone still releasing stored heat?
 
@@ -2472,6 +2590,7 @@ class ScoutController:
                     # Heaters whose overdrive escalation is held because the zone
                     # average reached the top of the approach (soften-final-approach).
                     "approach_held": sorted(self._drive_approach),
+                    "coast_eased": sorted(self._drive_coast_since),
                     # Booking hold: how far above comfort the hall is currently
                     # being held to pre-empt an evening dip (0 when not a running
                     # comfort booking, mild, or disabled).
@@ -4417,6 +4536,7 @@ class ScoutController:
             ]
             zone_avg = sum(sane_vals) / len(sane_vals) if sane_vals else None
             near_target = zone_avg is not None and zone_avg >= target - DRIVE_APPROACH_BAND
+            coast = self._drive_coast(zone, target, zone_avg, comfort, now)
             for climate in climates:
                 number = self._heater_comfort_number(climate)
                 if number is None:
@@ -4468,6 +4588,7 @@ class ScoutController:
                     target, probe, outdoor, loss, cap,
                     self._drive_stair.get(climate, 0.0), since, moved,
                     near_target=near_target,
+                    coast=coast,
                 )
                 self._drive_stair[climate] = stair
                 if evaluated:
@@ -4805,6 +4926,10 @@ class ScoutController:
         self._drive_step_probe.clear()
         self._drive_frozen.clear()
         self._drive_approach.clear()
+        self._drive_coast_since.clear()
+        self._drive_coast_from.clear()
+        self._drive_coast_peak.clear()
+        self._drive_coast_done.clear()
         self._drive_pushed.clear()
         self._drive_pushed_at.clear()
         self._drive_pushed_surface.clear()
