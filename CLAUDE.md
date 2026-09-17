@@ -911,7 +911,8 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     firing — so the check is currently blind in both directions; (c) the honest
     proof is a **rising panel `surface`**. Fix order (Q25): make the push land
     (`climate.set_temperature` with our value) FIRST, then the read-back can be
-    tightened and re-based on surface rise; do not tune the settle window again. from a spurious comfort flip (field 2026-08-29, v1.28.1
+    tightened and re-based on surface rise; do not tune the settle window again.
+21. **Fan-direction thrash from a spurious comfort flip (field 2026-08-29, v1.28.1
     export — candidate debounce, NOT yet built; confirm root on 1.29.2).** On a warm
     occupied afternoon the ceiling fans reversed **3× in 84 min** (11:49 forward →
     12:41 reverse → 13:03 forward), each a ~5-min coast/spin sequence. Root: fan
