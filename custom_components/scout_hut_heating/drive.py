@@ -42,6 +42,15 @@ The loop only ever drives **harder** than the owner's setpoint, never softer
 (the Rointe backs itself off below target; pushing the setpoint down would just
 make the room colder). Output is clamped to ``[target, cap]`` and quantised to
 the Rointe's 0.5 °C step, so the coordinator only re-pushes on a real change.
+
+The **one** exception is the final approach (``coast``): a Rointe's oil mass
+keeps releasing after its element cuts out, so driving the elements all the way
+to target guarantees the room lands above it. When — and only when — the
+coordinator has measured that the panels are genuinely hot and the room average
+has reached the last fraction of the climb, it passes a coast allowance and the
+pushed value is eased below target for a bounded window, so the stored heat lands
+the room ON target rather than past it. The staircase underneath is untouched, so
+withdrawing the allowance restores the full drive immediately.
 """
 
 from __future__ import annotations
@@ -86,6 +95,7 @@ def update_drive(
     minutes_since_step: float,
     probe_moved: bool = True,
     near_target: bool = False,
+    coast: float = 0.0,
 ) -> tuple[float, float, bool, bool, bool]:
     """Return ``(pushed_setpoint, new_stair, evaluated, frozen_held, approach_held)``.
 
@@ -122,6 +132,22 @@ def update_drive(
         extra* overdrive (never reduces drive, never blocks the initial climb from
         ``prev_stair <= 0``), so it cannot cause a cold arrival — on a genuine cold
         climb the average is far below target and this never engages. Defaults False.
+    coast: °C the pushed setpoint may be eased BELOW target for the final approach,
+        because the radiator mass is holding enough stored heat to land the room on
+        target by itself. 0 (the default) keeps the old "never below target" rule.
+        The coordinator owns every condition — the panels are measurably hot, the
+        room average has reached within this allowance of target, and the easing is
+        time-boxed — and simply passes the allowance in on the ticks it applies.
+        The Rointes fire to their OWN probes, so pushing ``target - coast`` stops
+        the heaters whose probe has effectively arrived while the genuinely colder
+        end keeps firing: the stored panel heat then carries the last fraction
+        instead of the elements pushing through it and the mass landing on top
+        (field 2026-09-17: +1.62 °C over target for 111 min of a 150-min booking).
+        **The staircase is deliberately left intact underneath**, so the instant
+        the coordinator stops passing a coast the pushed value springs straight
+        back to ``target + trim`` — recovery is one 30-s tick, not a staircase
+        climb. While easing, an existing overdrive is not escalated either (the
+        same withhold-only rule as ``near_target``).
 
     ``evaluated`` is True when the step interval had elapsed and a step decision
     was taken (stepped, held on target, or an up-step was suppressed as a freeze or
@@ -157,7 +183,7 @@ def update_drive(
             # it — field 2026-09-16).
             if prev_stair <= 0:
                 stair = prev_stair + STEP
-            elif near_target:
+            elif near_target or coast > 0:
                 approach_held = True
             elif not probe_moved:
                 frozen_held = True
@@ -170,6 +196,12 @@ def update_drive(
     # Anti-windup / never below target: keep ff + stair inside [0, headroom].
     stair = max(-ff, min(headroom - ff, stair))
     trim = ff + stair
+    if coast > 0:
+        # Final approach on stored heat: ease the pushed setpoint BELOW target so
+        # the elements cut out and the hot panel mass lands the last fraction. The
+        # stair above is left untouched, so dropping the coast restores the full
+        # committed drive on the very next tick.
+        trim = -coast
     # Clamp AFTER quantising, so rounding can never nudge the pushed value back
     # above the safety cap (harmless while every input sits on the 0.5 grid, but
     # this keeps the cap a hard bound even if a slider is ever off-grid).
