@@ -1160,6 +1160,16 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     cannot cause a cold arrival; it would have cut ~20 min of over-firing here. Build
     when `peak_over` shows the same pattern on a cold booking, or sooner if the owner
     judges the "too hot then fans" complaint worth pre-empting.
+    **Measured (`booking_end` 11:00Z): `peak_over` 1.62, `minutes_over` 110.9** — over
+    the 0.5 band for 111 of the ~150 min episode (pre-heat + slot). Fourth mild-weather
+    instance (09-09 +2.25, 09-10 +2.0, 09-14 +2.12, 09-17 +1.62): **mild persistence is
+    now established**; cold-weather survival is the remaining half of the rule. Same
+    session, a NEW mechanism the overshoot then seeded — **a booked hall chased itself
+    heat↔cool** (see the regime-commit bullet): the forward breeze cooled the warm hall
+    from 20.6 back to coldest 19.0 by 10:27Z, the booking rung re-heated it (comfort,
+    reverse fans 10:43Z), it went warm again at 10:59Z, forward fans again at 11:01Z —
+    two full reversals and a 0.24-kWh re-heat inside a session that was too warm
+    throughout.
 24. **Does an occupied WINTER hall leave reclaimable roof heat once the floor is
     satisfied — and would running the fans on it save electric? (Analysed 2026-09-14/15,
     NO code change — mild-season data cannot settle it.)** The owner's framing: "big
@@ -1531,6 +1541,23 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   confirm no rapid heat↔cool cycling on an active occupied evening (`cooling_hold`
   events in the audit), and that the sitting parts don't feel cold at comfort 19
   (nudge back up if so).
+  **First field chase — and it was a BOOKING, which the dwell does not cover
+  (2026-09-17 09:00–11:00Z Squirrels).** With `cooling_temp_high` 20 and the 1.0
+  direction hysteresis, the forward breeze does not stop until the mix falls to
+  **19.0 — which is the comfort line**, and the coldest probe (below the mix) crosses
+  19 first. So a warm booked hall (overshoot to 20.6, Q23) got the breeze at 09:42Z,
+  the breeze cooled it to coldest 19.0, the `booking` rung re-lit comfort at 10:27Z
+  (reverse fans 10:43Z), the room went warm again at 10:59Z (`booking_warm` → ice)
+  and the forward breeze restarted at 11:01Z: two reversals and a re-heat in 80 min,
+  the radiators and the fans doing each other's work. The 15-min `cooling_hold` is
+  occupancy-only and would not have helped anyway (the flip came 45 min into
+  cooling). **The structural cause is the zero gap between the cooling STOP line
+  (`cooling_temp_high` − hysteresis = 19.0) and the heating START line (comfort 19).**
+  Levers, cheapest first, owner's comfort call: (1) `cooling_temp_high` 20 → **20.5**
+  (slider; stop line becomes 19.5, a 0.5 band the breeze cannot cross on its own);
+  (2) the cooling stop could be floored at comfort + 0.5 in code so the two lines can
+  never meet whatever the sliders say; (3) extend the regime dwell to the booking
+  rung (weakest — a dwell only delays). One instance, mild day; recorded, not changed.
 - **The heaters are driven to target, not trusted (`drive_to_target` = on).**
   The Rointes settle a fraction *below* the setpoint we give them (field
   2026-08-06: a hall probe held ~0.5 below a 19.5 comfort setpoint on a cold
