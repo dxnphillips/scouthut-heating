@@ -330,7 +330,13 @@ def advance(ctrl, minutes):
             ctrl._warmup_start[zone] = (sample[0] - delta, *sample[1:])
     for zone, sample in ctrl._cooloff_start.items():
         if sample is not None:
-            ctrl._cooloff_start[zone] = (sample[0] - delta, *sample[1:])
+            aged = list(sample)
+            aged[0] = sample[0] - delta
+            if len(aged) > 10 and aged[10] is not None:  # flat_since (freeze clock)
+                aged[10] = aged[10] - delta
+            ctrl._cooloff_start[zone] = tuple(aged)
+    for climate, ts in list(ctrl._probe_changed_at.items()):
+        ctrl._probe_changed_at[climate] = ts - delta
     for zone, ts in ctrl._cooloff_cooling_since.items():
         if ts is not None:
             ctrl._cooloff_cooling_since[zone] = ts - delta

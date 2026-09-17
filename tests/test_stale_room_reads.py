@@ -1,10 +1,14 @@
 """Frozen ('freeze while alive') Rointe readings must not drive warm-enough
 decisions cold.
 
-The Rointe cloud can stop updating while the entity still reads `available`.
-The pre-heat sizing and the unified heat gate (`_room_wants_heat`) must reject
-such a frozen value rather than trust a stale-high reading and under-heat: a
-dropped reading falls back to fail-warm (heat), never to "warm enough, no heat".
+The Rointe cloud can stop updating while the entity still reads `available` —
+and (Rointe/Nexa findings, 2026-09-16) the integration re-publishes the entity
+every 15 s regardless, so ``last_reported`` is ALWAYS fresh and says nothing.
+Freshness is therefore judged from the VALUE: a reading unchanged for the
+staleness window is frozen. The pre-heat sizing and the unified heat gate
+(`_room_wants_heat`) reject such a value rather than trust a stale-high reading
+and under-heat: a dropped reading falls back to fail-warm (heat), never to
+"warm enough, no heat".
 """
 
 from datetime import timedelta
@@ -21,10 +25,18 @@ from scout_testkit import (
 def _hall_temp(ctrl, temp):
     for eid in E["hall"]:
         ctrl.hass.states.set(eid, "heat", {"current_temperature": temp})
+    ctrl._track_probe_changes()
 
 
 def _freeze(ctrl, minutes):
-    """Age every hall heater's last_reported into the past."""
+    """Age every hall heater's last VALUE CHANGE into the past."""
+    old = ctrl._now() - timedelta(minutes=minutes)
+    for eid in E["hall"]:
+        ctrl._probe_changed_at[eid] = old
+
+
+def _age_timestamps(ctrl, minutes):
+    """Age the entity timestamps only — meaningless on this hardware."""
     old = ctrl._now() - timedelta(minutes=minutes)
     for eid in E["hall"]:
         st = ctrl.hass.states.get(eid)
@@ -41,10 +53,28 @@ def test_fresh_reading_is_used():
 def test_frozen_reading_is_rejected():
     ctrl, _ = make_controller()
     _hall_temp(ctrl, 18.0)
-    _freeze(ctrl, 180)  # older than the 120-min stale window
+    _freeze(ctrl, 180)  # value unchanged for longer than the 120-min window
     assert ctrl._zone_room_temp(ZA, coldest=True, stale_min=120) is None
     # ...but without a stale window the value is still returned (fan ΔT path).
     assert ctrl._zone_room_temp(ZA, coldest=True) == 18.0
+
+
+def test_entity_timestamps_do_not_count_as_freshness():
+    # The Rointe integration rewrites last_reported every poll whether or not
+    # the device synced, so an old timestamp must neither reject a reading nor
+    # a fresh one vouch for it. Only the value clock matters.
+    ctrl, _ = make_controller()
+    _hall_temp(ctrl, 18.0)
+    _age_timestamps(ctrl, 180)
+    assert ctrl._zone_room_temp(ZA, coldest=True, stale_min=120) == 18.0
+
+
+def test_a_changing_reading_restarts_the_freeze_clock():
+    ctrl, _ = make_controller()
+    _hall_temp(ctrl, 18.0)
+    _freeze(ctrl, 180)
+    _hall_temp(ctrl, 18.5)  # the value moved: fresh again
+    assert ctrl._zone_room_temp(ZA, coldest=True, stale_min=120) == 18.5
 
 
 def test_preheat_lead_fails_warm_on_frozen_reading():
@@ -58,7 +88,7 @@ def test_preheat_lead_fails_warm_on_frozen_reading():
 
 def test_frozen_warm_reading_does_not_suppress_heat():
     """A frozen WARM reading must not read as 'warm enough, no heat'. Dropped as
-    stale, the room reads None -> the gate errs warm (heat), not off."""
+    frozen, the room reads None -> the gate errs warm (heat), not off."""
     ctrl, _ = make_controller()
     booking(ctrl, ZA)
     motion(ctrl, "hall")
@@ -81,3 +111,14 @@ def test_fresh_cold_reading_wants_heat():
     motion(ctrl, "hall")
     _hall_temp(ctrl, 12.0)  # cold and fresh
     assert ctrl._room_wants_heat(ZA, ctrl._zone_target(ZA)) is True
+
+
+def test_an_offline_heater_restarts_its_clock_when_it_returns():
+    ctrl, _ = make_controller()
+    _hall_temp(ctrl, 18.0)
+    _freeze(ctrl, 180)
+    for eid in E["hall"]:
+        ctrl.hass.states.set(eid, "unavailable")
+    ctrl._track_probe_changes()  # an outage is not a freeze
+    _hall_temp(ctrl, 18.0)  # back, same value: judged fresh from its return
+    assert ctrl._zone_room_temp(ZA, coldest=True, stale_min=120) == 18.0

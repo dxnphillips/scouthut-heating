@@ -1192,13 +1192,30 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       audits `heaters_online` and dismisses. A zone never yet seen online is not
       judged inside the 25-min startup grace. Diagnostics `state.heaters_offline`.
       The owner-side six-day reload automation remains the interim cure.
-    - **PR 5 — replace the inert freshness guards (rec 6).** Delete the
-      `last_reported` checks (they claim a protection that does not exist) and add a
-      **flat-reading freeze detector** with a long threshold (normal sync gaps reach
-      ≥16 min; an insulated office can legitimately sit on one quantum for 1–2 h — so
-      think ≥45–60 min, and reject the *sample*, never withhold heat). This is also
-      the office 3am false-alarm fix (cool-off bullet) and the per-probe warm-up
-      discontinuity fix (Q3 fragility (b)).
+    - **PR 5 — replace the inert freshness guards (rec 6). BUILT v1.37.0.** Three
+      pieces. (a) **Freshness is now judged from the VALUE:** `_track_probe_changes`
+      stamps when each heater's `current_temperature` last changed, and the
+      warm-enough paths (`_room_wants_heat`, pre-heat sizing, coast, the no-response
+      witness, `_shared_wants_heat`) drop a probe whose reading has sat unchanged
+      for `fan_sensor_stale_minutes` (120) — the same knob, the same fail-warm
+      outcome (an unreadable room heats), but a test that can actually fire. The
+      `last_reported` checks are gone; the drive's `_heater_probe` has NO freshness
+      test at all (a value-flat withdrawal would forfeit the cold end's overdrive —
+      the freeze-guard's hold is the right response to late and frozen alike).
+      (b) **Per-probe warm-up tick guard:** the sample tracks the largest
+      single-tick rise of any ONE probe (`warmup_sample.max_probe_tick_rise`) and
+      rejects on ≥ `MAX_WARMUP_TICK_RISE` — a +4.0 jump on one of four probes no
+      longer hides as +1.0 on the average (Q3 fragility (b) closed). (c) **Cool-off
+      freeze signature (`COOL_FREEZE_FLAT_MINUTES` = 90):** an out-of-family sample
+      whose reading had sat unchanged ≥ 90 min is classified `frozen` — rejected (k
+      untouched) but the `opening_inferred` latch is left alone, so the office's
+      recurring 3am "window/door open?" (a value held 3–6 h then a compressed
+      catch-up) no longer cries wolf; a genuinely slow room's long dwells are never
+      out-of-family, so its decays still teach; a fast stepping decay with no flat
+      spell still raises the alarm. `cooloff_sample` carries `frozen` +
+      `max_flat_min`. Trade accepted: a real opening that follows a ≥90-min flat
+      spell is suppressed (audited, not pushed). The independent room sensor (Q19)
+      remains the durable fix.
     - **PR 6 — read-back on surface rise (rec 5).** Drop the `hvac_action` and
       `energy` proofs; a driven heater whose panel `surface` is rising has adopted
       the command. Rename/annotate `hall_fire`/`hall_maint`/`effective` as the
@@ -1898,11 +1915,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   under-led a cold start into a cold arrival; it now reads as None → fail-warm
   (the pre-heat falls back to the cap). The fan ΔT reference and the diagnostic
   spread deliberately omit `stale_min` (a frozen value is harmless there).
-  **INERT (2026-09-16, Rointe findings):** the integration rewrites entity state
-  every 15-s poll, so `last_reported` is always fresh and none of these guards has
-  ever rejected anything — hall_front's 31-min flat 15.5 on 09-16 passed as
-  "fresh". The protection described here does not exist; Q25 PR 5 replaces it with
-  a flat-reading detector.
+  **WAS INERT until v1.37.0 (2026-09-16, Rointe findings):** the integration
+  rewrites entity state every 15-s poll, so `last_reported` is always fresh and
+  none of these guards had ever rejected anything — hall_front's 31-min flat 15.5
+  on 09-16 passed as "fresh". **Since v1.37.0 the same `stale_min` window is
+  judged from the VALUE** (`_probe_frozen`: unchanged for 120 min), so the
+  protection described here now exists (Q25 PR 5).
 - **A transient room-reading drop-out doesn't flip a warm room to heat
   (v1.26.2).** `_room_wants_heat`'s err-warm fail-safe is right for a *sustained*
   loss but wrong on a *blip*: a ~17 s Rointe hall-probe drop-out on a hot

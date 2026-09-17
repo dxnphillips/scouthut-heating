@@ -116,10 +116,15 @@ updating. The reconciler is defensive about this:
 - **Fan floor temperature & heat-demand** ignore a heater that is unavailable or
   has stopped reporting (judged from `last_reported`), so a frozen reading is
   never trusted; if nothing readable remains the floor is treated as lost.
-  **Known inert (2026-09-16):** the Rointe integration rewrites entity state on
-  every 15-s poll, so `last_reported` is always fresh and this guard (and every
-  other `last_reported` check — `_zone_climate_temps`, `_shared_room_temp`,
-  `_heater_probe`, `_stale`) has never rejected a frozen reading. See below.
+  **Judged by VALUE since v1.37.0:** the Rointe integration rewrites entity
+  state on every 15-s poll, so `last_reported` is always fresh and the old
+  timestamp test never rejected anything. `_track_probe_changes` now stamps when
+  each heater's reading last *changed*, and `_probe_frozen` (unchanged for the
+  `fan_sensor_stale_minutes` window) is what drops a frozen Rointe value on the
+  warm-enough paths. The drive's `_heater_probe` has no freshness test (its
+  freeze-guard holds a stuck reading instead of withdrawing it). The explicit
+  floor-sensor override and the Shelly/power sensors keep the timestamp test —
+  those entities only report when they have something to say.
 
 ### Known Rointe integration defects (2026-09-16)
 

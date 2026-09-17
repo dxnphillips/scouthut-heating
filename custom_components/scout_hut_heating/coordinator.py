@@ -269,7 +269,9 @@ ROINTE_COMFORT_MAX = 30.0
 # A heater's probe is "lost" for driving if it has not reported within this
 # window — the Rointe cloud can freeze while looking alive, so a stale reading
 # must not keep driving. A lost probe withdraws that heater to its plain target.
-DRIVE_PROBE_STALE_MINUTES = 30.0
+# (DRIVE_PROBE_STALE_MINUTES, the drive's last_reported age test, was retired in
+# v1.37.0: the Rointe entity's timestamps advance every poll, and a stuck probe
+# is held by the freeze-guard rather than withdrawn.)
 # Cross-probe sanity: a probe reading more than this far BELOW its zone's median
 # is treated as a glitch and not driven on, so one shorted/stuck sensor cannot
 # force a heater to the cap.
@@ -398,6 +400,14 @@ COOL_OVERWARM_MARGIN = 2.0
 # never corrupts — and overnight cool-offs (the bulk) lose 20 min of a multi-hour
 # window, nothing material.
 COOL_SETTLE_MINUTES = 20.0
+# Freeze signature for a cool-off (2026-09-16). An out-of-family sample whose
+# reading had sat UNCHANGED for at least this long is the Rointe probe freezing
+# then dumping its catch-up, not an unsensored opening: the office's recurring
+# 3am false alarm held one value for 3–6 h before the "drop". A genuinely slow
+# insulated room dwells 1–2 h on one 0.5 °C quantum, but such a decay is never
+# out-of-family, so the flat test only ever bites on a sample that would
+# otherwise have cried wolf. Sized above the longest legitimate dwell seen.
+COOL_FREEZE_FLAT_MINUTES = 90.0
 # Cold-conditions gate on warm-up learning (2026-09-11, field). A warm-up timed
 # in mild weather reads implausibly fast because solar gain on the big uninsulated
 # roof (plus occupancy) does much of the work the radiators are credited with.
@@ -680,6 +690,15 @@ class ScoutController:
         self._heaters_offline_since: dict[str, datetime | None] = {}
         self._heaters_seen_online: set[str] = set()
         self._heaters_offline_notified: set[str] = set()
+        # Freeze detector: each heater's last room reading and when it last
+        # CHANGED (the Rointe entity's own timestamps are always fresh).
+        self._probe_last_value: dict[str, float] = {}
+        self._probe_changed_at: dict[str, datetime] = {}
+        # Per-probe discontinuity tracking for the warm-up sample: the zone
+        # AVERAGE dilutes a single probe's freeze-then-jump 4× (a +4.0 read as
+        # +1.0 on 2026-09-16), so each heater's reading is watched too.
+        self._warmup_probe_prev: dict[str, dict[str, float]] = {}
+        self._warmup_probe_jump: dict[str, float] = {}
         self._drive_reject_notified = False
         self._opening_notified: set[str] = set()
         # Fire fallback latch: on a panel fire the fans are hardware-cut, but this
@@ -1136,24 +1155,25 @@ class ScoutController:
     ) -> list[float]:
         """All readable room temperatures from a zone's own heaters.
 
-        ``stale_min``: drop a heater whose reading has not updated within this
-        many minutes. The Rointe cloud can FREEZE while the entity still reads
-        ``available`` (CLAUDE.md: "readings can freeze while looking alive"), so
-        any path that decides whether the room is warm enough — pre-heat sizing,
-        the cold-booking pierce, the summer setback — must reject a frozen value
-        rather than trust it (a stale-high reading otherwise under-leads a cold
-        start into a cold arrival). Omit it where a frozen value is harmless
-        (the fan ΔT reference, the diagnostic spread).
+        ``stale_min``: drop a heater whose reading has been FROZEN — its value
+        unchanged — for this many minutes. The Rointe cloud can freeze while the
+        entity still reads ``available``, so any path that decides whether the
+        room is warm enough — pre-heat sizing, the unified heat gate — must
+        reject a frozen value rather than trust it (a stale-high reading
+        otherwise under-leads a cold start into a cold arrival). Omit it where a
+        frozen value is harmless (the fan ΔT reference, the diagnostic spread).
+        Rointe/Nexa findings (2026-09-16): the integration rewrites entity state
+        every 15-s poll, so ``last_reported``/``last_updated`` are ALWAYS fresh
+        and the pre-1.37.0 timestamp test never rejected anything; freshness is
+        now judged from the value itself (``_probe_frozen``).
         """
         vals: list[float] = []
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            if stale_min is not None:
-                ts = getattr(st, "last_reported", None) or st.last_updated
-                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
-                    continue
+            if stale_min is not None and self._probe_frozen(climate, stale_min):
+                continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:
@@ -1186,10 +1206,55 @@ class ScoutController:
         return sum(vals) / len(vals) if vals else None
 
     def _rointe_stale_min(self) -> float:
-        """The window (minutes) after which an un-updated Rointe reading is
+        """The window (minutes) after which an UNCHANGED Rointe reading is
         treated as frozen on the warm-enough decision paths — reuses the fan
-        floor-staleness slider so there is one Rointe freshness knob, not two."""
+        floor-staleness slider so there is one Rointe freshness knob, not two.
+        Long on purpose (120 by default): an insulated room can legitimately sit
+        on one 0.5 °C quantum for an hour or two, and a false "frozen" only ever
+        errs WARM (an unreadable room heats), so the threshold favours trusting
+        the reading."""
         return self.number("fan_sensor_stale_minutes")
+
+    def _track_probe_changes(self) -> None:
+        """Note when each heater's room reading last CHANGED (freeze detector).
+
+        The only freshness signal this hardware gives is the value itself: the
+        Rointe integration re-publishes every 15 s whether or not the device
+        synced, so a probe that has frozen through the cloud looks alive. Every
+        reconcile compares each mapped heater's ``current_temperature`` with the
+        last one seen and stamps the change; ``_probe_frozen`` reads the age.
+        """
+        now = self._now()
+        climates = (
+            self._as_list(self.config.get(CONF_HALL_CLIMATES))
+            + self._as_list(self.config.get(CONF_OFFICE_CLIMATES))
+            + self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+        )
+        for climate in climates:
+            st = self.hass.states.get(climate)
+            if st is None or st.state in ("unavailable", "unknown"):
+                # Offline: forget the value so the clock restarts when it returns
+                # (an outage is not a freeze; it is surfaced separately).
+                self._probe_last_value.pop(climate, None)
+                self._probe_changed_at.pop(climate, None)
+                continue
+            try:
+                value = float(st.attributes.get("current_temperature"))
+            except (TypeError, ValueError):
+                continue
+            if self._probe_last_value.get(climate) != value:
+                self._probe_last_value[climate] = value
+                self._probe_changed_at[climate] = now
+
+    def _probe_flat_minutes(self, climate: str) -> float | None:
+        """Minutes since this heater's reading last changed, or None if untracked."""
+        at = self._probe_changed_at.get(climate)
+        return None if at is None else (self._now() - at).total_seconds() / 60
+
+    def _probe_frozen(self, climate: str, minutes: float) -> bool:
+        """Has this heater's reading sat unchanged for at least ``minutes``?"""
+        flat = self._probe_flat_minutes(climate)
+        return flat is not None and flat >= minutes
 
     @property
     def hall_temp_spread(self) -> float | None:
@@ -1405,6 +1470,8 @@ class ScoutController:
                 if comfort and temp is not None and temp < target - 0.5:
                     fans = 1 if self._fans_running() else 0
                     w = self._o1_watts() if zone == ZONE_A else None
+                    self._warmup_probe_prev[zone] = self._zone_probe_readings(zone)
+                    self._warmup_probe_jump[zone] = 0.0
                     self._warmup_start[zone] = (
                         now,
                         temp,
@@ -1436,6 +1503,7 @@ class ScoutController:
                     if prev_temp is not None:
                         max_tick_rise = max(max_tick_rise, temp - prev_temp)
                     prev_temp = temp
+                self._note_warmup_probe_jump(zone)
                 self._warmup_start[zone] = (
                     started,
                     start_temp,
@@ -1465,6 +1533,9 @@ class ScoutController:
             rise = temp - start_temp
             if prev_temp is not None:  # count the final tick's rise too
                 max_tick_rise = max(max_tick_rise, temp - prev_temp)
+            self._note_warmup_probe_jump(zone)
+            probe_jump = self._warmup_probe_jump.pop(zone, 0.0)
+            self._warmup_probe_prev.pop(zone, None)
             assisted = fan_ticks * 2 >= ticks
             rate_key = self._warmup_rate_key(zone, assisted=assisted)
             old_rate = self.number(rate_key)
@@ -1479,10 +1550,14 @@ class ScoutController:
             # for the audit; no push (the sun helping is not something to act on).
             outdoor = self._outdoor_temp()
             mild = outdoor is None or outdoor > WARMUP_COLD_MAX_OUTDOOR
+            # The tick guard is applied to the zone average AND to every single
+            # probe: a +4.0 freeze-then-jump on one of four hall probes reads as
+            # +1.0 on the average and used to pass (2026-09-16).
             quality = (
                 rise >= MIN_SAMPLE_RISE
                 and minutes >= MIN_SAMPLE_MINUTES
                 and max_tick_rise < MAX_WARMUP_TICK_RISE
+                and probe_jump < MAX_WARMUP_TICK_RISE
                 and not mild
             )
             new_rate = updated_rate(old_rate, minutes, rise, max_tick_rise) if quality else old_rate
@@ -1504,6 +1579,7 @@ class ScoutController:
                 fan_ticks=fan_ticks,
                 ticks=ticks,
                 max_tick_rise=max_tick_rise,
+                max_probe_tick_rise=probe_jump,
                 o1_avg_w=(watt_sum / watt_n) if watt_n else None,
                 outdoor=outdoor,
                 mild=mild,
@@ -1517,6 +1593,35 @@ class ScoutController:
             write = getattr(entity, "write_value", None)
             if write is not None and new_rate != old_rate:
                 write(new_rate)
+
+    def _zone_probe_readings(self, zone: str) -> dict[str, float]:
+        """Each readable heater's own room reading, keyed by climate."""
+        out: dict[str, float] = {}
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+            st = self.hass.states.get(climate)
+            if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            try:
+                value = st.attributes.get("current_temperature")
+                if value is not None:
+                    out[climate] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _note_warmup_probe_jump(self, zone: str) -> None:
+        """Track the largest single-tick rise of any ONE probe in a warm-up."""
+        prev = self._warmup_probe_prev.get(zone)
+        if prev is None:
+            return
+        current = self._zone_probe_readings(zone)
+        biggest = self._warmup_probe_jump.get(zone, 0.0)
+        for climate, value in current.items():
+            before = prev.get(climate)
+            if before is not None:
+                biggest = max(biggest, value - before)
+        self._warmup_probe_jump[zone] = biggest
+        self._warmup_probe_prev[zone] = current
 
     def _update_cooloff_learning(self) -> None:
         """Measure how fast an unheated zone loses heat (retention learning).
@@ -1544,9 +1649,7 @@ class ScoutController:
             outdoor = self._outdoor_temp()
             sample = self._cooloff_start[zone]
 
-            def _anchor(
-                anchor_temp: float,
-            ) -> tuple[datetime, float, float, int, int, int, float, int, float, float]:
+            def _anchor(anchor_temp: float) -> tuple[Any, ...]:
                 w = self._o1_watts() if zone == ZONE_A else None
                 return (
                     now,
@@ -1559,6 +1662,8 @@ class ScoutController:
                     1 if w is not None else 0,
                     anchor_temp,  # prev_temp: last tick's reading
                     0.0,  # max_tick_drop: largest single-tick fall so far
+                    now,  # flat_since: when the reading last changed
+                    0.0,  # max_flat_min: longest unchanged run seen (freeze signature)
                 )
 
             if sample is None:
@@ -1578,7 +1683,7 @@ class ScoutController:
 
             (
                 started, start_temp, out_sum, out_n, fan_ticks, ticks,
-                watt_sum, watt_n, prev_temp, max_tick_drop,
+                watt_sum, watt_n, prev_temp, max_tick_drop, flat_since, max_flat_min,
             ) = sample
             # Accumulate the outdoor reading every tick: the sample's average
             # gap is what normalises the observed loss into the constant. The
@@ -1608,6 +1713,16 @@ class ScoutController:
                 tick_drop = prev_temp - temp
                 if tick_drop > max_tick_drop:
                     max_tick_drop = tick_drop
+                # Freeze signature: a genuine decay steps down a quantum at a
+                # time, a frozen probe holds one value for hours then dumps the
+                # catch-up as a fast drop. The longest unchanged run is kept
+                # so _fold_cooloff can tell that from an opening.
+                if temp == prev_temp:
+                    max_flat_min = max(
+                        max_flat_min, (now - flat_since).total_seconds() / 60
+                    )
+                else:
+                    flat_since = now
                 prev_temp = temp
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
@@ -1628,6 +1743,7 @@ class ScoutController:
                         watt_sum,
                         watt_n,
                         max_tick_drop,
+                        max_flat_min,
                     )
                 continue
 
@@ -1636,7 +1752,7 @@ class ScoutController:
                 continue
             self._cooloff_start[zone] = (
                 started, start_temp, out_sum, out_n, fan_ticks, ticks,
-                watt_sum, watt_n, prev_temp, max_tick_drop,
+                watt_sum, watt_n, prev_temp, max_tick_drop, flat_since, max_flat_min,
             )
             drop = start_temp - temp
             hours = (now - started).total_seconds() / 3600
@@ -1647,7 +1763,7 @@ class ScoutController:
             if drop >= MIN_COOL_SAMPLE_DROP and hours >= MIN_COOL_SAMPLE_HOURS:
                 self._fold_cooloff(
                     zone, hours, drop, start_temp, temp, out_sum, out_n,
-                    fan_ticks, ticks, watt_sum, watt_n, max_tick_drop,
+                    fan_ticks, ticks, watt_sum, watt_n, max_tick_drop, max_flat_min,
                 )
                 self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
@@ -1665,6 +1781,7 @@ class ScoutController:
         watt_sum: float,
         watt_n: int,
         max_tick_drop: float = 0.0,
+        max_flat_min: float = 0.0,
     ) -> None:
         key = f"{zone}_heatloss_pct"
         current = self.number(key)
@@ -1713,7 +1830,14 @@ class ScoutController:
         new = current if new_k == k else new_k * 100
         observed = cooling_observed_k(hours, drop, gap)
         outlier = quality_ok and observed is not None and cooling_sample_is_outlier(k, observed)
-        if quality_ok:
+        # An out-of-family sample whose reading sat FLAT for a long spell is the
+        # probe freeze-then-catch-up, not an opening (the office's recurring 3am
+        # false "window/door open?" push, 2026-09-14/15: a value held for hours,
+        # then the compressed catch-up read as 4× the fabric loss). It is still
+        # rejected (k untouched) but says nothing about an opening, so the latch
+        # is left as it was rather than raised.
+        frozen = outlier and max_flat_min >= COOL_FREEZE_FLAT_MINUTES
+        if quality_ok and not frozen:
             self._opening_inferred[zone] = outlier
         self.audit.record(
             "cooloff_sample",
@@ -1724,12 +1848,14 @@ class ScoutController:
             gap=gap,
             accepted=quality_ok and not outlier,
             outlier=outlier,
+            frozen=frozen,
             over_warm=over_warm,
             old_pct=current,
             new_pct=new,
             fan_ticks=fan_ticks,
             ticks=ticks,
             max_tick_drop=max_tick_drop,
+            max_flat_min=max_flat_min,
             o1_avg_w=(watt_sum / watt_n) if watt_n else None,
         )
         entity = self._numbers.get(key)
@@ -2917,10 +3043,8 @@ class ScoutController:
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            if stale_min is not None:
-                ts = getattr(st, "last_reported", None) or st.last_updated
-                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
-                    continue
+            if stale_min is not None and self._probe_frozen(climate, stale_min):
+                continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:
@@ -3056,6 +3180,7 @@ class ScoutController:
         self._reconciling = True
         try:
             self._refresh_motion_from_states()
+            self._track_probe_changes()
             await self._evaluate_openings()
             await self._update_heaters_offline()
             self._record_booking_edges()
@@ -3980,16 +4105,19 @@ class ScoutController:
         return found or None
 
     def _heater_probe(self, climate: str) -> float | None:
-        """This heater's own current temperature, or None if unavailable/stale.
+        """This heater's own current temperature, or None if unavailable.
 
-        Freshness matters: a frozen Rointe reading looks alive but must not keep
-        driving, so a report older than DRIVE_PROBE_STALE_MINUTES counts as lost.
+        No freshness test here any more. The pre-1.37.0 ``last_reported`` age
+        check (DRIVE_PROBE_STALE_MINUTES) never fired — the Rointe integration
+        re-publishes every poll — and a value-flatness withdrawal would be the
+        wrong tool anyway: on this hardware a probe that reads flat for 30 min is
+        usually merely LATE (2026-09-16: hall_front flat 15.5 for 31 min mid-climb),
+        and withdrawing it forfeits the cold end's overdrive. The drive's own
+        freeze-guard (``probe_moved``) is what handles a stuck reading: it holds
+        the staircase, which is exactly right for late and frozen alike.
         """
         st = self.hass.states.get(climate)
         if st is None or st.state in ("unavailable", "unknown"):
-            return None
-        ts = getattr(st, "last_reported", None) or st.last_updated
-        if (dt_util.utcnow() - ts).total_seconds() > DRIVE_PROBE_STALE_MINUTES * 60:
             return None
         temp = st.attributes.get("current_temperature")
         try:
@@ -4706,10 +4834,10 @@ class ScoutController:
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            if stale_min is not None:
-                ts = getattr(st, "last_reported", None) or st.last_updated
-                if (dt_util.utcnow() - ts).total_seconds() > stale_min * 60:
-                    continue
+            # Freshness by VALUE (see _probe_frozen): the Rointe entity's
+            # timestamps advance every poll whether or not the device synced.
+            if stale_min is not None and self._probe_frozen(climate, stale_min):
+                continue
             temp = st.attributes.get("current_temperature")
             try:
                 if temp is not None:

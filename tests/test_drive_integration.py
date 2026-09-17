@@ -186,18 +186,21 @@ def test_setpoint_never_exceeds_the_cap():
 
 
 # --- Safety net: freshness ----------------------------------------------------
-def test_stale_probe_withdraws_to_plain_target():
+def test_old_entity_timestamps_do_not_withdraw_a_heater():
+    # The Rointe integration rewrites last_reported every poll (2026-09-16
+    # findings), so an entity timestamp says nothing about the probe — and a
+    # value-flat probe is handled by the freeze-guard (hold), never by a
+    # withdrawal that would forfeit the cold end's overdrive.
     _wire_numbers()
     ctrl, hass = make_controller()
     _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 18.0})
-    # Age one heater's report beyond the staleness window.
     old = dt_util.utcnow() - timedelta(hours=3)
     st = hass.states.get("climate.hall_back")
     st.last_reported = old
     st.last_updated = old
     run(ctrl.async_reconcile())
     target = ctrl.number("hall_comfort_temp")
-    assert _pushed(hass, _comfort_number("climate.hall_back")) == target  # not boosted
+    assert _pushed(hass, _comfort_number("climate.hall_back")) > target  # still driven
 
 
 # --- Freeze-guard: don't wind the overdrive up against a stuck probe ----------
