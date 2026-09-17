@@ -1166,10 +1166,16 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       one heater first** — the live evidence for `set_temperature`'s Nexa semantics
       is one audit. Fail-safe direction: if `set_temperature` misbehaves the
       symptom is the same one-step-behind we have now, not a cold room.
-    - **PR 2 — redact `cal_title` in the export (rec 9).** It is in `diagnostics`
-      (`state.cal_title`) AND persisted in `booking_start.title` — hirer names are in
-      every export pasted into a session. Keep the eco-keyword flag; drop/hash the
-      title at export time in `diagnostics.py`.
+    - **PR 2 — redact `cal_title` in the export (rec 9). BUILT v1.37.0 (export
+      hygiene).** Titles are reduced at export time to what the controller used
+      them for — `eco:<keywords>` on a match, `redacted` otherwise — in both
+      `state.cal_title` and every audit event carrying `title` (`_redact_title` /
+      `_redact_event`); the in-memory log keeps the raw title. Same commit: the
+      two alarm panels' states are exported (`state.alarms`, so an ice-at-expiry
+      no longer has to be inferred), the shared block's `average` is now the true
+      mean with `coldest` alongside (it used to carry the min, mislabelled), and a
+      boost press / expiry / cancel are audit events (`boost` with minutes + the
+      driven target, `boost_expired` with coldest/average, `boost_cancelled`).
     - **PR 3 — energy hygiene (rec 8).** `hall_kwh` = one accumulator (not ×4),
       labelled a zone estimate that includes the office; treat a drop as a reset.
     - **PR 4 — Q18 outage alert (rec 7)**, plus the owner-side six-day reload

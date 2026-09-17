@@ -1932,7 +1932,18 @@ class ScoutController:
     # Boost API (called by the button platform)
     # ------------------------------------------------------------------
     async def async_boost(self, zone: str) -> None:
-        self.boost_until[zone] = self._now() + timedelta(minutes=self.boost_minutes())
+        minutes = self.boost_minutes()
+        self.boost_until[zone] = self._now() + timedelta(minutes=minutes)
+        # A boost used to be visible only through the preset events it caused;
+        # the press (and its expiry/cancel) are now first-class audit events.
+        self.audit.record(
+            "boost",
+            self._now(),
+            zone=zone,
+            minutes=minutes,
+            coldest=self._zone_room_temp(zone, coldest=True),
+            target=self._drive_comfort_target(zone),
+        )
         # Boost and the hall pause are opposite intents; the newer one wins. A
         # hall boost is an explicit "I want heat now", so it lifts the pause.
         if zone == ZONE_A:
@@ -1940,6 +1951,8 @@ class ScoutController:
         await self.async_reconcile()
 
     async def async_cancel_boost(self, zone: str) -> None:
+        if self.boost_until.get(zone) is not None:
+            self.audit.record("boost_cancelled", self._now(), zone=zone)
         self.boost_until[zone] = None
         await self.async_reconcile()
 
@@ -2135,7 +2148,11 @@ class ScoutController:
         if shared_climates:
             zones["shared"] = {
                 "heaters": {c: self._heater_detail(c) for c in shared_climates},
-                "average": self._shared_room_temp(),
+                # `average` used to carry the coldest probe (mislabelled — the
+                # 2026-09-16 audit); it is now the mean the drive's approach
+                # guard uses, with the coldest alongside like the other zones.
+                "average": self._shared_room_avg(),
+                "coldest": self._shared_room_temp(),
             }
 
         stale_min = self.number("fan_sensor_stale_minutes")
@@ -2168,6 +2185,14 @@ class ScoutController:
         internal = self.config.get(CONF_INTERNAL_DOOR)
         openings["internal_door"] = {internal: self._is_on(internal)} if internal else {}
         openings["any_open"] = self._any_opening_open()
+
+        # The alarm panels decide the empty-building (ice) rung and the
+        # sleepover heat, yet their state was never exported — every "why did
+        # it ice at expiry?" question in the 2026-09-16 audit had to infer it.
+        alarms = {
+            "main": self._entity_state(self.config.get(CONF_ALARM_MAIN)),
+            "office": self._entity_state(self.config.get(CONF_ALARM_OFFICE)),
+        }
 
         return {
             "generated": _iso(self._now()),
@@ -2202,7 +2227,10 @@ class ScoutController:
                 "fire_hold": self._fire_hold,
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
-                "cal_title": dict(self.cal_title),
+                # Booking titles carry hirer names; the export keeps only what
+                # the controller acted on (the eco-keyword match).
+                "cal_title": {z: self._redact_title(t) for z, t in self.cal_title.items()},
+                "alarms": alarms,
                 "drive": {
                     "enabled": self.switch_on("drive_to_target", default=True),
                     "pushed": dict(self._drive_pushed),
@@ -2265,9 +2293,39 @@ class ScoutController:
                 "ceiling_rh": self._ceiling_humidity(),
                 "heat_demand": self.heat_demand,
             },
-            "events": self.audit.to_list(),
+            "events": [self._redact_event(e) for e in self.audit.to_list()],
             "trace": self.trace.to_list(),
         }
+
+    def _entity_state(self, entity_id: str | None) -> str | None:
+        if not entity_id:
+            return None
+        st = self.hass.states.get(entity_id)
+        return None if st is None else st.state
+
+    def _redact_title(self, title: str | None) -> str | None:
+        """Reduce a booking title to what the controller used it for.
+
+        Calendar titles are hirer names (a group, sometimes a person), and the
+        diagnostics export is pasted into support sessions — so the export
+        never carries the raw title (Rointe/Nexa review rec 9, 2026-09-16).
+        The only thing the controller reads from a title is the eco-keyword
+        match, and that is what is kept: ``eco:<keywords>`` for a match,
+        ``redacted`` otherwise; an empty/None title is passed through.
+        """
+        if not title:
+            return title
+        lowered = str(title).lower()
+        hits = [kw for kw in self.eco_keywords() if kw and kw in lowered]
+        return f"eco:{','.join(hits)}" if hits else "redacted"
+
+    def _redact_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """A copy of an audit event with any booking title redacted."""
+        if "title" not in event:
+            return event
+        redacted = dict(event)
+        redacted["title"] = self._redact_title(event.get("title"))
+        return redacted
 
     async def async_reset_tunables(self) -> None:
         """Restore every tunable helper to its built-in default.
@@ -2824,6 +2882,11 @@ class ScoutController:
         on the warm-enough decision path (`_shared_wants_heat`), omitted for the
         frost/diagnostic reads where a stale value is harmless.
         """
+        vals = self._shared_climate_temps(stale_min)
+        return min(vals) if vals else None
+
+    def _shared_climate_temps(self, stale_min: float | None = None) -> list[float]:
+        """All readable room temperatures from the shared-zone heaters."""
         vals: list[float] = []
         for climate in self._as_list(self.config.get(CONF_SHARED_CLIMATES)):
             st = self.hass.states.get(climate)
@@ -2839,7 +2902,12 @@ class ScoutController:
                     vals.append(float(temp))
             except (TypeError, ValueError):
                 continue
-        return min(vals) if vals else None
+        return vals
+
+    def _shared_room_avg(self) -> float | None:
+        """Mean of the shared-zone heaters' readings (the drive's zone average)."""
+        vals = self._shared_climate_temps()
+        return sum(vals) / len(vals) if vals else None
 
     def _shared_wants_heat(self) -> bool:
         """True when the shared zone is genuinely below its comfort target — the
@@ -3449,6 +3517,13 @@ class ScoutController:
             until = self.boost_until.get(zone)
             if until is not None and now >= until:
                 self.boost_until[zone] = None
+                self.audit.record(
+                    "boost_expired",
+                    now,
+                    zone=zone,
+                    coldest=self._zone_room_temp(zone, coldest=True),
+                    average=self._zone_room_temp(zone),
+                )
                 self._reconcile_pending = True
 
     def _detect_drift(self) -> None:
