@@ -152,6 +152,16 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   climbs (outdoor < 12) now fold and pull the rate toward the true cold-fabric ~40+, and
   that the gate is not so strict it never learns before deep winter (if autumn cold
   mornings are being rejected at 12-14 °C, nudge `WARMUP_COLD_MAX_OUTDOOR` up toward 13-14).
+  **That decision rule fired on the first autumn pre-heat (2026-09-17, v1.37.0 — Q25
+  PR 7).** The 06:00Z Squirrels pre-heat was a genuine pre-dawn cold-fabric climb
+  (outdoor 13.5 at the open, 4 °C deficit, fans reverse) and the sample was rejected
+  `mild True` because the gate read the outdoor at the *closing* tick (15.2, after
+  sunrise). Two changes: the line is now **14.0**, and the gate judges the **average
+  outdoor over the whole climb** (`_warmup_outdoor` accumulates every tick including the
+  closing one; unknown throughout still counts as not-cold). The same export showed the
+  reset-40 rate over-leads a 4 °C cold start ~2× (181-min lead vs 77 min actual) — the
+  cold gate had been starving the learn-down, so this is also an energy fix. First
+  in-family cold sample expected on the next cool (<14) morning booking.
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
@@ -1229,6 +1239,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
       burn start, which the 30-min settle window covers. **First-winter watch:** no
       `drive_setpoint_rejected` should now appear on a heater whose panel is warm;
       one on a genuinely cold panel after a settled mismatch is the real fault.
+    - **PR 7 — learning samples judged on the conditions they were taken in
+      (2026-09-17 export, v1.37.0; not in the owner's nine — the first export after
+      PRs 1–6 exposed both).** (a) The warm-up cold gate reads the **average outdoor
+      over the climb** and its line is **14 °C** (`WARMUP_COLD_MAX_OUTDOOR`) — the
+      06:00Z pre-dawn Squirrels pre-heat (13.5 out, a real 4 °C cold-fabric climb) had
+      been thrown away as "mild" on the post-sunrise closing reading (15.2), which is
+      the Q3 decision rule's case exactly. (b) The cool-off anchor waits for the
+      **panels to cool** (`COOL_SETTLE_SURFACE_C` = 5, `_zone_panels_hot`) as well as
+      the 20-min clock: after a hard drive the panels release for 45+ min and the
+      shed past the mid-wall probe read as a 5.7× "opening" — the hall 09:11Z and
+      office 19:03Z false pushes. Both are sample-selection only: neither touches a
+      setpoint, a fan or the alarm logic. Tests in `tests/test_learning_conditions.py`.
     - **Rec 3 (drift from intended setpoint, never `preset_mode`)** is already the
       `_setpoint_matches` fallback, but its 0.3 tolerance is failed by the
       stale-cache off-by-one — it becomes correct once PR 1 lands; do not touch
@@ -1693,6 +1715,22 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   probe being our only room signal — stays open (owner's preferred fix is an
   independent seated-height room sensor per zone, per Q19; this is the code-only
   mitigation chosen for now).
+  **The residual transient DID trip it — twice in one day — so the anchor now also
+  waits for the PANELS to cool (`COOL_SETTLE_SURFACE_C` = 5, v1.37.0, 2026-09-17
+  export, Q25 PR 7).** The fixed 20-min floor was sized to an ordinary cut-off; after
+  a *hard drive* the panels sit at ~60 °C for 45+ min (09-16: `hall_surface` 61 →
+  26 over 08:03–09:03Z), the room coasts UP under them for ~35 min (the Q23 oil-mass
+  tail) and then sheds the stored panel heat past the mid-wall probe fast. The
+  hall sample anchored at that coast peak (21.4 at 08:44Z) and read the shed as
+  **5.7× baseline → `opening_inferred` push at 09:11Z with nothing open**; the office
+  did the same at 19:03Z after its booking. Fix: `_zone_panels_hot` — while the
+  hottest panel surface in the zone is more than 5 °C above the room reading, the
+  cool-off does not anchor (the time floor still applies beneath it; no surface
+  sensor → time floor alone, unchanged). Physical rather than a longer timer: it
+  waits exactly as long as the panels are actually releasing. Fail-safe: only delays
+  the anchor, never corrupts k. **First-winter watch:** a post-boost or post-booking
+  cool-off must no longer push `opening_inferred`; if one still does with the panels
+  cold, it is a real opening or the freeze signature (PR 5), not the transient.
   **OUTSTANDING — the settle-delay does NOT catch the office's recurring 3am false
   alarm; a DIFFERENT mechanism (probe freeze-then-unfreeze) is now firing ~nightly
   (2026-09-14 AND 09-15 03:17, post-deploy).** The office probe holds one value flat

@@ -429,7 +429,23 @@ COOL_FREEZE_FLAT_MINUTES = 90.0
 # not-cold (fail-safe: keep the conservative rate rather than fold an
 # unattributable climb). Sits well below the ~15-18 °C contamination band and the
 # UK heating base (15.5) while capturing real cold mornings.
-WARMUP_COLD_MAX_OUTDOOR = 12.0
+# Raised 12 → 14 and judged on the sample's AVERAGE outdoor (2026-09-17): a
+# pre-dawn cold-fabric pre-heat (outdoor 13.5 at 06:00Z) was rejected as "mild"
+# because the outdoor read 15.2 at the sample's END after sunrise — the exact
+# case the Q3 decision rule anticipated ("autumn cold mornings rejected at
+# 12-14 → nudge toward 13-14"). The reset-40 rate is now known to over-lead a
+# 4 °C cold start ~2× (77 min actual vs a 181-min lead), which is wasted energy.
+WARMUP_COLD_MAX_OUTDOOR = 14.0
+# A cool-off sample anchors only once the zone's radiators have cooled: while a
+# panel is still this far above the room it is releasing stored heat past the
+# mid-wall probe beside it, and the "decay" is the panel, not the fabric. The
+# fixed COOL_SETTLE_MINUTES (20) was sized to an ordinary cut-off; a hard drive
+# leaves panels at 60 °C for 45+ min (field 2026-09-16: surface 61 → 26 over
+# 08:03–09:03Z) and the sample anchored at the coast peak then read the panel
+# shed as a 5.7× "opening" — two false pushes in one day (hall 09:11Z, office
+# 19:03Z). The panel surface is live on this hardware (the one signal the Rointe
+# review trusts), so it is the physical gate; the time floor remains beneath it.
+COOL_SETTLE_SURFACE_C = 5.0
 ZONE_DOORS = {ZONE_A: CONF_ZONE_A_DOORS, ZONE_B: CONF_ZONE_B_DOORS}
 ZONE_WINDOWS = {ZONE_A: CONF_ZONE_A_WINDOWS, ZONE_B: CONF_ZONE_B_WINDOWS}
 ZONE_MOTION_AREA = {ZONE_A: "hall", ZONE_B: "office"}
@@ -709,6 +725,9 @@ class ScoutController:
         # +1.0 on 2026-09-16), so each heater's reading is watched too.
         self._warmup_probe_prev: dict[str, dict[str, float]] = {}
         self._warmup_probe_jump: dict[str, float] = {}
+        # Outdoor readings accumulated over a warm-up sample, so the cold gate
+        # judges the sample's conditions, not the last tick's.
+        self._warmup_outdoor: dict[str, list[float]] = {}
         self._drive_reject_notified = False
         self._opening_notified: set[str] = set()
         # Fire fallback latch: on a panel fire the fans are hardware-cut, but this
@@ -1482,6 +1501,8 @@ class ScoutController:
                     w = self._o1_watts() if zone == ZONE_A else None
                     self._warmup_probe_prev[zone] = self._zone_probe_readings(zone)
                     self._warmup_probe_jump[zone] = 0.0
+                    out0 = self._outdoor_temp()
+                    self._warmup_outdoor[zone] = [out0, 1.0] if out0 is not None else [0.0, 0.0]
                     self._warmup_start[zone] = (
                         now,
                         temp,
@@ -1514,6 +1535,11 @@ class ScoutController:
                         max_tick_rise = max(max_tick_rise, temp - prev_temp)
                     prev_temp = temp
                 self._note_warmup_probe_jump(zone)
+                out_now = self._outdoor_temp()
+                if out_now is not None:
+                    acc = self._warmup_outdoor.setdefault(zone, [0.0, 0.0])
+                    acc[0] += out_now
+                    acc[1] += 1
                 self._warmup_start[zone] = (
                     started,
                     start_temp,
@@ -1531,6 +1557,7 @@ class ScoutController:
             # fan-assisted one when the fans ran for most of the warm-up.
             self._warmup_start[zone] = None
             if temp is None:
+                self._warmup_outdoor.pop(zone, None)
                 self.audit.record(
                     "warmup_discarded",
                     now,
@@ -1558,7 +1585,16 @@ class ScoutController:
             # (WARMUP_COLD_MAX_OUTDOOR — the same outdoor gave 44 vs 12 min/°C by
             # time of day, so only cold-morning conditions are trusted). Flagged
             # for the audit; no push (the sun helping is not something to act on).
-            outdoor = self._outdoor_temp()
+            # Judge the cold gate on the AVERAGE outdoor over the climb: a
+            # pre-dawn sample must not be thrown away because the sun was up by
+            # the time it closed (2026-09-17: 13.5 at start, 15.2 at the end).
+            # The closing tick counts too, like its rise.
+            acc = self._warmup_outdoor.pop(zone, None) or [0.0, 0.0]
+            out_now = self._outdoor_temp()
+            if out_now is not None:
+                acc[0] += out_now
+                acc[1] += 1
+            outdoor = (acc[0] / acc[1]) if acc[1] else None
             mild = outdoor is None or outdoor > WARMUP_COLD_MAX_OUTDOOR
             # The tick guard is applied to the zone average AND to every single
             # probe: a +4.0 freeze-then-jump on one of four hall probes reads as
@@ -1603,6 +1639,21 @@ class ScoutController:
             write = getattr(entity, "write_value", None)
             if write is not None and new_rate != old_rate:
                 write(new_rate)
+
+    def _zone_panels_hot(self, zone: str, room: float) -> bool:
+        """Is any radiator panel in the zone still releasing stored heat?
+
+        True while the hottest panel surface sits more than
+        ``COOL_SETTLE_SURFACE_C`` above the room reading — the decay measured
+        then is the panel cooling past the probe beside it, not the fabric. No
+        surface sensor → False (the time floor alone applies, as before).
+        """
+        hottest: float | None = None
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+            surface = self._num_state(self._heater_sensor(climate, "surface"))
+            if surface is not None and (hottest is None or surface > hottest):
+                hottest = surface
+        return hottest is not None and hottest - room > COOL_SETTLE_SURFACE_C
 
     def _zone_probe_readings(self, zone: str) -> dict[str, float]:
         """Each readable heater's own room reading, keyed by climate."""
@@ -1684,7 +1735,10 @@ class ScoutController:
                     since = self._cooloff_cooling_since[zone]
                     if since is None:
                         self._cooloff_cooling_since[zone] = now
-                    elif (now - since).total_seconds() / 60 >= COOL_SETTLE_MINUTES:
+                    elif (
+                        (now - since).total_seconds() / 60 >= COOL_SETTLE_MINUTES
+                        and not self._zone_panels_hot(zone, temp)
+                    ):
                         self._cooloff_start[zone] = _anchor(temp)
                 else:
                     # Heating (or reading lost): a later cool-off re-settles.
