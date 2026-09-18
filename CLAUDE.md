@@ -56,6 +56,32 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   rejected, with inputs), pre-heat decision, booking start/end outcome,
   preset change (with reason), fan change (with occupied/warm/ΔT/watts),
   seasonal/water/fault event is recorded.
+- **Every reconcile step runs isolated, and a failing one is LOUD (v1.40.0).**
+  `async_reconcile` used to be one straight-line `try`, so an exception anywhere
+  silently abandoned every step after it — on that tick and on every tick
+  afterwards, for as long as the condition persisted, with nothing in the audit
+  trail to say so. **Field 2026-09-17: something in the back half threw for
+  4 h 41 min across two heated evening bookings.** Everything up to the drive kept
+  running (presets, `drive_freeze_hold`, `drive_approach_hold`, `drive_coast_ease`
+  are all in the log through the whole window), but `_reconcile_fans` never ran
+  again — so the ceiling fans stayed stuck **forward (down-air) through both
+  heated slots**, wind-chilling the people the heat was for, with no `fan_change`
+  between 15:17Z and 20:51Z — and `_sample_trace` never ran either, so the trace
+  has a **281-minute hole** over exactly the episode that would have explained it
+  (plus a 34-min one at 15:36Z, so it was intermittent, and it began ~2 h after the
+  13:54Z v1.38.0/v1.39.0 restart). `_expire_boosts` and the state save sit behind
+  it too. `_run_step` now runs each step in its own `try`: a failure is confined to
+  that step, audits `reconcile_error` (step, exception type, detail) on the
+  **rising edge only** (a step throwing every 30 s must not fill the bounded log
+  or spam the phone), raises a persistent notification and a companion push, and
+  audits `reconcile_recovered` + dismisses when it works again;
+  `state.reconcile_failing` carries the live set. The alerting itself is wrapped,
+  so a broken notification path can never be the thing that halts the loop. This
+  does not fix whatever threw — the steps still run in order and share state, so a
+  skipped step can leave a later one on a stale value, which is precisely why the
+  alert matters. **Owner-side: the HA log holds the traceback** (search
+  `scout_hut_heating` around 2026-09-17 15:50Z); send it and the cause can be
+  fixed at source.
 - **The cool-off learning is self-protecting against unsensored openings
   (v1.25.4).** Two layers on top of the gap/tick guards. (1) *Robust EWMA*
   (`MAX_COOL_STEP_FRAC` = 0.25): no single cool-off may move a zone's
@@ -1654,8 +1680,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   when its siblings freeze-jumped +4 °C and forfeited 1.0 °C of committed
   overdrive on the cold end; a merely-late probe now keeps its overdrive for
   when it catches up, a probe that stays insane is driven at the plain target
-  and never harder; every withdrawal is audited as `drive_withdrawn` with its
-  reason, and an insane probe is left out of the approach guard's zone average);
+  and never harder; a **fault** withdrawal (`unreadable` / `insane`) is audited as
+  `drive_withdrawn` with its reason — the routine `not_comfort` one is NOT, since
+  v1.40.0: it fires per heater on every exit from comfort and burned 56 events in
+  41 h of field running (2026-09-17), 11 % of the bounded log, squeezing its span
+  to four days, while the `preset` event beside it already says what happened; and
+  an insane probe is left out of the approach guard's zone average);
   a **target drop** (boost expiry, hold collapse) resets that heater's staircase
   (`drive_target_drop`) instead of re-pushing the old overdrive on the lower
   target; **last-will reset** on
@@ -1755,6 +1785,25 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   measured tail); and `booking_start.shortfall` must not go positive on a session
   that saw an easing — if it does, the gates are too loose for cold weather and the
   allowance should scale down with the indoor-outdoor gap.
+  **First field run (2026-09-17, the v1.39.0 deploy evening): it ENGAGED correctly
+  four times and the measurement was BROKEN, fixed v1.40.0.** Every episode logged
+  `rise` 0.0 — structurally, not by accident: on this plant the tail is *what ends
+  the episode*. The mass carries the room past target, the room reads warm, the zone
+  drops to ice on `booking_warm`, and the `comfort` gate fails on that very tick, so
+  the peak was read from the last still-easing tick and the tail was thrown away.
+  The 18:46Z hall episode is the proof — `peak` 19.38, `rise` 0.0, but `ended`
+  **20.25**: the mass had delivered **+0.87 °C, nearly twice the 0.5 allowance**,
+  and the audit said it delivered nothing. `_end_drive_coast` now folds the closing
+  reading into the peak. **Two other observations from that evening, not changed:**
+  the episodes were short (0.94–7.94 min, never near the 20-min box) and one was cut
+  off mid-approach when `booking_start` raised the target by the hold margin (19.0 →
+  19.5) and the room fell out of the band — correct by the letter of the gate, but it
+  means an approach that straddles a booking start gets two truncated windows instead
+  of one; judge whether that matters once the rises are honest. `peak_over` did not
+  improve that night (1.12 and 1.62 on the two evening bookings), which is expected
+  with the easing letting go after ~3 min. **So the first real evidence is +0.87 from
+  one contaminated sample (20 children in the room) — NOT enough to move the constant.
+  Read `drive_coast_end.rise` over several heated bookings first.**
   **The 15-min trace now carries `hall_fire` and `drive_off` (2026-08-28) so a
   climb is retrospectively attributable** — `hall_fire` is the count of hall
   heaters reporting `hvac_action == heating`, `drive_off` the largest overdrive
