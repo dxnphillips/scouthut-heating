@@ -234,7 +234,7 @@ def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     assert _pushed(hass, _num(HB)) >= target + held - 1e-9
 
 
-def test_leaving_comfort_withdraws_the_number_only_and_is_audited():
+def test_leaving_comfort_withdraws_the_number_only_and_is_not_audited():
     _wire_numbers()
     ctrl, hass = make_controller()
     _hall_comfort(ctrl, hass, {HB: 18.0, HF: 18.0})
@@ -249,8 +249,11 @@ def test_leaving_comfort_withdraws_the_number_only_and_is_audited():
     assert _pushed(hass, _num(HB)) == ctrl.number("hall_comfort_temp")
     assert len(_landings(hass, HB)) == landings_before
     assert ctrl._drive_stair[HB] == 0.0
-    withdrawn = _events(ctrl, "drive_withdrawn")
-    assert withdrawn and withdrawn[-1]["reason"] == "not_comfort"
+    # The routine end of a driven episode is NOT audited: it fires per heater on
+    # every exit from comfort (56 events in 41 h of field running, 11 % of the
+    # bounded log) and the `preset` event beside it already says what happened.
+    # Only the silent FAULT withdrawals (`unreadable`, `insane`) keep their mark.
+    assert [e["reason"] for e in _events(ctrl, "drive_withdrawn")] == []
 
 
 # --- Target drop: the staircase restarts instead of riding the old overdrive -

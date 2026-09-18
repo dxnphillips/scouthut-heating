@@ -443,6 +443,7 @@ NOTIFY_DRIVE_REJECTED = "scout_drive_setpoint_rejected"
 NOTIFY_DRIVE_NO_RESPONSE = "scout_drive_no_response"
 NOTIFY_DASHBOARDS = "scout_dashboards"
 NOTIFY_FIRE = "scout_fire_hold"
+NOTIFY_RECONCILE_ERROR = "scout_reconcile_error"
 
 # Fire fallback: the scouthut-alarmnotification (Texecom Alerts) integration
 # fires this bus event for every classified panel event; a fire carries an

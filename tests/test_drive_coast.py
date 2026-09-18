@@ -178,6 +178,25 @@ def test_the_episode_records_what_the_mass_actually_delivered():
     assert evt["minutes"] == pytest.approx(10.0)
 
 
+def test_the_closing_reading_counts_toward_the_rise():
+    # On this plant the tail is WHAT ENDS the episode: the mass carries the room
+    # past target, the room reads warm, the zone drops out of comfort — and the
+    # gate fails on that very tick. Reading the peak only from the last still-easing
+    # tick threw the measurement away exactly when there was one to make (field
+    # 2026-09-17: peak 19.38 / rise 0.0 logged while `ended` was 20.25 — the mass
+    # had delivered +0.87, nearly twice the allowance).
+    ctrl, _ = _ctrl(panel=55.0)
+    now = ctrl._now()
+    _coast(ctrl, 19.38, at=now)
+    # The elements have cut, the room sails up on stored heat and goes warm, so the
+    # zone leaves comfort — the episode ends on the tick that carries the evidence.
+    ctrl._drive_coast(ZA, 19.5, 20.25, False, now + timedelta(minutes=3))
+    (evt,) = _events(ctrl, "drive_coast_end")
+    assert evt["ended"] == pytest.approx(20.25)
+    assert evt["peak"] == pytest.approx(20.25)
+    assert evt["rise"] == pytest.approx(0.87)
+
+
 # --- End to end through the reconciler ---------------------------------------
 def _wire_hall(panel):
     """Both hall heaters with a comfort number; hall_back also has a panel probe."""

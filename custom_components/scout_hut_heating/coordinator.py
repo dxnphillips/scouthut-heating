@@ -24,6 +24,7 @@ Priority (highest wins), per heated zone:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections import deque
 from datetime import datetime, timedelta
@@ -117,6 +118,7 @@ from .const import (
     NOTIFY_FIRE,
     NOTIFY_HEATERS_OFFLINE,
     NOTIFY_OPENING_INFERRED,
+    NOTIFY_RECONCILE_ERROR,
     NOTIFY_SEASONAL,
     NOTIFY_SHARED_OPENING,
     NOTIFY_ZONE_HOLD,
@@ -785,6 +787,10 @@ class ScoutController:
         self._started_at: datetime | None = None
         self._reconciling = False
         self._reconcile_pending = False
+        # Reconcile steps currently raising (see _run_step). Deliberately NOT
+        # persisted: a restart is a fresh start, and the first failing tick after
+        # it re-raises the alert anyway.
+        self._step_failing: set[str] = set()
         self._debounce_cancel = None
 
     # ------------------------------------------------------------------
@@ -1743,12 +1749,24 @@ class ScoutController:
     def _end_drive_coast(
         self, zone: str, now: datetime, zone_avg: float | None
     ) -> None:
-        """Close an easing episode and record what the mass actually delivered."""
+        """Close an easing episode and record what the mass actually delivered.
+
+        The closing reading is folded into the peak, because on this plant the
+        tail is *what ends the episode*: the mass carries the room past target,
+        the room reads warm, the zone drops out of comfort — and the gate fails on
+        that very tick. Reading the peak only from the last still-easing tick
+        therefore threw the measurement away exactly when there was one to make
+        (field 2026-09-17: an episode logged ``peak`` 19.38 and ``rise`` 0.0 while
+        ``ended`` was 20.25 — the mass had delivered +0.87, nearly twice the
+        allowance, and the audit said it delivered nothing).
+        """
         started = self._drive_coast_since.pop(zone, None)
         began = self._drive_coast_from.pop(zone, None)
         peak = self._drive_coast_peak.pop(zone, None)
         if started is None:
             return
+        if zone_avg is not None:
+            peak = zone_avg if peak is None else max(peak, zone_avg)
         self.audit.record(
             "drive_coast_end",
             now,
@@ -2570,6 +2588,10 @@ class ScoutController:
                 "heaters_offline": {
                     z: _iso(t) for z, t in self._heaters_offline_since.items() if t
                 },
+                # Reconcile steps currently raising: every step AFTER one of these
+                # is being skipped each tick, so anything it owns (fans, the trace,
+                # the drive) is stale. Non-empty is a fault, not a curiosity.
+                "reconcile_failing": sorted(self._step_failing),
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
                 # Booking titles carry hirer names; the export keeps only what
@@ -3420,7 +3442,30 @@ class ScoutController:
     # The reconcile loop
     # ------------------------------------------------------------------
     async def async_reconcile(self) -> None:
-        """Recompute and apply desired state for every zone."""
+        """Recompute and apply desired state for every zone.
+
+        Every step runs **isolated** (``_run_step``): the reconcile used to be one
+        straight-line ``try``, so an exception anywhere silently abandoned every
+        step after it — on that tick and on every tick afterwards, for as long as
+        the condition persisted, with nothing in the audit trail to say so. Field
+        2026-09-17: something in the back half threw for **4 h 41 min** across two
+        heated evening bookings. Everything up to the drive kept running (presets,
+        the drive's own staircase and coast events are all in the log), but
+        ``_reconcile_fans`` never ran again — so the ceiling fans stayed stuck in
+        the cooling (forward, down-air) direction through both heated slots,
+        wind-chilling the people the heat was for — and ``_sample_trace`` never ran
+        either, so the instrument went dark over exactly the episode that would
+        have explained it. ``_expire_boosts`` and the state save sit behind it too.
+
+        Isolating the steps cannot fix whatever threw, but it bounds the blast
+        radius to the one step and, far more importantly, makes the failure
+        **visible**: the first failure of a step audits ``reconcile_error`` with
+        the step name and the exception, raises a persistent notification and
+        pushes to the companion app; recovery audits ``reconcile_recovered`` and
+        dismisses. The steps are deliberately still run in order and share state,
+        so a skipped step can leave a later one working on a stale value — which
+        is exactly why the alert matters rather than quietly carrying on.
+        """
         if not self._started:
             return
         if self._reconciling:
@@ -3428,27 +3473,30 @@ class ScoutController:
             return
         self._reconciling = True
         try:
-            self._refresh_motion_from_states()
-            self._track_probe_changes()
-            await self._evaluate_openings()
-            await self._update_heaters_offline()
-            self._record_booking_edges()
-            self._update_passive_rise()
-            await self._reconcile_zones()
-            await self._reconcile_hall_temps()
-            self._update_warmup_learning()
-            self._update_cooloff_learning()
-            await self._update_opening_inferred_alarm()
-            await self._update_fire_alarm()
-            await self._reconcile_shared()
-            await self._reconcile_drive()
-            await self._reconcile_water()
-            await self._reconcile_fans()
-            self._note_fan_speed()
-            self._check_condensation()
-            self._sample_trace()
-            self._detect_drift()
-            self._expire_boosts()
+            for name, step in (
+                ("motion", self._refresh_motion_from_states),
+                ("probe_changes", self._track_probe_changes),
+                ("openings", self._evaluate_openings),
+                ("heaters_offline", self._update_heaters_offline),
+                ("booking_edges", self._record_booking_edges),
+                ("passive_rise", self._update_passive_rise),
+                ("zones", self._reconcile_zones),
+                ("hall_temps", self._reconcile_hall_temps),
+                ("warmup_learning", self._update_warmup_learning),
+                ("cooloff_learning", self._update_cooloff_learning),
+                ("opening_alarm", self._update_opening_inferred_alarm),
+                ("fire_alarm", self._update_fire_alarm),
+                ("shared", self._reconcile_shared),
+                ("drive", self._reconcile_drive),
+                ("water", self._reconcile_water),
+                ("fans", self._reconcile_fans),
+                ("fan_speed", self._note_fan_speed),
+                ("condensation", self._check_condensation),
+                ("trace", self._sample_trace),
+                ("drift", self._detect_drift),
+                ("boosts", self._expire_boosts),
+            ):
+                await self._run_step(name, step)
             self._store.async_delay_save(self._state_snapshot, 60)
             async_dispatcher_send(self.hass, SIGNAL_UPDATE)
         finally:
@@ -3456,6 +3504,66 @@ class ScoutController:
         if self._reconcile_pending:
             self._reconcile_pending = False
             await self.async_reconcile()
+
+    async def _run_step(self, name: str, step: Any) -> None:
+        """Run one reconcile step, surfacing a failure instead of hiding it.
+
+        Best-effort by design: the alerting itself is wrapped so a broken
+        notification path can never be the thing that stops the reconcile.
+        """
+        try:
+            result = step()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("Scout Hut reconcile step %r failed", name)
+            try:
+                await self._note_step_failure(name, err)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        if name in self._step_failing:
+            self._step_failing.discard(name)
+            self.audit.record("reconcile_recovered", self._now(), step=name)
+            if not self._step_failing:
+                persistent_notification.async_dismiss(
+                    self.hass, NOTIFY_RECONCILE_ERROR
+                )
+
+    async def _note_step_failure(self, name: str, err: Exception) -> None:
+        """Audit + alert on the rising edge of a step failing.
+
+        Rising edge only: a step that throws every 30 s must not fill the bounded
+        event log (which is the instrument) or spam the phone. The notification is
+        refreshed while any step is failing so it always names the current set.
+        """
+        first = name not in self._step_failing
+        self._step_failing.add(name)
+        if not first:
+            return
+        self.audit.record(
+            "reconcile_error",
+            self._now(),
+            step=name,
+            error=type(err).__name__,
+            detail=str(err)[:200],
+        )
+        steps = ", ".join(sorted(self._step_failing))
+        message = (
+            f"The heating controller failed on: {steps}. "
+            f"Last error: {type(err).__name__}: {str(err)[:200]}. "
+            "Steps after a failure are skipped, so fans, the trace or the drive "
+            "may be stale — check the Home Assistant log for the traceback."
+        )
+        persistent_notification.async_create(
+            self.hass,
+            message,
+            title="Scout Hut: controller error",
+            notification_id=NOTIFY_RECONCILE_ERROR,
+        )
+        await self._push_companion(
+            "Scout Hut: controller error", message, icon="mdi:alert-circle"
+        )
 
     def _hall_heaters_firing(self) -> int:
         """How many hall heaters report ``hvac_action == heating`` right now.
@@ -4459,7 +4567,13 @@ class ScoutController:
         withdrawn edge as ``drive_withdrawn`` — this used to be the one drive
         decision that left no mark on the instrument.
         """
-        if climate in self._drive_driven:
+        # `not_comfort` is the ordinary end of a driven episode and fires on every
+        # heater of a zone every time it leaves comfort — 56 events in 41 h of field
+        # running (2026-09-17), 11 % of the bounded log, squeezing its span to four
+        # days. It is also fully explained by the `preset` event beside it. The
+        # silent decisions this audit was added for are the FAULT withdrawals
+        # (`unreadable`, `insane`), which have no other mark; only those are kept.
+        if climate in self._drive_driven and reason != "not_comfort":
             self.audit.record(
                 "drive_withdrawn",
                 self._now(),
