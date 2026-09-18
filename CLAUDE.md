@@ -79,9 +79,29 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   so a broken notification path can never be the thing that halts the loop. This
   does not fix whatever threw — the steps still run in order and share state, so a
   skipped step can leave a later one on a stale value, which is precisely why the
-  alert matters. **Owner-side: the HA log holds the traceback** (search
-  `scout_hut_heating` around 2026-09-17 15:50Z); send it and the cause can be
-  fixed at source.
+  alert matters.
+  **ROOT CAUSE FOUND AND FIXED (v1.40.1, owner's HA log — `KeyError: 'shared'`,
+  1335 occurrences 16:43–21:53 local).** `_zone_panels_hot` resolved its heaters
+  through `ZONE_CLIMATES`, which maps **only hall and office**. It was written for
+  the v1.37.0 cool-off anchor (two zones), then v1.39.0's coast-aware approach
+  began calling it from `_reconcile_drive`, which loops **`DRIVE_ZONE_CLIMATES` —
+  all three driven zones**. So every tick the hall and office drove normally,
+  `_drive_coast` reached the shared pass, and `ZONE_CLIMATES["shared"]` raised.
+  That is why the audit log looked healthy right up to the drive and then stopped:
+  the exception landed *inside* `_reconcile_drive`, after its first two zones. It
+  needed the shared zone in **comfort** with its average inside the coast band to
+  fire (the `ready` chain short-circuits before the panel check otherwise), which
+  is why it only began ~2 h after the deploy — at the first evening booking that
+  drove the toilets. Fixed by resolving through `DRIVE_ZONE_CLIMATES` (identical
+  for the two learning zones), with an unmapped zone yielding no climates and so
+  False — the same fail-safe as no surface sensor. Regression tests in
+  `tests/test_drive_coast.py` (a direct `_zone_panels_hot("shared", …)` and a full
+  reconcile with the shared zone driven, asserting `reconcile_failing` is empty);
+  both reproduce the field `KeyError` when the fix is reverted.
+  **The lesson worth keeping: a helper written for a two-zone loop was later
+  called from a three-zone one.** `ZONE_CLIMATES` (hall + office) and
+  `DRIVE_ZONE_CLIMATES` (+ shared) look interchangeable and are not; indexing the
+  former with `[zone]` in anything the drive can reach is a latent `KeyError`.
 - **The cool-off learning is self-protecting against unsensored openings
   (v1.25.4).** Two layers on top of the gap/tick guards. (1) *Robust EWMA*
   (`MAX_COOL_STEP_FRAC` = 0.25): no single cool-off may move a zone's

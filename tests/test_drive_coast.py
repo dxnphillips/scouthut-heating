@@ -221,6 +221,43 @@ def _last_setpoint(hass, climate):
     return val
 
 
+def test_the_shared_zone_is_a_driven_zone_too():
+    # `_reconcile_drive` loops all THREE driven zones, but `_zone_panels_hot`
+    # resolved climates through ZONE_CLIMATES (hall + office only), so the shared
+    # pass raised KeyError('shared') every 30 s. Field 2026-09-17: that ran for
+    # 5 h, abandoning the fans (stuck blowing forward through two heated bookings)
+    # and the trace along with it.
+    from scout_testkit import E
+
+    kitchen = E["shared"][0]
+    surface = "sensor.kitchen_surface_temperature"
+    set_registry(
+        entries_by_device={"dev_kitchen": [surface]},
+        entity_devices={kitchen: "dev_kitchen"},
+    )
+    ctrl, hass = make_controller()
+    hass.states.set(surface, "55.0")
+    assert ctrl._zone_panels_hot("shared", 18.75) is True
+    assert ctrl._drive_coast("shared", 19.0, 18.75, True, ctrl._now()) == DRIVE_COAST_ALLOWANCE
+
+
+def test_a_full_reconcile_drives_every_zone_without_a_failing_step():
+    from scout_testkit import booking, motion, run, shared_temp
+
+    ctrl, _hass = make_controller()
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    motion(ctrl, "kitchen")
+    # Just below target: cold enough to be DRIVEN to comfort, close enough that the
+    # coast gate reaches the panel check rather than short-circuiting before it.
+    shared_temp(ctrl, 19.25)  # shared_comfort_temp default is 19.5
+    run(ctrl.async_reconcile())
+    assert ctrl.applied["shared"] == "comfort"
+    # v1.40.0 isolates a throwing step, so "did not raise" proves nothing — the
+    # failing set is what tells us the shared drive pass completed.
+    assert ctrl.diagnostics_data()["state"]["reconcile_failing"] == []
+
+
 def test_the_reconciler_lands_a_below_target_setpoint_on_the_hall():
     from scout_testkit import booking, motion, run
 
