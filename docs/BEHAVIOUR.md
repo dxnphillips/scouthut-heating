@@ -200,7 +200,12 @@ to the climate entity's own availability when no connectivity sensor exists.
   rising edge with the step name and exception, notifies (persistent + companion
   push), and audits `reconcile_recovered` when it heals; `state.reconcile_failing`
   carries the live set. Steps still run in order and share state, so a skipped one
-  can leave a later one on a stale value — the alert is the point.
+  can leave a later one on a stale value — the alert is the point. The 09-17 cause
+  was found in the HA log and fixed in v1.40.1: `_zone_panels_hot` resolved heaters
+  through `ZONE_CLIMATES` (hall + office only) but the v1.39.0 coast calls it from
+  `_reconcile_drive`, which loops all three driven zones, so the shared pass raised
+  `KeyError: 'shared'` 1335 times. It now resolves through `DRIVE_ZONE_CLIMATES`;
+  an unmapped zone yields no climates and so False.
 - Presets are only re-sent when the target actually changes, cutting chatter to
   the heaters.
 - Motion is tracked with in-memory "last seen" timestamps (equivalent to the

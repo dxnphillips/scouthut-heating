@@ -1786,9 +1786,19 @@ class ScoutController:
         ``COOL_SETTLE_SURFACE_C`` above the room reading — the decay measured
         then is the panel cooling past the probe beside it, not the fabric. No
         surface sensor → False (the time floor alone applies, as before).
+
+        Resolved through ``DRIVE_ZONE_CLIMATES``, not ``ZONE_CLIMATES``: this
+        started life serving only the cool-off anchor (hall + office), then
+        v1.39.0's coast-aware approach began calling it from ``_reconcile_drive``,
+        which loops all THREE driven zones — and ``ZONE_CLIMATES["shared"]``
+        raised ``KeyError`` every 30 s for 5 h on 2026-09-17, taking the fans, the
+        trace and the rest of the reconcile down with it (v1.40.0 isolates the
+        steps; this is the bug that isolation was built to surface). An unmapped
+        zone yields no climates and so no evidence of stored heat — False, the
+        same fail-safe as no surface sensor.
         """
         hottest: float | None = None
-        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+        for climate in self._as_list(self.config.get(DRIVE_ZONE_CLIMATES.get(zone))):
             surface = self._num_state(self._heater_sensor(climate, "surface"))
             if surface is not None and (hottest is None or surface > hottest):
                 hottest = surface
