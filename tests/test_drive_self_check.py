@@ -15,7 +15,7 @@ from custom_components.scout_hut_heating.coordinator import (
     DRIVE_SETTLE_MINUTES,
     DRIVE_STARTUP_GRACE_MINUTES,
 )
-from scout_testkit import PRESET_COMFORT, ZA, E, make_controller
+from scout_testkit import PRESET_COMFORT, ZA, E, make_controller, set_registry
 
 
 def _past_startup(ctrl):
@@ -264,3 +264,63 @@ def test_no_response_first_tick_arms_the_reference():
     ctrl._update_drive_no_response(ctrl._now())
     assert ctrl._drive_response_ref is not None
     assert not ctrl._drive_noresp_notified  # no alert on the arming tick
+
+
+# --- (b) The three witnesses, after the 2026-09-18 false fire ---------------
+# A pre-heat with all four heaters driven raised `drive_no_response` on a
+# perfectly healthy hall: the coldest probe sat frozen at 18.0 while the zone
+# AVERAGE climbed 18.38 -> 18.88, and the ceiling FELL 20.7 -> 19.8 because the
+# reverse destrat fans were doing exactly their job — all while the radiator
+# panels went 21.75 -> 31.25 degC.
+def test_the_movement_witness_is_the_average_not_the_frozen_coldest():
+    ctrl, hass = make_controller(config_overrides={CONF_CEILING_TEMP: CEIL})
+    _past_startup(ctrl)
+    ctrl.applied[ZA] = PRESET_COMFORT
+    # One end frozen and short of target, the rest of the room warming.
+    hass.states.set(E["hall"][0], "heat", {"current_temperature": 18.0})
+    hass.states.set(E["hall"][1], "heat", {"current_temperature": 19.5})
+    hass.states.set(CEIL, "19.8")
+    start = ctrl._now()
+    # Reference taken when the average was 0.5 degC lower.
+    ctrl._drive_response_ref = (
+        start - timedelta(minutes=DRIVE_NO_RESPONSE_MINUTES + 1), 18.25, 20.7
+    )
+    ctrl._update_drive_no_response(start)
+    assert not ctrl._drive_noresp_notified
+
+
+def test_hot_panels_abstain_even_with_a_falling_ceiling():
+    # Reverse fans strip the apex, so a healthy heated hall shows a falling
+    # ceiling. The panels are the proof of life the ceiling cannot give.
+    ctrl, hass = _no_resp_ctrl(ceiling=19.8)
+    set_registry(
+        entries_by_device={"dev_h0": ["sensor.hall_back_surface_temperature"]},
+        entity_devices={E["hall"][0]: "dev_h0"},
+    )
+    hass.states.set("sensor.hall_back_surface_temperature", "31.25")
+    start = ctrl._now()
+    ctrl._drive_response_ref = (
+        start - timedelta(minutes=DRIVE_NO_RESPONSE_MINUTES + 1), 17.0, 20.7
+    )
+    ctrl._update_drive_no_response(start)
+    assert not ctrl._drive_noresp_notified
+    assert ctrl._drive_response_ref is None
+
+
+def test_a_genuinely_dead_chain_still_alerts_with_cold_panels():
+    # The fault this check exists for — phantom push, dropout, lost power —
+    # leaves the panels COLD, so the abstention above cannot mask it.
+    ctrl, hass = _no_resp_ctrl()
+    set_registry(
+        entries_by_device={"dev_h0": ["sensor.hall_back_surface_temperature"]},
+        entity_devices={E["hall"][0]: "dev_h0"},
+    )
+    hass.states.set("sensor.hall_back_surface_temperature", "17.5")  # stone cold
+    start = ctrl._now()
+    ctrl._drive_response_ref = (
+        start - timedelta(minutes=DRIVE_NO_RESPONSE_MINUTES + 1), 17.0, 20.0
+    )
+    ctrl._update_drive_no_response(start)
+    assert ctrl._drive_noresp_notified
+    (evt,) = _audit(ctrl, "drive_no_response")
+    assert evt["coldest"] == 17.0

@@ -926,6 +926,26 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     climb (the settle/window sizes are still first guesses — over-generous on
     purpose); if the read-back ever flags on genuine slow adoption, widen
     `DRIVE_SETTLE_MINUTES` rather than tightening the tolerance.
+    **The no-response check DID false-fire, and both of its witnesses were at
+    fault (field 2026-09-18 16:15Z; fixed v1.41.0).** A hall pre-heat with all
+    four heaters driven raised `drive_no_response` while the chain was
+    demonstrably alive — panels 21.75 → 31.25 °C, `hall_kwh` +0.23, `hall_fire`
+    1–3. Two blind spots, each of which alone would have caused it: (a) the
+    movement witness read the **coldest** probe, which freeze-sat at 18.0 for the
+    whole 45 min while the zone AVERAGE climbed 18.38 → 18.88 — twice the 0.3
+    epsilon, i.e. the room *was* warming and the check watched the one probe that
+    wasn't; (b) **the ceiling is not a witness while the reverse fans run** — the
+    comment's "a capacity wall still warms the ceiling via stratification" is only
+    true with the fans off, and destrat exists precisely to pull the apex down, so
+    a healthy heated hall shows a FALLING ceiling (20.7 → 19.8 here). Fix: the
+    movement test now uses the room **average** (the coldest probe still sets the
+    *trigger* — "is the cold end short?" is the right question for "should it be
+    warming"), and `_zone_panels_hot` is a third witness that **abstains** outright
+    — a hot panel is direct proof of life on this hardware, and every fault this
+    check exists for (phantom push, dropout, lost power) leaves the panels COLD, so
+    it can only remove false positives, never mask the fault. `drive_no_response`
+    now also carries `coldest` alongside the average. Tests reproduce all three
+    classes against the un-fixed code.
     **Re-entry false-positive fixed (v1.22.1, 2026-08-07 field export).** The
     first v1.22.0 export caught `drive_setpoint_rejected` firing on the *shared*
     heaters (kitchen/gents) 8 s after the shared zone entered comfort — impossible
