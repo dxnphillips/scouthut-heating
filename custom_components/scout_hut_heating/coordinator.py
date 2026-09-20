@@ -4954,23 +4954,52 @@ class ScoutController:
             persistent_notification.async_dismiss(self.hass, NOTIFY_DRIVE_REJECTED)
 
     def _update_drive_no_response(self, now: datetime) -> None:
-        """Independent ceiling witness (Q20b): heat requested, nothing responds.
+        """Independent witness (Q20b): heat requested, nothing responds.
 
-        While the hall is in comfort and its coldest probe is still short of
-        target, the room SHOULD be warming somewhere. The ceiling thermometer is
-        an independent instrument: if, over a long window, NEITHER the floor NOR
-        the ceiling rises, the requested heat is reaching nothing anywhere — a
-        dead chain (phantom push, total outage), which a capacity wall is not (a
-        capacity wall still warms the ceiling via stratification). Needs both the
-        floor and the ceiling readable, or the witness is not independent and it
-        abstains.
+        While the hall is in comfort and its COLDEST probe is still short of
+        target, the room SHOULD be warming somewhere. If over a long window
+        nothing warms — not the room, not the ceiling, not the radiator panels —
+        the requested heat is reaching nothing at all: a dead chain (phantom
+        push, total outage), which a capacity wall is not.
+
+        Three witnesses, because the first two each have a blind spot that
+        false-fired this alert on a healthy hall (field 2026-09-18 16:15Z, a
+        pre-heat with all four heaters driven):
+
+        * **the room average, not the coldest probe.** The trigger rightly asks
+          "is the coldest end short?", but the *movement* test must not: that
+          probe freeze-jumps and sat flat at 18.0 for the whole window while the
+          zone average climbed 18.38 → 18.88, twice the epsilon. The room was
+          warming; the check was watching the one probe that wasn't.
+        * **the ceiling is not a witness while the destrat fans run.** Reverse
+          fans exist precisely to pull the hot apex down, so a *healthy* heated
+          hall shows a FALLING ceiling — it fell 20.7 → 19.8 across that window.
+          Covered by the third witness rather than by special-casing the fans.
+        * **hot panels are direct proof of life** (`_zone_panels_hot`, v1.37.0 —
+          the honest firing signal on this hardware). The panels went 21.75 →
+          31.25 °C during the false fire. Every fault this check exists for —
+          phantom push, cloud dropout, lost power — leaves the panels COLD, so
+          abstaining while they are hot cannot mask one; it only removes the
+          false positive.
+
+        Needs the room average and the ceiling readable, or the witness is not
+        independent and it abstains.
         """
         hall_comfort = self.applied.get(ZONE_A) == PRESET_COMFORT
-        floor = self._zone_room_temp(ZONE_A, coldest=True, stale_min=self._rointe_stale_min())
+        stale = self._rointe_stale_min()
+        coldest = self._zone_room_temp(ZONE_A, coldest=True, stale_min=stale)
+        floor = self._zone_room_temp(ZONE_A, stale_min=stale)
         ceiling = self._ceiling_temp()
         target = self._drive_comfort_target(ZONE_A)
-        short = floor is not None and floor < target - DRIVE_STEP
-        if self._within_startup_grace(now) or not (hall_comfort and short) or floor is None or ceiling is None:
+        short = coldest is not None and coldest < target - DRIVE_STEP
+        panels_hot = floor is not None and self._zone_panels_hot(ZONE_A, floor)
+        if (
+            self._within_startup_grace(now)
+            or not (hall_comfort and short)
+            or floor is None
+            or ceiling is None
+            or panels_hot
+        ):
             self._drive_response_ref = None
             if self._drive_noresp_notified:
                 self._drive_noresp_notified = False
@@ -4999,6 +5028,7 @@ class ScoutController:
                 "drive_no_response",
                 self._now(),
                 floor=floor,
+                coldest=coldest,
                 ceiling=ceiling,
                 target=target,
                 minutes=DRIVE_NO_RESPONSE_MINUTES,
