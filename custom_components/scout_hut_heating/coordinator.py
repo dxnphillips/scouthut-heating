@@ -323,6 +323,25 @@ DRIVE_APPROACH_BAND = DRIVE_STEP  # avg within this of target → hold, don't es
 # it twice (the same discipline as the learned rates).
 DRIVE_COAST_ALLOWANCE = 0.5
 DRIVE_COAST_MAX_MINUTES = 20.0
+# ...and one more gate, because the FIRST genuinely cold morning found the hole
+# (field 2026-09-21, outdoor 9-10 °C, a 4.5 °C deficit on a 240-min lead): the
+# Rointe probes freeze-then-jump, and this gate reads the zone average, so a
+# catch-up jump hands it a room that looks arrived when it is not. At 05:30Z the
+# freeze-guard held all four hall heaters (probes 15.0-16.0, pushed 20.0); by
+# 05:44Z they had all "risen" to ~18.5 — +3.24 on the average in ONE 15-min tick
+# — while the independent ceiling rose just 0.6 and the panels sat at 56 °C. The
+# easing engaged on that jumped average, pushed 18.5 (below the 19.0 target), the
+# elements cut, and the room then sat dead flat for the whole 20-min box
+# (`drive_coast_end.rise` 0.0). There was no tail to land because the room had
+# not actually arrived.
+#
+# So: a rise this large between evaluations is the READING catching up, never the
+# room (four probes each stepping a whole 0.5 °C quantum together move the average
+# only 0.5), and for this long afterwards the approach RATE is unknowable — which
+# is precisely what the easing's premise depends on. Both only ever WITHHOLD the
+# easing, i.e. restore full drive, so this is strictly the arrive-warm direction.
+DRIVE_COAST_MAX_JUMP = 1.0      # °C rise between evaluations that means "catch-up"
+DRIVE_COAST_SETTLE_MIN = 15.0   # no new easing for this long after one
 
 # --- Drive self-validation (Q20): does the loop know its commands are working?
 # Two independent checks, both reading signals the Rointe cloud cannot fake.
@@ -713,6 +732,12 @@ class ScoutController:
         self._drive_coast_from: dict[str, float] = {}
         self._drive_coast_peak: dict[str, float] = {}
         self._drive_coast_done: set[str] = set()
+        # The zone average as the easing gate last saw it, and when that reading
+        # last jumped implausibly (a frozen probe catching up — see
+        # DRIVE_COAST_MAX_JUMP). Not persisted: a restart re-arms on the next
+        # pair of readings, and the fail direction is more drive, not less.
+        self._drive_coast_seen: dict[str, float] = {}
+        self._drive_coast_jumped: dict[str, datetime] = {}
         self._drive_frozen: set[str] = set()
         # Heaters whose overdrive escalation is being held because the zone average
         # has reached the top of the approach (soften-final-approach anti-overshoot).
@@ -1707,16 +1732,25 @@ class ScoutController:
         and `drive_coast_end` with the rise the mass actually delivered — the
         measurement that should set `DRIVE_COAST_ALLOWANCE`, which is currently a
         deliberately conservative seed.
+
+        One further gate guards the reading itself: a zone average that JUMPS into
+        the band is a frozen probe catching up, not a room that has arrived, and
+        for a while afterwards its approach rate — the thing the easing's premise
+        rests on — is unknowable. See `DRIVE_COAST_MAX_JUMP`. Withholding the
+        easing restores full drive, so this only ever errs warm.
         """
+        jumped = self._note_coast_jump(zone, zone_avg, now)
         ready = (
             comfort
             and zone_avg is not None
+            and not jumped
             and zone_avg >= target - DRIVE_COAST_ALLOWANCE
             and self._zone_panels_hot(zone, zone_avg)
         )
         if not ready:
             self._end_drive_coast(zone, now, zone_avg)
-            # Out of the band / panels cold: the next approach gets a fresh go.
+            # Out of the band / panels cold / reading not trustworthy: the next
+            # approach gets a fresh go.
             self._drive_coast_done.discard(zone)
             return 0.0
         if zone in self._drive_coast_done:
@@ -1745,6 +1779,48 @@ class ScoutController:
             self._drive_coast_done.add(zone)
             return 0.0
         return DRIVE_COAST_ALLOWANCE
+
+    def _note_coast_jump(
+        self, zone: str, zone_avg: float | None, now: datetime
+    ) -> bool:
+        """Is this zone's average reading too fresh off a catch-up jump to ease on?
+
+        True while the average has risen ``DRIVE_COAST_MAX_JUMP`` or more between
+        evaluations, and for ``DRIVE_COAST_SETTLE_MIN`` afterwards. A jump that
+        large is arithmetically impossible from the readings themselves — every
+        probe in the zone stepping a whole 0.5 °C quantum at once moves the average
+        by 0.5 — so it is the Rointe cloud unfreezing, and the room's real approach
+        rate across it is unknown.
+
+        Records ``drive_coast_jump`` on the edge so the artefact is visible in the
+        audit rather than only in its consequences.
+        """
+        if zone_avg is None:
+            self._drive_coast_seen.pop(zone, None)
+            return self._coast_settling(zone, now)
+        previous = self._drive_coast_seen.get(zone)
+        self._drive_coast_seen[zone] = zone_avg
+        if previous is not None and zone_avg - previous >= DRIVE_COAST_MAX_JUMP:
+            self._drive_coast_jumped[zone] = now
+            self.audit.record(
+                "drive_coast_jump",
+                now,
+                zone=zone,
+                previous=previous,
+                zone_avg=zone_avg,
+                rise=round(zone_avg - previous, 2),
+            )
+            return True
+        return self._coast_settling(zone, now)
+
+    def _coast_settling(self, zone: str, now: datetime) -> bool:
+        at = self._drive_coast_jumped.get(zone)
+        if at is None:
+            return False
+        if (now - at).total_seconds() / 60 >= DRIVE_COAST_SETTLE_MIN:
+            self._drive_coast_jumped.pop(zone, None)
+            return False
+        return True
 
     def _end_drive_coast(
         self, zone: str, now: datetime, zone_avg: float | None
@@ -5084,6 +5160,8 @@ class ScoutController:
         self._drive_coast_from.clear()
         self._drive_coast_peak.clear()
         self._drive_coast_done.clear()
+        self._drive_coast_seen.clear()
+        self._drive_coast_jumped.clear()
         self._drive_pushed.clear()
         self._drive_pushed_at.clear()
         self._drive_pushed_surface.clear()

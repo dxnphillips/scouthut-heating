@@ -157,9 +157,13 @@ def test_a_fresh_approach_gets_a_new_window():
     _coast(ctrl, 18.75, at=now)
     expired = now + timedelta(minutes=DRIVE_COAST_MAX_MINUTES + 1)
     assert _coast(ctrl, 18.75, at=expired) == 0.0
-    # The room leaves the band (a new climb begins), which re-arms it.
+    # The room leaves the band (a new climb begins), which re-arms it. It climbs
+    # back in steps a real room can actually take — a teleport back into the band
+    # is the catch-up jump the reading guard rejects, which has its own test.
     assert _coast(ctrl, 17.0, at=expired + timedelta(minutes=1)) == 0.0
-    assert _coast(ctrl, 18.75, at=expired + timedelta(minutes=2)) == DRIVE_COAST_ALLOWANCE
+    for minute, avg in ((2, 17.75), (3, 18.25)):
+        assert _coast(ctrl, avg, at=expired + timedelta(minutes=minute)) == 0.0
+    assert _coast(ctrl, 18.75, at=expired + timedelta(minutes=4)) == DRIVE_COAST_ALLOWANCE
 
 
 def test_the_episode_records_what_the_mass_actually_delivered():
@@ -284,3 +288,58 @@ def test_the_reconciler_lands_a_below_target_setpoint_on_the_hall():
     run(ctrl.async_reconcile())
     assert _last_setpoint(hass, HB) >= 19.0
 
+
+
+# --- The reading guard: a catch-up jump is not an arrival --------------------
+# Field 2026-09-21, the first genuinely cold morning (outdoor 9-10 degC, a 4.5 degC
+# deficit on a 240-min lead). At 05:30Z the freeze-guard held all four hall heaters
+# with probes at 15.0-16.0; by 05:44Z they had all "risen" to ~18.5 — +3.24 on the
+# average in one tick, while the independent ceiling rose 0.6 and the panels sat at
+# 56 degC. The easing engaged on that jumped average, pushed 18.5 (below the 19.0
+# target), the elements cut, and the room sat dead flat for the whole 20-min box.
+def test_a_catch_up_jump_into_the_band_does_not_engage_the_easing():
+    ctrl, _ = _ctrl(panel=56.0)
+    now = ctrl._now()
+    assert _coast(ctrl, 15.38, at=now) == 0.0  # climbing, well short
+    # The frozen probes unfreeze together and the average leaps into the band.
+    assert _coast(ctrl, 18.62, at=now + timedelta(minutes=14)) == 0.0
+    (evt,) = _events(ctrl, "drive_coast_jump")
+    assert evt["rise"] == pytest.approx(3.24)
+    assert _events(ctrl, "drive_coast_ease") == []
+
+
+def test_the_reading_stays_distrusted_for_the_settle_window():
+    # Without this the guard would cost exactly one tick: the next evaluation sees
+    # a flat average sitting in the band and would ease anyway.
+    from custom_components.scout_hut_heating.coordinator import DRIVE_COAST_SETTLE_MIN
+
+    ctrl, _ = _ctrl(panel=56.0)
+    now = ctrl._now()
+    _coast(ctrl, 15.38, at=now)
+    _coast(ctrl, 18.62, at=now + timedelta(minutes=14))  # the jump
+    assert _coast(ctrl, 18.62, at=now + timedelta(minutes=14.5)) == 0.0
+    assert _coast(ctrl, 18.62, at=now + timedelta(minutes=20)) == 0.0
+    # Once the room has been readable for the settle window, it may ease again.
+    settled = now + timedelta(minutes=14 + DRIVE_COAST_SETTLE_MIN + 1)
+    assert _coast(ctrl, 18.62, at=settled) == DRIVE_COAST_ALLOWANCE
+
+
+def test_an_ordinary_quantised_step_is_not_a_jump():
+    # Every probe in the zone stepping a whole 0.5 degC quantum at once moves the
+    # average by 0.5 — the guard must sit above that or it would never ease.
+    ctrl, _ = _ctrl(panel=56.0)
+    now = ctrl._now()
+    _coast(ctrl, 18.25, at=now)
+    assert _coast(ctrl, 18.75, at=now + timedelta(seconds=30)) == DRIVE_COAST_ALLOWANCE
+    assert _events(ctrl, "drive_coast_jump") == []
+
+
+def test_a_jump_ends_an_easing_already_running():
+    # Mid-easing the reading catches up: hand the full drive back rather than keep
+    # withholding it on a number we no longer trust.
+    ctrl, _ = _ctrl(panel=56.0)
+    now = ctrl._now()
+    _coast(ctrl, 18.5, at=now)
+    assert _coast(ctrl, 18.75, at=now + timedelta(minutes=1)) == DRIVE_COAST_ALLOWANCE
+    assert _coast(ctrl, 20.0, at=now + timedelta(minutes=2)) == 0.0
+    assert ZA not in ctrl._drive_coast_since
