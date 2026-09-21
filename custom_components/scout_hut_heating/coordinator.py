@@ -342,6 +342,21 @@ DRIVE_COAST_MAX_MINUTES = 20.0
 # easing, i.e. restore full drive, so this is strictly the arrive-warm direction.
 DRIVE_COAST_MAX_JUMP = 1.0      # °C rise between evaluations that means "catch-up"
 DRIVE_COAST_SETTLE_MIN = 15.0   # no new easing for this long after one
+# ...and the panels must actually hold enough heat to deliver the allowance
+# (v1.43.1, field 2026-09-21 08:06Z). "Panels hot" was borrowed from the cool-off
+# anchor — hottest panel more than COOL_SETTLE_SURFACE_C (5 °C) above the room —
+# which is the right question for "is the panel still disturbing the probe beside
+# it" and the wrong one for "can the mass lift the room 0.5 °C": a 30 °C panel
+# over a 19 °C room passes it with next to nothing stored. The morning's second
+# pre-heat re-lit comfort at 08:06Z on panels still cooling from the earlier burn
+# (32 °C and falling, nothing firing) and the easing engaged 27 s later on that
+# residue; the room then fell 18.88 -> 18.5 for the whole 20-min box. Across every
+# hall easing on record the tails that did arrive (+0.87, +1.12) sat on panels at
+# 50 °C or hotter, every zero-rise full box on panels at 33 °C or cooler — so this
+# line sits between the two clusters. Judged on the hottest panel (the ease and
+# end events record it as `surface`, the number to set this from). Withholding
+# the easing restores full drive, so this only ever errs warm.
+DRIVE_COAST_MIN_SURFACE_C = 45.0
 
 # --- Drive self-validation (Q20): does the loop know its commands are working?
 # Two independent checks, both reading signals the Rointe cloud cannot fake.
@@ -702,6 +717,9 @@ class ScoutController:
         # Previous running state per calendar; None = not yet observed, so a
         # restart mid-booking does not audit a phantom booking start.
         self._cal_running_prev: dict[str, bool | None] = {ZONE_A: None, ZONE_B: None}
+        # Set on a booking_end edge: refresh the calendar look-ahead on the next
+        # tick instead of waiting for the five-minute cadence.
+        self._cal_refresh_due = False
         # Overshoot accumulators for the booking_end summary (pure measurement).
         # An episode spans the pre-heat window AND the running slot, because the
         # Rointe oil mass keeps releasing after the element cuts out, so the peak
@@ -985,9 +1003,12 @@ class ScoutController:
     async def _async_tick(self, _now: datetime) -> None:
         if not self._started:
             return
-        # Refresh the calendar look-ahead roughly every five minutes.
+        # Refresh the calendar look-ahead roughly every five minutes — or at once
+        # after a booking has ended, so the next event's pre-heat is judged
+        # promptly rather than on the stale window of the one that just finished.
         minute = dt_util.now().minute
-        if minute % 5 == 0:
+        if minute % 5 == 0 or self._cal_refresh_due:
+            self._cal_refresh_due = False
             await self._async_refresh_calendars()
         await self.async_reconcile()
 
@@ -1751,12 +1772,18 @@ class ScoutController:
         easing restores full drive, so this only ever errs warm.
         """
         jumped = self._note_coast_jump(zone, zone_avg, now)
+        hottest = self._zone_hottest_panel(zone)
         ready = (
             comfort
             and zone_avg is not None
             and not jumped
             and zone_avg >= target - DRIVE_COAST_ALLOWANCE
             and self._zone_panels_hot(zone, zone_avg)
+            # ...and hot ENOUGH to carry the allowance: a panel merely warmer than
+            # the room is residue from an earlier burn, not stored heat this
+            # approach can land on (see DRIVE_COAST_MIN_SURFACE_C).
+            and hottest is not None
+            and hottest >= DRIVE_COAST_MIN_SURFACE_C
         )
         if not ready:
             self._end_drive_coast(zone, now, zone_avg)
@@ -1777,6 +1804,7 @@ class ScoutController:
                 zone=zone,
                 target=target,
                 zone_avg=zone_avg,
+                surface=hottest,
                 coast=DRIVE_COAST_ALLOWANCE,
             )
             return DRIVE_COAST_ALLOWANCE
@@ -1863,8 +1891,22 @@ class ScoutController:
             peak=peak,
             ended=zone_avg,
             rise=None if (peak is None or began is None) else round(peak - began, 2),
+            surface=self._zone_hottest_panel(zone),
             coast=DRIVE_COAST_ALLOWANCE,
         )
+
+    def _zone_hottest_panel(self, zone: str) -> float | None:
+        """The hottest radiator panel surface in the zone, or None if unreadable.
+
+        Resolved through ``DRIVE_ZONE_CLIMATES`` (all three driven zones); an
+        unmapped zone or an install with no surface sensor yields None.
+        """
+        hottest: float | None = None
+        for climate in self._as_list(self.config.get(DRIVE_ZONE_CLIMATES.get(zone))):
+            surface = self._num_state(self._heater_sensor(climate, "surface"))
+            if surface is not None and (hottest is None or surface > hottest):
+                hottest = surface
+        return hottest
 
     def _zone_panels_hot(self, zone: str, room: float) -> bool:
         """Is any radiator panel in the zone still releasing stored heat?
@@ -1884,11 +1926,7 @@ class ScoutController:
         zone yields no climates and so no evidence of stored heat — False, the
         same fail-safe as no surface sensor.
         """
-        hottest: float | None = None
-        for climate in self._as_list(self.config.get(DRIVE_ZONE_CLIMATES.get(zone))):
-            surface = self._num_state(self._heater_sensor(climate, "surface"))
-            if surface is not None and (hottest is None or surface > hottest):
-                hottest = surface
+        hottest = self._zone_hottest_panel(zone)
         return hottest is not None and hottest - room > COOL_SETTLE_SURFACE_C
 
     def _zone_probe_readings(self, zone: str) -> dict[str, float]:
@@ -3894,6 +3932,20 @@ class ScoutController:
                     ),
                 )
                 self._reset_booking_overshoot(zone)
+                # The pre-heat window was held True for the whole running event
+                # (`_async_refresh_calendars` short-circuits on a running
+                # calendar), and the calendar look-ahead only refreshes every
+                # five minutes — so without this the tick that sees the event
+                # end still carries `cal_window` True with `cal_on` False and
+                # re-lights comfort as a phantom `preheat` for up to five minutes
+                # (four times in five days, 2026-09-17 -> 09-21: each a heater
+                # write, a drive push and a 10-min reverse fan min-run on an
+                # empty hall). Close the window on the edge and ask for a prompt
+                # refresh, so a genuine NEXT event is judged on its own lead
+                # within a tick rather than inheriting this one's window.
+                self.cal_window[zone] = False
+                self._preheat_open_for[zone] = None
+                self._cal_refresh_due = True
                 # A hall booking ending is the deliberate boundary that lifts a
                 # pause carried through the session: an adjacent next booking
                 # then starts fresh (inheriting the still-warm room, so its
