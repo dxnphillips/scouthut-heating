@@ -6,22 +6,41 @@ outdoor temperature, the learned warm-up rate) and asks this module how long
 the pre-heat lead should be, and how a completed warm-up observation should
 update the learned rate.
 
-The model is the classic optimum-start one (BS EN 12098-4 style): lead time is
-proportional to the temperature deficit, scaled by a learned minutes-per-degree
-warm-up rate, with a margin for cold weather. The rate is learned from real
-warm-ups with exponential smoothing, so the building's insulation, the
-destratification fans, and the season are all absorbed into the observed
-number rather than modelled explicitly.
+The model (v1.43.0) is a one-node heat balance rather than the classic linear
+"minutes per degree" optimum start. Every hall climb on record draws the same
+shape — ``minutes ≈ 31 + 10 × rise`` — a FIXED finish plus a linear bulk: the
+Rointes throttle to half power inside the last degree and their oil mass lags,
+so the last degree costs 5–10× the first (12–21 min/°C from a 15 °C start,
+32–117 from 18.5). A single min/°C rate cannot describe that; it under-leads a
+top-up and over-leads a cold start by hours (2026-09-21: a 240-min lead for a
+79-min climb). So the lead is built from three things the controller already
+holds:
+
+    net gain (°C/h) = radiator gain − fabric leak
+                    = 60 / rate − cool_k × (mid-climb indoor − outdoor)
+    lead (min)      = 60 × (deficit + APPROACH_TAIL_C) / net gain
+
+``rate`` is the learned GROSS radiator gain (min/°C before leak — the same
+entities, learned from real pre-heats that reached target), ``cool_k`` is the
+heat-loss constant the cool-off learning already measures (which replaces the
+old guessed 1 %/°C cold-weather multiplier with a measured one), and the tail
+is the fixed finish. With the finish charged separately, cold-start and
+near-target climbs read as ONE family of gross gains, so there is no fast/slow
+family left for an out-of-family gate to police — that gate, and the two
+single-tick jump guards, are gone; the rise clamp and the sample-selection
+rules in the coordinator do their job.
 """
 
 from __future__ import annotations
 
 import math
 
-# Plausibility clamps for the learned warm-up rate (minutes per °C). A
-# lightweight hut warms roughly 2-6 °C/h on electric radiators, i.e. 10-30
-# min/°C; the clamps leave room either side without letting one bad sample
-# (a door left open, a dead sensor) poison the estimate.
+# Plausibility clamps for the learned radiator gain (minutes per °C, GROSS —
+# before the fabric leak is subtracted). The hall's honest cold-climb samples
+# read 10-15; the clamps leave room either side without letting one bad sample
+# poison the estimate. MAX_RATE is also the seed: at 60 (1 °C/h gross) any leak
+# at all drives the net gain to ~zero, so an unlearned zone pins the cap — the
+# fail-warm default, exactly as before.
 MIN_RATE = 5.0
 MAX_RATE = 60.0
 
@@ -29,53 +48,41 @@ MAX_RATE = 60.0
 # estimate settles after a handful of bookings but still tracks the seasons.
 ALPHA = 0.3
 
-# Warm-up self-protection (2026-08-11), the fail-safe mirror of the cool-off
-# guards. The dangerous corruption here is the OPPOSITE direction: a warm-up
-# implying the room heats too FAST (low min/°C) shortens the pre-heat lead and
-# risks a COLD ARRIVAL — the exact failure pre-heat exists to prevent. A rise
-# faster than the radiators can deliver is free gain (solar on the big roof,
-# occupancy, unattributed fan delivery of stored ceiling heat), most likely in
-# the summer in which these rates are first being learned.
-#   * Robust EWMA: no single sample may move the rate more than this fraction of
-#     its value, so one solar-boosted climb can only nudge it, never yank it to
-#     the floor. Symmetric; no seed problem (it only slows the learn-down).
+# Robust EWMA: no single sample may move the rate more than this fraction of
+# its value, so one contaminated climb can only nudge it, never yank it.
+# Symmetric — this is the one guard that protects BOTH directions, and the only
+# one the warm-up learning keeps beyond the cold gate and the sample-selection
+# rules. The dangerous corruption is a rate that reads too FAST (short lead,
+# cold arrival); a slow sample is fail-safe and folds at full weight.
 MAX_RATE_STEP_FRAC = 0.25
-#   * Out-of-family FAST reject: a sample implying heating >3x faster than the
-#     LEARNED rate is free gain, not the radiators — reject it whole. Gated to an
-#     established rate (learned meaningfully below the seed) so it never blocks
-#     the initial learn-down from the seed, where the real rates (25-46) sit.
-RATE_OUTLIER_RATIO = 3.0
-WARMUP_ESTABLISHED_FRAC = 0.9  # "established" once pulled >10% below the MAX_RATE seed
 
-# Ignore warm-up samples with less rise than this (°C): the Rointe room
-# readings are coarse and cloud-lagged, so small rises are mostly noise.
-MIN_SAMPLE_RISE = 1.0
+# The fixed finish every climb pays, in °C-equivalent at the bulk gain: the
+# Rointes throttle to half power (`maintaining`) inside the last degree and
+# their oil mass lags the element, so the room's last stretch is not on the
+# bulk slope at all. Fitted from the intercept of the honest (rise, minutes)
+# pairs on record — 26-31 min at a 10-13 min/°C slope, i.e. 2.0-2.6 °C — and
+# set at the top of that range. Charged on EVERY lead (a 1 °C top-up is mostly
+# finish: 66 min at gain 15, against the old formula's 42, so no small deficit
+# arrives colder than it did) and removed from every sample before its gain is
+# read, which is what makes a 4 °C cold climb and a 1 °C top-up read as the
+# same gross gain. If near-target arrivals (deficit < 1.5) ever go short with
+# the lead well under the cap, this is the constant to raise, not the rate.
+APPROACH_TAIL_C = 2.5
+
+# Ignore warm-up samples with less rise than this (°C). Under the tail model a
+# 1 °C climb is ~70 % finish, so its implied gain swings ±15 % on a ±0.5 tail
+# error and teaches nothing about the slope; only bulk climbs carry the slope,
+# and every bulk climb on record is ≥ 3.6 °C. (Was 1.0 under the linear model.)
+MIN_SAMPLE_RISE = 2.0
 
 # ...and with less duration than this (minutes): a cloud-lagged reading that
 # catches up in one jump would otherwise register an implausibly fast warm-up
 # and walk the learned rate to the clamp in a couple of incidents.
 MIN_SAMPLE_MINUTES = 10.0
 
-# Single-tick step guard, the warm-up mirror of MAX_COOL_TICK_DROP. The Rointe
-# room probe freezes then jumps through the cloud (field 2026-09-03: a hall floor
-# stepped 18.1 -> 22.4 in one 15-min tick; 2026-09-08: 16.62 -> 19.0, +2.4 in one
-# tick mid-climb). A genuine radiator climb rises gradually — even the fastest
-# learned rate is <~0.75 C per 15 min — so a lone tick rising this much is the
-# reading catching up, not the room, and it inflates the observed rate FAST (the
-# dangerous, cold-arrival direction). The whole sample is rejected. Set above a
-# plausible one-to-two 0.5 C quantum step so a genuinely brisk climb still teaches.
-MAX_WARMUP_TICK_RISE = 1.5
-
 # Never start later than this many minutes before an event, however warm the
 # room already is — the calendar look-ahead needs some window to see events.
 MIN_LEAD = 15.0
-
-# Cold-weather margin: +1% lead per °C the outside is below this base. At the
-# UK degree-day base (15.5 °C) there is no margin; at -5 °C outside it adds
-# ~20%, reflecting the fabric loss the radiators must overcome while raising
-# the room.
-OUTDOOR_BASE = 15.0
-OUTDOOR_MARGIN_PER_DEG = 0.01
 
 # Cooling prediction never assumes the room drops below the Rointe anti-frost
 # floor — the heating system holds it there even when "off".
@@ -83,11 +90,15 @@ MIN_PREDICT_TEMP = 7.0
 
 # Booking "hold" (anticipatory maintain — see hold_margin). The response lead
 # for a reference-speed hall (min), scaled up for a sluggish one and down for a
-# brisk one via the learned warm-up rate against this reference (min/°C, the
-# middle of the plausible warm-up band). 20 min ~= one-to-two of the drive's
-# 15-min staircase steps — enough head-start for the slow loop to arrest a fall.
+# brisk one via the learned gain against this reference. 20 min ~= one-to-two
+# of the drive's 15-min staircase steps — enough head-start for the slow loop
+# to arrest a fall. The reference was 30 when the rate meant net min/°C (family
+# ~40); it is 12 now that the rate means gross gain (family ~12-15) — a UNIT
+# conversion that preserves the field response lead (26.7 min → 25 at a gain
+# of 15), deliberately NOT coupled to APPROACH_TAIL_C so the hold and the
+# pre-heat finish stay separately tunable.
 HOLD_LEAD_BASE_MIN = 20.0
-HOLD_WARMUP_REF = 30.0
+HOLD_WARMUP_REF = 12.0
 
 # Learned heat-loss constant k: the FRACTION of the indoor-outdoor gap lost
 # per hour (Newton cooling, dT/dt = -k·(indoor - outdoor)). Gap-normalising
@@ -173,29 +184,78 @@ def required_lead_minutes(
 
     When the event start is known (``gap_hours`` from now) and a heat-loss
     constant has been learned, the room's temperature at pre-heat time is
-    predicted by Newton cooling toward the outdoor temperature, and the lead
-    sized for that predicted deficit. Decaying across the FULL gap (rather
-    than gap minus the eventual lead) slightly over-predicts the cooling —
-    deliberately: the error is a few minutes of extra lead in the warm
-    direction, and it keeps the expression closed-form. The prediction never
-    assumes a drop below the anti-frost floor, which the heating holds even
-    when "off"; heat loss during the warm-up itself needs no term because the
-    learned warm-up rate already includes it.
+    predicted by Newton cooling toward the outdoor temperature
+    (``predicted_room_temp``), and the lead sized for that predicted deficit.
+    Decaying across the FULL gap (rather than gap minus the eventual lead)
+    slightly over-predicts the cooling — deliberately: the error is a few
+    minutes of extra lead in the warm direction, and it keeps the expression
+    closed-form. The prediction never assumes a drop below the anti-frost
+    floor, which the heating holds even when "off".
+
+    The lead itself is the one-node heat balance (module docstring): the
+    radiators' gross gain (``60 / rate`` °C/h) minus the fabric leak over the
+    climb (``cool_k`` × the mid-climb indoor-outdoor gap — the same measured
+    constant the Newton term uses, so a cold night earns its margin from data
+    rather than from a guessed per-degree multiplier), spread over the deficit
+    plus the fixed radiator finish (``APPROACH_TAIL_C``). A leak that eats the
+    whole gain means the room cannot reach target at this outdoor: the cap,
+    which is warm.
     """
     if indoor is None:
         return max_minutes
-    predicted = indoor
-    if gap_hours is not None and gap_hours > 0 and cool_k > 0:
-        out_eff = outdoor if outdoor is not None else COOL_FALLBACK_OUTDOOR
-        if indoor > out_eff:
-            predicted = out_eff + (indoor - out_eff) * math.exp(-cool_k * gap_hours)
-            predicted = max(predicted, min(MIN_PREDICT_TEMP, indoor))
-    lead = max(rate * (target - predicted), 0.0)
-    if lead <= 0:
+    predicted = predicted_room_temp(indoor, outdoor, gap_hours, cool_k)
+    deficit = target - predicted
+    if deficit <= 0:
         return min(MIN_LEAD, max_minutes)
-    if outdoor is not None and outdoor < OUTDOOR_BASE:
-        lead *= 1 + (OUTDOOR_BASE - outdoor) * OUTDOOR_MARGIN_PER_DEG
+    net = net_gain_c_per_h(rate, predicted, target, outdoor, cool_k)
+    if net <= 0:
+        return max_minutes
+    lead = 60.0 * (deficit + APPROACH_TAIL_C) / net
     return max(min(lead, max_minutes), min(MIN_LEAD, max_minutes))
+
+
+def predicted_room_temp(
+    indoor: float,
+    outdoor: float | None,
+    gap_hours: float | None,
+    cool_k: float,
+) -> float:
+    """Where the room will be when the pre-heat begins, ``gap_hours`` from now.
+
+    Newton cooling toward outdoor at the learned ``cool_k``; an unreadable
+    outdoor assumes the cold fallback (errs warm); never below the anti-frost
+    floor the heating holds even when "off". No gap or no learned k → now.
+    """
+    if gap_hours is None or gap_hours <= 0 or cool_k <= 0:
+        return indoor
+    out_eff = outdoor if outdoor is not None else COOL_FALLBACK_OUTDOOR
+    if indoor <= out_eff:
+        return indoor
+    predicted = out_eff + (indoor - out_eff) * math.exp(-cool_k * gap_hours)
+    return max(predicted, min(MIN_PREDICT_TEMP, indoor))
+
+
+def net_gain_c_per_h(
+    rate: float,
+    start: float,
+    target: float,
+    outdoor: float | None,
+    cool_k: float,
+) -> float:
+    """°C/h the room actually gains during a climb from ``start`` to ``target``.
+
+    Gross radiator gain (``60 / rate``) minus the fabric leak at the mid-climb
+    gap (``cool_k × ((start + target)/2 − outdoor)``). The midpoint is the
+    linear approximation of the exponential, indistinguishable from it over a
+    few degrees — the same simplification the cool-off learning makes. An
+    unreadable outdoor assumes the cold fallback (a bigger leak, a longer lead:
+    warm). May be ≤ 0, which the caller reads as "unreachable at this leak".
+    """
+    if rate <= 0:
+        return 0.0
+    out_eff = outdoor if outdoor is not None else COOL_FALLBACK_OUTDOOR
+    gap_mid = max((start + target) / 2.0 - out_eff, 0.0)
+    return 60.0 / rate - cool_k * gap_mid
 
 
 def hold_margin(
@@ -247,30 +307,24 @@ def updated_rate(
     rate: float,
     minutes_elapsed: float,
     temp_rise: float,
-    max_tick_rise: float = 0.0,
+    avg_gap: float = 0.0,
+    cool_k: float = 0.0,
 ) -> float:
-    """Fold one observed warm-up into the learned rate (EWMA).
+    """Fold one observed warm-up into the learned gross gain (EWMA).
 
-    ``minutes_elapsed`` over ``temp_rise`` is the observed minutes-per-degree.
-    Samples with too little rise are ignored; observations and the result are
-    clamped into the plausible band so a single pathological warm-up (opening
-    held open, sensor frozen) cannot poison the estimate. ``max_tick_rise`` (the
-    largest single-tick rise seen over the sample) rejects the whole sample when a
-    probe freeze-then-jump dumped a discontinuity into it — the reading catching
-    up, not the room, which would inflate the rate toward a cold arrival.
+    The observation is the lead formula run backwards (``warmup_observed_rate``):
+    the finish is added back to the rise and the leak at the sample's average
+    gap added back to the net gain, so a 4 °C cold climb and a 2 °C top-up on a
+    cold night both read as the radiators' gross gain and fold into ONE family.
+    Samples with too little rise or duration are ignored; observations and the
+    result are clamped into the plausible band; and the robust step cap bounds
+    how far any one sample can move the rate in either direction — the one
+    guard kept, because it protects the dangerous (fast) direction without a
+    baseline to be out-of-family against. Which samples reach here at all is the
+    coordinator's job (a real pre-heat that reached target, in cold conditions).
     """
-    if (
-        temp_rise < MIN_SAMPLE_RISE
-        or minutes_elapsed < MIN_SAMPLE_MINUTES
-        or max_tick_rise >= MAX_WARMUP_TICK_RISE
-    ):
-        return rate
-    observed = minutes_elapsed / temp_rise
-    observed = max(MIN_RATE, min(MAX_RATE, observed))
-    # Out-of-family FAST: heating far quicker than the learned rate is free gain
-    # (solar/occupancy/unattributed fan), not the radiators -> reject the sample
-    # so it can't shorten the pre-heat lead toward a cold arrival.
-    if warmup_rate_is_outlier(rate, observed):
+    observed = warmup_observed_rate(minutes_elapsed, temp_rise, avg_gap, cool_k)
+    if observed is None:
         return rate
     new = rate + ALPHA * (observed - rate)
     # Robust: cap how far one sample can move the rate, either direction.
@@ -278,30 +332,28 @@ def updated_rate(
     return max(MIN_RATE, min(MAX_RATE, new))
 
 
-def warmup_observed_rate(minutes_elapsed: float, temp_rise: float) -> float | None:
-    """The observed minutes-per-°C for a warm-up, clamped, or None if unusable.
+def warmup_observed_rate(
+    minutes_elapsed: float,
+    temp_rise: float,
+    avg_gap: float = 0.0,
+    cool_k: float = 0.0,
+) -> float | None:
+    """The gross radiator gain (min/°C before leak) one warm-up implies, clamped,
+    or None if the sample is too small to use.
 
-    Mirrors what ``updated_rate`` folds, so the coordinator can flag the same
-    out-of-family sample for the audit without re-deriving the arithmetic.
+    ``(temp_rise + APPROACH_TAIL_C)`` over the hours is the net gain the room
+    showed; adding the leak the fabric took over the same hours
+    (``cool_k × avg_gap``) gives what the radiators actually delivered. Exactly
+    what ``required_lead_minutes`` assumes, so a lead sized from a folded rate
+    reproduces the climb it was learned from.
     """
-    if minutes_elapsed <= 0 or temp_rise <= 0:
+    if temp_rise < MIN_SAMPLE_RISE or minutes_elapsed < MIN_SAMPLE_MINUTES:
         return None
-    return max(MIN_RATE, min(MAX_RATE, minutes_elapsed / temp_rise))
-
-
-def warmup_rate_is_outlier(rate: float, observed: float) -> bool:
-    """Whether a warm-up is implausibly faster than the established learned rate.
-
-    True means "the room rose faster than the radiators can drive it" — free gain
-    (solar, occupancy, fan-delivered ceiling heat), which would corrupt the rate
-    LOW and shorten the lead toward a cold arrival. Judged only once the rate is
-    established (``< WARMUP_ESTABLISHED_FRAC`` of the seed): during the initial
-    learn-down the seed sits close to the real rates, so an early reject would
-    block legitimate learning; the robust step cap protects that phase instead.
-    """
-    if rate >= MAX_RATE * WARMUP_ESTABLISHED_FRAC:
-        return False  # still at the seed — not yet a trustworthy baseline
-    return observed > 0 and observed < rate / RATE_OUTLIER_RATIO
+    hours = minutes_elapsed / 60.0
+    gross = (temp_rise + APPROACH_TAIL_C) / hours + cool_k * max(avg_gap, 0.0)
+    if gross <= 0:
+        return None
+    return max(MIN_RATE, min(MAX_RATE, 60.0 / gross))
 
 
 def updated_cooling_k(

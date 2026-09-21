@@ -282,6 +282,10 @@ def make_controller(config_overrides=None, started=True):
         hass.states.set(eid, "off")
 
     ctrl._started = started
+    # A built controller has been "up" for longer than the startup grace, so the
+    # learning and the drive self-checks behave as in steady state; a test that
+    # wants the just-restarted behaviour sets `_started_at` itself.
+    ctrl._started_at = ctrl._now() - timedelta(minutes=C.DRIVE_STARTUP_GRACE_MINUTES + 1)
     return ctrl, hass
 
 

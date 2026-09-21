@@ -208,6 +208,57 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   reset-40 rate over-leads a 4 °C cold start ~2× (181-min lead vs 77 min actual) — the
   cold gate had been starving the learn-down, so this is also an energy fix. First
   in-family cold sample expected on the next cool (<14) morning booking.
+- **The pre-heat lead is a heat balance with a fixed finish, and the warm-up
+  learning samples only real pre-heats (v1.43.0, 2026-09-21 — supersedes the linear
+  `rate × deficit` model and all three warm-up guards in the bullet above).** The
+  first genuinely cold morning (outdoor 9–10, hall 14.5 coldest, 4.5 °C deficit)
+  sized a **240-min** lead for a **79-min** climb — the room sat at target ~2.5 h
+  before the booking, and the owner asked for a rethink rather than more splitting.
+  Root: every hall climb on record has the same shape, **`minutes ≈ 31 + 10 × rise`**
+  — a fixed ~30-min finish (the Rointes throttle to half power inside the last degree
+  and the oil mass lags) plus a ~10–13 min/°C bulk. One min/°C number cannot describe
+  that: cold starts read 12–21 min/°C, near-target top-ups 32–117, so the 3×
+  out-of-family gate anchored on a hand-set 40 rejected *every* cold-start sample (a
+  ratchet — the reset-40 could only ever be confirmed), and the two single-tick jump
+  guards then threw away the first admitted cold sample (09-21, 19.2 min/°C, honest
+  endpoints, +3.24 in one tick mid-climb). **The model (`preheat.py`):** `net gain
+  (°C/h) = 60/rate − cool_k × (mid-climb indoor − outdoor)`; `lead = 60 × (deficit +
+  APPROACH_TAIL_C) / net`, clamped `[MIN_LEAD, cap]`, cap if `net ≤ 0` or the room is
+  unreadable. `rate` is now the **GROSS radiator gain** (min/°C before leak — same
+  entities, renamed "learned radiator gain"), `cool_k` is the heat-loss constant the
+  cool-offs already learn (it replaces the guessed 1 %/°C `OUTDOOR_MARGIN` multiplier
+  with a measured one), `APPROACH_TAIL_C` = 2.5 is the fixed finish (fitted from the
+  intercept, set at the top of the 2.0–2.6 range). The learning is the exact inverse
+  (`gross = (rise + tail)/hours + cool_k × avg_gap`), so a 4 °C cold climb and a 1 °C
+  top-up read as ONE family (10–14 gross) and there is no fast family left to police.
+  **Sample selection replaces the guards** (`_update_warmup_learning`): only a climb
+  whose preset reason is `preheat` (never a Boost — 7.2 gross, elements never
+  throttle; never occupancy or a mid-booking top-up — free gain), timed on the
+  **coldest** probe (the quantity the lead sizes and `shortfall` judges), not inside
+  the 25-min startup grace (a restart mid-pre-heat re-applies comfort on an already
+  heating room), folded only if it **reached target** (a truncated climb has not paid
+  the finish), rise clamped `min(temp, target) − start` (a probe unfreezing past
+  target cannot inflate it), and the close needs as many readable probes as the open.
+  Kept: the cold gate (average outdoor ≤ 14) and the 25 % step cap. Removed:
+  `RATE_OUTLIER_RATIO`, `WARMUP_ESTABLISHED_FRAC`, `MAX_WARMUP_TICK_RISE`,
+  `OUTDOOR_BASE`, `OUTDOOR_MARGIN_PER_DEG`, `max_tick_rise`/`max_probe_tick_rise`;
+  `MIN_SAMPLE_RISE` 1.0 → 2.0 (a 1 °C climb is ~70 % finish and teaches nothing about
+  the slope); `HOLD_WARMUP_REF` 30 → 12 (unit conversion, the hold margin is otherwise
+  unchanged). **Worked against the record:** the 09-21 morning sizes 140/124/108 min
+  at gain 15/13.5/12 (actual 79–100); a 1 °C top-up 66/58/50 (old 42 — no small deficit
+  arrives colder than it did); hall 10 → 19 at outdoor 3 = 240 at gain 15, 178 at 12;
+  frost 7 → 19 at −5 pins the cap (Q2's pre-charge conclusion stands). `preheat_start`
+  carries `predicted` + `net_c_per_h`; `warmup_sample` carries `observed_gain`,
+  `avg_gap`, `reached_target`, `start_temp`/`end_temp`. **Owner-side at deploy: reset
+  `zone_a_warmup_rate_fans` 40 → 15** (the linear-model value is in the wrong units
+  now); leave `zone_a_warmup_rate` (33) and `zone_b_warmup_rate` — they only err warm
+  and the step cap walks them down. **First-winter watch:** `warmup_sample.observed_gain`
+  should cluster 10–15 across cold mornings; a positive `booking_start.shortfall` on a
+  morning ≥ 5 °C colder than any folded sample → nudge the fans key up one notch
+  (slider) and let the next sample confirm; a short arrival on a *near-target* start
+  (deficit < 1.5) with the lead well under the cap → raise `APPROACH_TAIL_C` 2.5 → 3.0,
+  not the rate; if the leak term over-leads (lead pinned at cap while `net_c_per_h`
+  reads < 1 on a merely cool day), the hall `heatloss_pct` is the number to check.
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
@@ -375,6 +426,13 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    when the event is < ~60 min away, but measure the cost first (the hall fell
    19.5 → 17.5 coldest in 50 min, partly reading artefact). The lead itself will
    shorten once cold pre-dawn samples fold (the 14 °C gate).
+   **The over-lead side landed first (2026-09-21, v1.43.0).** The first cold
+   morning (outdoor 9–10, 4.5 °C deficit) pinned the 240 cap for a 79-min climb —
+   the linear model's slope is the wrong shape, not a wrong number. The lead is now
+   the heat balance in the Working-conventions bullet (fixed finish + gross gain −
+   measured leak); the same morning sizes ~110–140 min. The cap and the frost
+   arithmetic above are unchanged in kind: frost 7 → 19 at −5 still pins 240, so
+   the overnight pre-charge remains the lever for that case.
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the
@@ -422,6 +480,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    ceiling−floor stayed 0.6–0.85 then inverted — no hot roof at all on a cold hard
    drive; the constraint was end-to-end spread (cold end 1.75 °C behind), i.e.
    soak/spread, not stratification.
+   **REFRAMED (v1.43.0, 2026-09-21).** The rates are now the GROSS radiator gain
+   (min/°C before the leak), learned only from pre-heats that reached target and
+   timed on the coldest probe — see the heat-balance bullet under Working
+   conventions. Both fragilities above are moot: there is no out-of-family gate to
+   hinge on the rate key (a 4 °C cold climb and a 1 °C top-up read as one family
+   once the fixed finish is removed), and no tick guard to dilute (the rise is
+   judged on the endpoints, clamped at target). The 09-16 boost would not be
+   sampled at all (reason `boost`, not `preheat`); the 09-21 pre-heat (19.2 min/°C
+   linear, +3.24 in one tick) folds inside the 10–14 gross family. `warmup_sample.observed_gain`
+   replaces the old "min/°C" reading; success metric unchanged — `shortfall` ≈ 0
+   with the lead no longer pinned at the cap on ordinary cold mornings.
 4. **Gap-normalised heat-loss constants (`zone_X_heatloss_pct`, seed 25).**
    July measurements: hall ~10 %/h, office ~4.5 %/h. Verify autumn/winter
    `cooloff_sample` events (they carry `gap`) confirm season transfer;
@@ -620,6 +689,11 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     case (speed changed *during* the idle gap) is unobservable with no
     HA-commandable fan and stays accepted risk. Pairs with Q8: a persistent
     band-aware rate would let the lead size to the *actual* last-seen tap.
+    **v1.43.0:** the fans key is now chosen once per zone (`_warmup_rate_key`: the
+    hall with a fan master and `fans_enabled` on), and the SAME key both sizes the
+    lead and receives the sample — a sample can no longer teach a rate the next
+    lead will not read (before, O1 power at each tick decided attribution). The
+    decision rule stands; `rate_key`/`fan_w_last` are unchanged.
 15. **Winter occupancy gate (`winter_fans_need_occupancy` = on).** The
     no-demand winter recirc path now requires hall occupancy, so an empty,
     unheated hut no longer runs the fans on ambient (warm-fabric)
@@ -2407,7 +2481,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   a no-op). No-op if the alarm integration is not installed (the event never
   fires). Diagnostics carry `state.fire_hold`.
 
-**Owner-side outstanding** (not code): set `MIN_RUN_W ≈ 20` in the Shelly
+**Owner-side outstanding** (not code): **at the v1.43.0 deploy, reset
+`zone_a_warmup_rate_fans` 40 → 15** (the entity now holds the GROSS radiator gain,
+min/°C before leak; the 09-16/09-21 cold climbs read 10–14, and 40 in the new units
+would pin every lead at the cap) — leave `zone_a_warmup_rate` (33) and
+`zone_b_warmup_rate` alone, they only err warm and the step cap walks them down.
+Set `MIN_RUN_W ≈ 20` in the Shelly
 fan script — the stall threshold must sit *below the lowest running draw*, and
 the **2026-07-14 commissioning measured the lowest forward dial at 40 W** (full
 forward ~195–255 W depending on tap; reverse ~0.6–0.8× forward, so its lowest
