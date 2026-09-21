@@ -181,12 +181,14 @@ def test_trace_records_heater_firing_and_drive_offset():
 def test_accepted_warmup_sample_is_audited_with_its_inputs():
     ctrl, hass = make_controller()
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)  # no leak term: the numbers below are pure gain
     _set_rate(ctrl, "hall_comfort_temp", 22)  # target, so the climb is a 4 °C sample
     _hall_temp(hass, 18)
     _outdoor(hass, 5)  # cold: warm-up learning only folds in cold conditions
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"  # only a real pre-heat is sampled
     ctrl._update_warmup_learning()
-    # Climb 18 -> 22 in 1 °C/30-min steps (gradual, no single-tick jump).
+    # Climb 18 -> 22 in 1 °C/30-min steps.
     for t in (19, 20, 21, 22):
         advance(ctrl, 30)
         _hall_temp(hass, t)
@@ -199,9 +201,11 @@ def test_accepted_warmup_sample_is_audited_with_its_inputs():
     assert evt["reached_target"] is True
     assert evt["minutes"] == pytest.approx(120, abs=0.1)
     assert evt["rise"] == pytest.approx(4.0)
-    assert evt["max_tick_rise"] == pytest.approx(1.0)
+    assert evt["avg_gap"] == pytest.approx(15.0)  # (18 + 22) / 2 - 5
+    # Gross gain: (4 + 2.5 tail) / 2 h = 3.25 °C/h -> 18.46 min/°C.
+    assert evt["observed_gain"] == pytest.approx(60 / 3.25, abs=0.01)
     assert evt["old_rate"] == 20.0
-    assert evt["new_rate"] == pytest.approx(23.0, abs=0.01)
+    assert evt["new_rate"] == pytest.approx(19.54, abs=0.01)
 
 
 def test_rejected_warmup_sample_is_audited_as_rejected():
@@ -210,6 +214,7 @@ def test_rejected_warmup_sample_is_audited_as_rejected():
     _hall_temp(hass, 18)
     _outdoor(hass, 5)  # cold, so the rejection is the small rise, not the mild gate
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"
     ctrl._update_warmup_learning()
     advance(ctrl, 20)
     _hall_temp(hass, 18.4)  # too small a rise to teach anything
@@ -222,25 +227,28 @@ def test_rejected_warmup_sample_is_audited_as_rejected():
     assert evt["new_rate"] == evt["old_rate"] == 20.0
 
 
-def test_warmup_with_a_single_tick_probe_jump_is_rejected():
-    # A freeze-then-jump probe (floor leaps 18 -> 22 in one tick) would read as an
-    # implausibly fast climb; the single-tick-rise guard drops the whole sample so
-    # it can't corrupt the rate toward a cold arrival.
+def test_warmup_sample_records_the_raw_end_reading_and_the_clamped_rise():
+    # A probe unfreezing PAST target on the closing tick (18 -> 24, target 22):
+    # the audit keeps what the probe said, but the rise that teaches is judged
+    # to target, so the overshoot cannot make the climb read faster than it was.
     ctrl, hass = make_controller()
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)
     _set_rate(ctrl, "hall_comfort_temp", 22)
     _hall_temp(hass, 18)
-    _outdoor(hass, 5)  # cold, so the rejection is the tick jump, not the mild gate
+    _outdoor(hass, 5)
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"
     ctrl._update_warmup_learning()  # start at 18
     advance(ctrl, 120)
-    _hall_temp(hass, 22)  # the whole 4 °C rise in one tick -> discontinuity
+    _hall_temp(hass, 24)  # the catch-up lands 2 °C over target
     ctrl._update_warmup_learning()
 
     (evt,) = events(ctrl, "warmup_sample")
-    assert evt["max_tick_rise"] == pytest.approx(4.0)
-    assert evt["accepted"] is False
-    assert evt["new_rate"] == evt["old_rate"] == 20.0  # rate untouched
+    assert evt["end_temp"] == 24.0
+    assert evt["rise"] == pytest.approx(4.0)
+    assert evt["accepted"] is True
+    assert evt["new_rate"] == pytest.approx(19.54, abs=0.01)  # same as the honest 18 -> 22
 
 
 def test_warmup_sample_records_the_average_fan_wattage():
@@ -258,6 +266,7 @@ def test_warmup_sample_records_the_average_fan_wattage():
     _hall_temp(hass, 18)
     _outdoor(hass, 5)  # cold: warm-up learning only folds in cold conditions
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"
     ctrl._update_warmup_learning()  # sample starts
     ctrl._update_warmup_learning()  # one mid-warm-up tick
     advance(ctrl, 120)
@@ -273,10 +282,12 @@ def _run_warmup(outdoor_temp):
     # A clean 4 °C climb (gradual, target reached) at the given outdoor temp.
     ctrl, hass = make_controller()
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)
     _set_rate(ctrl, "hall_comfort_temp", 22)
     _hall_temp(hass, 18)
     _outdoor(hass, outdoor_temp)
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"
     ctrl._update_warmup_learning()
     for t in (19, 20, 21, 22):
         advance(ctrl, 30)
@@ -304,7 +315,7 @@ def test_warmup_in_cold_weather_is_learned():
     cold = _run_warmup(5.0)
     assert cold["mild"] is False
     assert cold["accepted"] is True
-    assert cold["new_rate"] == pytest.approx(23.0, abs=0.01)
+    assert cold["new_rate"] == pytest.approx(19.54, abs=0.01)
 
 
 def test_warmup_with_no_outdoor_reading_is_not_learned():
@@ -316,6 +327,7 @@ def test_warmup_with_no_outdoor_reading_is_not_learned():
     _set_rate(ctrl, "hall_comfort_temp", 22)
     _hall_temp(hass, 18)  # no _outdoor() call -> weather entity unset -> None
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"
     ctrl._update_warmup_learning()
     for t in (19, 20, 21, 22):
         advance(ctrl, 30)
@@ -547,7 +559,7 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "zone_a_heatloss_pct", 0)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
-    _hall_temp(hass, 19)  # 3 °C deficit x 20 min/°C -> 60 min lead
+    _hall_temp(hass, 19)  # 3 °C deficit + 2.5 tail at 3 °C/h net -> 110 min lead
     start = dt_util.now() + timedelta(minutes=30)
 
     async def _events(cal, minutes):
@@ -558,15 +570,17 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
     monkeypatch.setattr(ctrl, "_async_calendar_events", _events)
     run(ctrl._async_refresh_calendars())
 
-    assert ctrl.cal_window[ZA] is True  # 30 min gap <= 60 min lead
+    assert ctrl.cal_window[ZA] is True  # 30 min gap <= 110 min lead
     (evt,) = events(ctrl, "preheat_start")
     assert evt["zone"] == ZA
-    assert evt["lead_min"] == 60
+    assert evt["lead_min"] == 110
     assert evt["gap_min"] == pytest.approx(30, abs=0.1)
     assert evt["rate"] == 20.0
     assert evt["indoor_coldest"] == 19.0
     assert evt["target"] == 22.0
     assert evt["outdoor"] == 15.0
+    assert evt["predicted"] == 19.0  # k 0: no cooling over the gap
+    assert evt["net_c_per_h"] == pytest.approx(3.0)  # 60 / 20 - 0 leak
 
     # Staying inside the window on the next refresh records nothing new.
     run(ctrl._async_refresh_calendars())

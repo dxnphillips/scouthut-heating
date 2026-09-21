@@ -1,8 +1,11 @@
-"""Per-probe freeze / discontinuity guards on the learning (Q25 PR 5).
+"""Freeze / discontinuity handling on the learning (Q25 PR 5, revised v1.43.0).
 
-- A warm-up sample is rejected when any ONE probe jumps a tick's worth of
-  freeze-then-catch-up, even though the zone average dilutes it below the guard
-  (2026-09-16: a +4.0 on one of four probes read as +1.0 on the average).
+- A warm-up is timed end-to-end on the COLDEST probe with the rise clamped at
+  target. A mid-climb freeze-then-catch-up with honest endpoints therefore folds
+  at its honest pace (the endpoints are what the lead formula reproduces), and a
+  probe unfreezing PAST target on the closing tick cannot inflate the rise. The
+  two single-tick jump guards this replaced threw away the first genuinely
+  cold pre-heat on record (2026-09-21, +3.24 in one tick, endpoints sound).
 - An out-of-family cool-off whose reading sat flat for a long spell is the probe
   freeze-then-catch-up, not an opening: rejected, but the "window/door open?"
   latch is not raised (the office's recurring 3am false alarm).
@@ -34,43 +37,68 @@ def _probes(hass, back, front):
     hass.states.set(HF, "heat", {"current_temperature": front})
 
 
-# --- Warm-up: a single probe's jump is not diluted by the average ------------
-def test_single_probe_freeze_jump_rejects_the_warmup_sample():
-    ctrl, hass = make_controller()
-    _set(ctrl, "zone_a_warmup_rate", 30)
-    _set(ctrl, "hall_comfort_temp", 21)
-    hass.states.set(E["weather"], "cloudy", {"temperature": 5.0})  # cold: the gate admits it
-    _probes(hass, 17.0, 17.0)
+# --- Warm-up: honest endpoints teach; a jump past target is clamped ------------
+def _preheat(ctrl, hass, rate=30, target=21, outdoor=5.0):
+    _set(ctrl, "zone_a_warmup_rate", rate)
+    _set(ctrl, "zone_a_heatloss_pct", 0)
+    _set(ctrl, "hall_comfort_temp", target)
+    hass.states.set(E["weather"], "cloudy", {"temperature": outdoor})  # cold: admitted
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"
+
+
+def test_a_mid_climb_freeze_with_honest_endpoints_folds_at_its_end_to_end_pace():
+    # hall_front climbs steadily; hall_back (the coldest) sits frozen at 17.0 then
+    # catches up to 21.0 in one tick. The sample is timed on the coldest probe
+    # from its honest start to its honest arrival — 80 min for 4 °C — and folds.
+    ctrl, hass = make_controller()
+    _preheat(ctrl, hass)
+    _probes(hass, 17.0, 17.0)
     ctrl._update_warmup_learning()
-    # hall_front climbs steadily; hall_back sits frozen at 17.0 then jumps +4.0
-    # in one tick — only +1.0 on the two-probe average, under the 1.5 guard.
     for back, front in ((17.0, 18.0), (17.0, 19.0), (17.0, 20.0), (21.0, 21.0)):
         advance(ctrl, 20)
         _probes(hass, back, front)
         ctrl._update_warmup_learning()
     (evt,) = _events(ctrl, "warmup_sample")
-    assert evt["max_tick_rise"] == pytest.approx(2.5)  # the average's largest step
-    assert evt["max_probe_tick_rise"] == pytest.approx(4.0)  # the single probe's
-    assert evt["accepted"] is False
-    assert evt["new_rate"] == evt["old_rate"] == 30.0
+    assert evt["minutes"] == pytest.approx(80, abs=0.1)
+    assert evt["rise"] == pytest.approx(4.0)
+    assert evt["accepted"] is True
+    assert evt["new_rate"] < evt["old_rate"]  # (4 + 2.5) / 1.33 h -> 12.3 min/°C
+
+
+def test_a_probe_unfreezing_past_target_has_its_rise_clamped():
+    # The closing tick overshoots the target by 3 °C (the catch-up landing high):
+    # the rise is judged to target, so the overshoot cannot make the climb read
+    # faster than it was.
+    ctrl, hass = make_controller()
+    _preheat(ctrl, hass)
+    _probes(hass, 17.0, 17.0)
+    ctrl._update_warmup_learning()
+    for t in (18.0, 19.0, 20.0):
+        advance(ctrl, 30)
+        _probes(hass, t, t)
+        ctrl._update_warmup_learning()
+    advance(ctrl, 30)
+    _probes(hass, 24.0, 24.0)
+    ctrl._update_warmup_learning()
+    (evt,) = _events(ctrl, "warmup_sample")
+    assert evt["end_temp"] == 24.0  # what the probe said...
+    assert evt["rise"] == pytest.approx(4.0)  # ...judged to the 21 target
+    assert evt["accepted"] is True
 
 
 def test_a_steady_climb_on_every_probe_still_teaches():
     ctrl, hass = make_controller()
-    _set(ctrl, "zone_a_warmup_rate", 30)
-    _set(ctrl, "hall_comfort_temp", 21)
-    hass.states.set(E["weather"], "cloudy", {"temperature": 5.0})
+    _preheat(ctrl, hass)
     _probes(hass, 17.0, 17.0)
-    ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._update_warmup_learning()
     for t in (18.0, 19.0, 20.0, 21.0):
         advance(ctrl, 30)
         _probes(hass, t, t)
         ctrl._update_warmup_learning()
     (evt,) = _events(ctrl, "warmup_sample")
-    assert evt["max_probe_tick_rise"] == pytest.approx(1.0)
     assert evt["accepted"] is True
+    assert evt["observed_gain"] == pytest.approx(60 / ((4 + 2.5) / 2), abs=0.01)
 
 
 # --- Cool-off: a long flat spell before an out-of-family drop is a freeze ----

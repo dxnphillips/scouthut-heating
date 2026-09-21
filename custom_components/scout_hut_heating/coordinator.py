@@ -53,7 +53,6 @@ from .fan_logic import fan_decision
 from .preheat import (
     MAX_COOL_TICK_DROP,
     MAX_RATE,
-    MAX_WARMUP_TICK_RISE,
     MIN_COOL_SAMPLE_DROP,
     MIN_COOL_SAMPLE_GAP,
     MIN_COOL_SAMPLE_HOURS,
@@ -62,11 +61,12 @@ from .preheat import (
     cooling_observed_k,
     cooling_sample_is_outlier,
     hold_margin,
+    net_gain_c_per_h,
+    predicted_room_temp,
     required_lead_minutes,
     updated_cooling_k,
     updated_rate,
     warmup_observed_rate,
-    warmup_rate_is_outlier,
 )
 from .const import (
     COOLING_RELEASE_FLOOR,
@@ -630,9 +630,13 @@ class ScoutController:
         # observed loss), and the last comfort target seen on the zone's own
         # heater (used as the office target, which the integration does not
         # otherwise know).
+        # Warm-up sample per zone: (started-at, start temperature — the zone's
+        # COLDEST probe, fan ticks, ticks, O1 watt sum, O1 watt count, probes
+        # readable at the open — the close needs at least as many, so a cold-end
+        # dropout cannot close the sample on the next-coldest probe).
         self._warmup_start: dict[
             str,
-            tuple[datetime, float, int, int, float, int, float | None, float] | None,
+            tuple[datetime, float, int, int, float, int, int] | None,
         ] = {
             ZONE_A: None,
             ZONE_B: None,
@@ -785,13 +789,9 @@ class ScoutController:
         # CHANGED (the Rointe entity's own timestamps are always fresh).
         self._probe_last_value: dict[str, float] = {}
         self._probe_changed_at: dict[str, datetime] = {}
-        # Per-probe discontinuity tracking for the warm-up sample: the zone
-        # AVERAGE dilutes a single probe's freeze-then-jump 4× (a +4.0 read as
-        # +1.0 on 2026-09-16), so each heater's reading is watched too.
-        self._warmup_probe_prev: dict[str, dict[str, float]] = {}
-        self._warmup_probe_jump: dict[str, float] = {}
         # Outdoor readings accumulated over a warm-up sample, so the cold gate
-        # judges the sample's conditions, not the last tick's.
+        # judges the sample's conditions, not the last tick's, and the fabric
+        # leak is charged at the sample's own average gap.
         self._warmup_outdoor: dict[str, list[float]] = {}
         self._drive_reject_notified = False
         self._opening_notified: set[str] = set()
@@ -1446,6 +1446,14 @@ class ScoutController:
             "outdoor": outdoor,
             "loss_pct": loss_pct,
         }
+        if indoor is not None:
+            # The heat-balance terms the lead came from, so the arithmetic that
+            # opened a window is readable straight off `preheat_start`.
+            predicted = predicted_room_temp(indoor, outdoor, gap_hours, loss_pct / 100)
+            self._last_lead_calc[zone]["predicted"] = round(predicted, 2)
+            self._last_lead_calc[zone]["net_c_per_h"] = round(
+                net_gain_c_per_h(rate, predicted, target, outdoor, loss_pct / 100), 3
+            )
         return lead
 
     def _prediction_rate(self, zone: str) -> tuple[float, str]:
@@ -1467,24 +1475,22 @@ class ScoutController:
                 rate, key = base, "zone_a_warmup_rate"
         return rate, key
 
-    def _warmup_rate_key(self, zone: str, assisted: bool | None = None) -> str:
-        """Which learned warm-up rate applies to a zone.
+    def _warmup_rate_key(self, zone: str) -> str:
+        """Which learned warm-up gain applies to a zone — to predict with AND to
+        learn into.
 
-        The hall keeps two: with and without the destratification fans
-        running, because the fans materially change warm-up speed.
-        ``assisted=None`` asks for the rate to *predict* with (will the fans
-        help the next warm-up?); a bool records which rate an *observed*
-        warm-up should update.
+        The hall keeps two, with and without the destratification fans, because
+        the fans materially change delivery. During any heated warm-up the hall
+        is on a heating preset, which forces the fans to reverse/destrat, so the
+        fans help whenever they are enabled, regardless of season. The observed
+        climb folds into the SAME key the lead is predicted from: a per-sample
+        tick-ratio attribution used to send a cold pre-heat whose fans ran 51 %
+        of ticks (the strat gap collapses under a hard drive) into the base key
+        the lead never reads — a silent fourth rejection path (2026-09-16).
         """
         if zone != ZONE_A or not self.config.get(CONF_FAN_MASTER):
             return f"{zone}_warmup_rate"
-        if assisted is None:
-            # During any heated warm-up the hall is on a heating preset, which
-            # forces the fans to reverse/destrat (they assist) — so the fans help
-            # whenever they are enabled, regardless of season (the old
-            # `not _summer_active()` proxy under-counted a summer cold-booking
-            # pierce, whose pre-heat fans DO assist).
-            assisted = self.switch_on("fans_enabled", default=True)
+        assisted = self.switch_on("fans_enabled", default=True)
         return "zone_a_warmup_rate_fans" if assisted else "zone_a_warmup_rate"
 
     def _fans_running(self) -> bool:
@@ -1532,22 +1538,55 @@ class ScoutController:
             self._fan_w_last_seen = w
 
     def _update_warmup_learning(self) -> None:
-        """Time real comfort warm-ups and fold them into the learned rates.
+        """Time real pre-heat climbs and fold them into the learned gross gain.
 
-        A sample starts when a zone enters comfort while measurably below
-        target, and ends when the target is reached or comfort ends; the
-        observed minutes-per-degree updates the zone's learned rate (EWMA,
-        clamped — see preheat.py). Aborted warm-ups with too little rise are
-        ignored, so an opening pause or a cloud blip cannot poison the rate.
+        Which climbs are sampled is the whole safety story here (v1.43.0), and
+        every rule reuses a flag the controller already has:
+
+        * **Only a real pre-heat** — the zone entered comfort with reason
+          ``preheat``. One condition excludes a Boost (setpoint +2, elements
+          never throttle: the 09-16 boost read 7.2 gross, out of family),
+          occupancy climbs (~100 W per child of free gain) and mid-booking
+          top-ups — the free-gain sources the old out-of-family gate was
+          guessing at. Read at the START: a short pre-heat that runs into its
+          booking keeps its sample and folds SLOW (self-correcting).
+        * **Timed on the COLDEST probe**, the quantity the lead sizes
+          (`_zone_preheat_minutes`) and `booking_start.shortfall` judges. The
+          coldest lagged the average by 1.75 °C on 09-16 and by up to 22 min on
+          09-17; an average-timed sample under-states exactly the number that
+          decides a cold arrival. A frozen cold-end probe delays the close (slow,
+          safe); one flat ≥ `fan_sensor_stale_minutes` is dropped by the
+          existing `_probe_frozen`.
+        * **Not inside the startup grace** — a restart mid-pre-heat restores the
+          latch (PR 8) and re-applies comfort with reason `preheat`, so a fresh
+          sample would open on an already-heating room: the one fast-bias route
+          the rise clamp cannot see. That morning's sample is lost, not learned
+          wrong.
+        * **Folded only if it REACHED target.** Under the tail model a truncated
+          climb has not paid the finish and reads fast by construction.
+        * **The rise is clamped at target** (``min(temp, target) − start``): a
+          probe unfreezing PAST target on the closing tick cannot inflate it. A
+          mid-climb freeze with honest endpoints (today's +3.24 in one tick)
+          folds at its honest end-to-end pace — the endpoints are what the lead
+          formula reproduces. This replaces both single-tick jump guards.
+        * **The close needs as many readable probes as the open**, so a
+          cold-end heater dropping `unavailable` cannot close the sample on the
+          next-coldest probe; a dropout at the open only under-states the rise.
+
+        Then the cold gate (average outdoor over the climb ≤
+        ``WARMUP_COLD_MAX_OUTDOOR``) and `updated_rate`'s clamps and 25 % step
+        cap — the one guard kept from before, because it bounds the dangerous
+        direction without needing a baseline to be out-of-family against.
         """
         now = self._now()
+        stale = self._rointe_stale_min()
         for zone in (ZONE_A, ZONE_B):
             comfort = (
                 self.applied[zone] == PRESET_COMFORT
                 and not self.opening_ice[zone]
                 and self.switch_on(f"{zone}_automation_enabled", default=True)
             )
-            temp = self._zone_room_temp(zone)
+            temp = self._zone_room_temp(zone, coldest=True, stale_min=stale)
 
             # Cache the zone's real comfort target from its own heater while
             # it is actually in comfort (needed for the office, see _zone_target).
@@ -1565,11 +1604,15 @@ class ScoutController:
             sample = self._warmup_start[zone]
 
             if sample is None:
-                if comfort and temp is not None and temp < target - 0.5:
+                if (
+                    comfort
+                    and temp is not None
+                    and temp < target - 0.5
+                    and self._preset_reason.get(zone) == "preheat"
+                    and not self._within_startup_grace(now)
+                ):
                     fans = 1 if self._fans_running() else 0
                     w = self._o1_watts() if zone == ZONE_A else None
-                    self._warmup_probe_prev[zone] = self._zone_probe_readings(zone)
-                    self._warmup_probe_jump[zone] = 0.0
                     out0 = self._outdoor_temp()
                     self._warmup_outdoor[zone] = [out0, 1.0] if out0 is not None else [0.0, 0.0]
                     self._warmup_start[zone] = (
@@ -1579,51 +1622,39 @@ class ScoutController:
                         1,
                         w or 0.0,
                         1 if w is not None else 0,
-                        temp,  # prev_temp, for the single-tick rise guard
-                        0.0,  # max_tick_rise seen so far
+                        len(self._zone_probe_readings(zone)),
                     )
                 continue
 
-            (
-                started, start_temp, fan_ticks, ticks, watt_sum, watt_n,
-                prev_temp, max_tick_rise,
-            ) = sample
-            done = comfort and temp is not None and temp >= target
+            started, start_temp, fan_ticks, ticks, watt_sum, watt_n, n_probes = sample
+            readable = len(self._zone_probe_readings(zone))
+            done = (
+                comfort
+                and temp is not None
+                and temp >= target
+                and readable >= n_probes
+            )
             if comfort and not done:
-                # Still warming (or temp reading lost: wait). Keep tallying
-                # whether the fans are assisting and how hard (the O1 wattage
-                # encodes the manual dial tap), and the largest single-tick rise
-                # (a freeze-then-jump probe discontinuity rejects the sample).
+                # Still warming (or a reading lost: wait). Keep tallying whether
+                # the fans are assisting and how hard (the O1 wattage encodes the
+                # manual dial tap), and the outdoor for the cold gate + the leak.
                 fan_ticks += 1 if self._fans_running() else 0
                 w = self._o1_watts() if zone == ZONE_A else None
                 if w is not None:
                     watt_sum += w
                     watt_n += 1
-                if temp is not None:
-                    if prev_temp is not None:
-                        max_tick_rise = max(max_tick_rise, temp - prev_temp)
-                    prev_temp = temp
-                self._note_warmup_probe_jump(zone)
                 out_now = self._outdoor_temp()
                 if out_now is not None:
                     acc = self._warmup_outdoor.setdefault(zone, [0.0, 0.0])
                     acc[0] += out_now
                     acc[1] += 1
                 self._warmup_start[zone] = (
-                    started,
-                    start_temp,
-                    fan_ticks,
-                    ticks + 1,
-                    watt_sum,
-                    watt_n,
-                    prev_temp,
-                    max_tick_rise,
+                    started, start_temp, fan_ticks, ticks + 1, watt_sum, watt_n, n_probes,
                 )
                 continue
 
             # Warm-up finished (target reached) or ended early (preset left
-            # comfort): fold the observation into the applicable rate — the
-            # fan-assisted one when the fans ran for most of the warm-up.
+            # comfort): fold the observation into the gain the lead predicts with.
             self._warmup_start[zone] = None
             if temp is None:
                 self._warmup_outdoor.pop(zone, None)
@@ -1636,28 +1667,14 @@ class ScoutController:
                 )
                 continue
             minutes = (now - started).total_seconds() / 60
-            rise = temp - start_temp
-            if prev_temp is not None:  # count the final tick's rise too
-                max_tick_rise = max(max_tick_rise, temp - prev_temp)
-            self._note_warmup_probe_jump(zone)
-            probe_jump = self._warmup_probe_jump.pop(zone, 0.0)
-            self._warmup_probe_prev.pop(zone, None)
-            assisted = fan_ticks * 2 >= ticks
-            rate_key = self._warmup_rate_key(zone, assisted=assisted)
+            end_temp = min(temp, target)
+            rise = end_temp - start_temp
+            rate_key = self._warmup_rate_key(zone)
             old_rate = self.number(rate_key)
-            # Free gain (solar/occupancy/fan-delivered ceiling heat) makes a
-            # warm-up read implausibly fast; folding it would corrupt the rate
-            # LOW and shorten the lead toward a cold arrival. Three guards, then
-            # the cold-conditions gate: too little rise/duration is noise, a
-            # single-tick probe jump (freeze-then-catch-up) is a discontinuity,
-            # and a sample timed in MILD weather is dominated by solar on the roof
-            # (WARMUP_COLD_MAX_OUTDOOR — the same outdoor gave 44 vs 12 min/°C by
-            # time of day, so only cold-morning conditions are trusted). Flagged
-            # for the audit; no push (the sun helping is not something to act on).
-            # Judge the cold gate on the AVERAGE outdoor over the climb: a
+            # Judge the cold gate on the AVERAGE outdoor over the climb (a
             # pre-dawn sample must not be thrown away because the sun was up by
-            # the time it closed (2026-09-17: 13.5 at start, 15.2 at the end).
-            # The closing tick counts too, like its rise.
+            # the time it closed — 2026-09-17), closing tick included; the same
+            # average sets the gap the fabric leaked across.
             acc = self._warmup_outdoor.pop(zone, None) or [0.0, 0.0]
             out_now = self._outdoor_temp()
             if out_now is not None:
@@ -1665,22 +1682,17 @@ class ScoutController:
                 acc[1] += 1
             outdoor = (acc[0] / acc[1]) if acc[1] else None
             mild = outdoor is None or outdoor > WARMUP_COLD_MAX_OUTDOOR
-            # The tick guard is applied to the zone average AND to every single
-            # probe: a +4.0 freeze-then-jump on one of four hall probes reads as
-            # +1.0 on the average and used to pass (2026-09-16).
+            avg_gap = 0.0 if outdoor is None else (start_temp + end_temp) / 2.0 - outdoor
+            cool_k = self.number(f"{zone}_heatloss_pct") / 100
             quality = (
-                rise >= MIN_SAMPLE_RISE
-                and minutes >= MIN_SAMPLE_MINUTES
-                and max_tick_rise < MAX_WARMUP_TICK_RISE
-                and probe_jump < MAX_WARMUP_TICK_RISE
+                done
                 and not mild
+                and rise >= MIN_SAMPLE_RISE
+                and minutes >= MIN_SAMPLE_MINUTES
             )
-            new_rate = updated_rate(old_rate, minutes, rise, max_tick_rise) if quality else old_rate
-            observed = warmup_observed_rate(minutes, rise) if quality else None
-            outlier = (
-                quality
-                and observed is not None
-                and warmup_rate_is_outlier(old_rate, observed)
+            observed = warmup_observed_rate(minutes, rise, avg_gap, cool_k) if quality else None
+            new_rate = (
+                updated_rate(old_rate, minutes, rise, avg_gap, cool_k) if quality else old_rate
             )
             self.audit.record(
                 "warmup_sample",
@@ -1693,14 +1705,13 @@ class ScoutController:
                 end_temp=temp,
                 fan_ticks=fan_ticks,
                 ticks=ticks,
-                max_tick_rise=max_tick_rise,
-                max_probe_tick_rise=probe_jump,
                 o1_avg_w=(watt_sum / watt_n) if watt_n else None,
                 outdoor=outdoor,
+                avg_gap=round(avg_gap, 2),
                 mild=mild,
                 reached_target=done,
-                accepted=quality and not outlier,
-                outlier=outlier,
+                accepted=observed is not None,
+                observed_gain=observed,
                 old_rate=old_rate,
                 new_rate=new_rate,
             )
@@ -1894,20 +1905,6 @@ class ScoutController:
             except (TypeError, ValueError):
                 continue
         return out
-
-    def _note_warmup_probe_jump(self, zone: str) -> None:
-        """Track the largest single-tick rise of any ONE probe in a warm-up."""
-        prev = self._warmup_probe_prev.get(zone)
-        if prev is None:
-            return
-        current = self._zone_probe_readings(zone)
-        biggest = self._warmup_probe_jump.get(zone, 0.0)
-        for climate, value in current.items():
-            before = prev.get(climate)
-            if before is not None:
-                biggest = max(biggest, value - before)
-        self._warmup_probe_jump[zone] = biggest
-        self._warmup_probe_prev[zone] = current
 
     def _update_cooloff_learning(self) -> None:
         """Measure how fast an unheated zone loses heat (retention learning).

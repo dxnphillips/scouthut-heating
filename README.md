@@ -88,7 +88,7 @@ one restart to surface it in the sidebar; if a future release reshapes the API
 entirely, the button fails soft and points at the YAML files:
 
 - **Numbers:** pre-heat lead time (the *maximum* — see optimum start below),
-  hall/office learned warm-up rates, no-motion eco timeout, door/window ice
+  hall/office learned radiator gains, no-motion eco timeout, door/window ice
   delays, seasonal-lockout threshold, hall comfort/eco/eco-low temperatures,
   water pre-heat lead time, water keep-on-after-motion. The hall setpoint
   defaults (comfort 19.5 °C, eco 16 °C, eco-low 14 °C) are sized for **active**
@@ -276,7 +276,7 @@ this priority (highest wins):
    slow radiators would otherwise catch the fall late and undershoot. The margin
    is worked out automatically from how fast the hall is losing heat (the learned
    cool-off rate and the outdoor temperature) and how sluggish it is to warm back
-   up (the learned warm-up rate): bigger on a cold night, near-zero on a mild one.
+   up (the learned radiator gain): bigger on a cold night, near-zero on a mild one.
    Capped by the **Booking hold** slider (default 1.5 °C, set to 0 to switch it
    off). Hall only, and only while a booking is actually running.
 5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
@@ -359,15 +359,21 @@ never end up both on. HACS installs the integration but **not** blueprints, so
 this is a one-time manual import (the entity fields default to the standard ids;
 change them only if you renamed the device).
 
-**Optimum start.** The pre-heat lead is not a fixed number: each zone computes
-it as *learned warm-up rate × how far the room is below **that booking's**
-target* — a booking matching an ECO keyword pre-heats only to the eco-low
-setpoint, not comfort. The deficit is measured from the **coldest** of the
-zone's heater readings, not the average, so the warm end of a patchy room
-cannot cut the lead short for the cold end — with a small extra margin when it is cold outside,
-clamped between 15 minutes and the **Pre-heat lead time (max)** slider (the
-safety cap — a room with no readable temperature also falls back to the cap,
-so a cold start is never missed). When the event's start time is known, the
+**Optimum start.** The pre-heat lead is not a fixed number: each zone works it
+out from a small heat balance. The radiators add heat at a **learned gross
+gain** (minutes per °C before any leak); the fabric leaks it away at the
+**learned heat-loss constant** times how far indoors is above outdoors; the
+difference is the net climb rate, and the lead is how long that rate takes to
+cover the deficit *plus a fixed finish* — the Rointes throttle to half power
+inside the last degree and their oil mass lags, so every climb here pays the
+same ~30-minute tail whether it started 1 °C or 5 °C short. A booking matching
+an ECO keyword pre-heats only to the eco-low setpoint, not comfort. The deficit
+is measured from the **coldest** of the zone's heater readings, not the
+average, so the warm end of a patchy room cannot cut the lead short for the
+cold end. The result is clamped between 15 minutes and the **Pre-heat lead time
+(max)** slider (the safety cap — a room with no readable temperature, or a
+leak the radiators cannot out-run, also falls back to the cap, so a cold start
+is never missed). When the event's start time is known, the
 zone's **learned heat-loss constant** (the % of the indoor–outdoor gap lost
 per hour, measured whenever the room coasts unheated) predicts how much
 further it will cool before the pre-heat begins — Newton cooling toward the
@@ -394,19 +400,21 @@ crosses the sun — the pre-heat resumes with its safety margin intact. Off by
 default; turn it on once you want to watch it save the morning's heat on a bright
 day.
 
-All the learned numbers are **fail-safe by construction**: the warm-up rates
+All the learned numbers are **fail-safe by construction**: the radiator gains
 are seeded at the slowest plausible value, so an unlearned zone uses
-(effectively) the full cap — the old fixed behaviour — until real warm-ups
-pull the rate down to the truth over a handful of bookings. Every real
-comfort warm-up from cold is timed and folded in (exponentially smoothed and
-clamped, so one door-open disaster can't poison it); a temperature *rise*
-while unheated (July roof sun) is never mistaken for good insulation. The
-hall keeps **two** warm-up rates — with and without the destratification fans
-running — judged from the Shelly O1 power reading (a closed master with the
-dial at zero doesn't count), because the fans materially change warm-up
-speed. All the learned numbers are visible and adjustable — re-seed them
-after any building change, or set the heat-loss constant to 0 to disable the
-cooling prediction.
+(effectively) the full cap — the old fixed behaviour — until real pre-heats
+pull the gain down to the truth over a handful of bookings. Only a genuine
+**pre-heat that reached its target** is timed and folded in — never a boost,
+an occupancy climb or a mid-booking top-up, where people, sun and a hotter
+setpoint do part of the radiators' work — judged on the coldest reading's
+start and finish (exponentially smoothed and step-capped, so one odd morning
+can only nudge the number, never yank it); a temperature *rise* while unheated
+(July roof sun) is never mistaken for good insulation. The hall keeps **two**
+gains — with and without the destratification fans enabled — because the fans
+materially change warm-up speed, and the one the next lead will use is the one
+a sample teaches. All the learned numbers are visible and adjustable — re-seed
+them after any building change, or set the heat-loss constant to 0 to disable
+the cooling prediction.
 
 The **shared zone** heats toward comfort on a hall/office booking or shared-PIR
 motion (cold → comfort, warm → eco; hall/office-only motion → eco), and the
@@ -438,10 +446,11 @@ restarts) of everything it decides and learns:
 
 - **`warmup_sample` / `cooloff_sample`** — every learning observation, accepted
   or rejected, with the raw inputs (duration, temperature change, the average
-  indoor–outdoor gap, fan assistance and wattage, old and new value, plus
-  `max_tick_drop` — the largest single-tick fall, on which a discontinuity
-  (an unmonitored opening or a probe unfreezing) is rejected rather than
-  learned as fabric loss), so the
+  indoor–outdoor gap, fan assistance and wattage, old and new value; warm-up
+  samples add `observed_gain` — the gross radiator gain the climb implied —
+  and `reached_target`; cool-off samples add `max_tick_drop` — the largest
+  single-tick fall, on which a discontinuity (an unmonitored opening or a
+  probe unfreezing) is rejected rather than learned as fabric loss), so the
   EWMA behaviour can be re-derived. Cool-off samples carry the fan-running
   tally and average wattage too: the 2026-07-11 sealed test showed a fan-mixed
   hut sheds heat at roughly **half** the gap-normalised rate of a stratified

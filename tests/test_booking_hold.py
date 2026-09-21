@@ -15,14 +15,14 @@ from scout_testkit import PRESET_COMFORT, PRESET_ICE, ZA, ZB, booking, hall_temp
 
 # --- Pure maths -------------------------------------------------------------
 def _m(**kw):
-    base = dict(comfort=19.5, outdoor=5.0, cool_k=0.10, warmup_rate=45.0, cap=1.5)
+    base = dict(comfort=19.5, outdoor=5.0, cool_k=0.10, warmup_rate=15.0, cap=1.5)
     base.update(kw)
     return hold_margin(**base)
 
 
 def test_cold_night_earns_a_positive_margin():
-    # gap 14.5, cool 1.45/h, lead 20*45/30=30 min -> 0.725 C
-    assert round(_m(), 3) == 0.725
+    # gap 14.5, cool 1.45/h, lead 20*15/12=25 min -> 0.604 C
+    assert round(_m(), 3) == 0.604
 
 
 def test_mild_night_earns_almost_nothing():
@@ -35,7 +35,7 @@ def test_outdoor_at_or_above_comfort_is_zero():
 
 
 def test_sluggish_hall_gets_a_bigger_margin_than_a_brisk_one():
-    assert _m(warmup_rate=55.0) > _m(warmup_rate=20.0)
+    assert _m(warmup_rate=20.0) > _m(warmup_rate=10.0)
 
 
 def test_faster_loss_gets_a_bigger_margin():
@@ -61,8 +61,8 @@ def _cold_evening_booking():
     ctrl, hass = make_controller()
     hass.states.set("weather.forecast", "cloudy", {"temperature": 5.0})  # cold night
     ctrl._numbers["zone_a_heatloss_pct"].native_value = 10.0
-    ctrl._numbers["zone_a_warmup_rate"].native_value = 45.0
-    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 45.0
+    ctrl._numbers["zone_a_warmup_rate"].native_value = 15.0
+    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 15.0
     booking(ctrl, ZA)
     return ctrl, hass
 

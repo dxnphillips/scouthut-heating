@@ -67,6 +67,7 @@ def _climb(outdoor_by_tick):
     _probes(hass, 18)
     _outdoor(hass, outdoor_by_tick[0])
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"  # only real pre-heats are sampled
     ctrl._update_warmup_learning()
     for t, out in zip((19, 20, 21, 22), outdoor_by_tick[1:]):
         advance(ctrl, 30)
@@ -111,6 +112,7 @@ def test_outdoor_lost_mid_climb_averages_the_readings_it_had():
     _probes(hass, 18)
     _outdoor(hass, 10.0)
     ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._preset_reason[ZA] = "preheat"
     ctrl._update_warmup_learning()
     for i, t in enumerate((19, 20, 21, 22)):
         advance(ctrl, 30)
