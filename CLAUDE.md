@@ -1844,6 +1844,40 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   with the easing letting go after ~3 min. **So the first real evidence is +0.87 from
   one contaminated sample (20 children in the room) — NOT enough to move the constant.
   Read `drive_coast_end.rise` over several heated bookings first.**
+  **Fifteen more episodes by 09-20 agree (rises 1.12 / 0.83 / 0.5 / 0.12 and eleven
+  at 0.0), and two of the three large ones are probe-jump contaminated — the 1.12
+  sits inside a climb whose `warmup_sample` carried `max_probe_tick_rise` 3.5, and
+  the 0.83 is +0.83 on a three-probe average in 3.7 min. Strip those and the tail is
+  mostly ABSENT on mild days, which is what cooler panels predict. The 0.5 seed
+  stays; the measurement needs COLD heated bookings, not more mild ones.**
+  **THE READING GUARD — the first genuinely cold morning found the hole
+  (`DRIVE_COAST_MAX_JUMP` = 1.0, `DRIVE_COAST_SETTLE_MIN` = 15, v1.42.0, field
+  2026-09-21).** Outdoor 9–10 °C, hall at 14.5 coldest, a 4.5 °C deficit, the pre-heat
+  lead pinned at the 240 cap for an 09:00Z booking. At 05:30Z the freeze-guard held
+  **all four** hall heaters (probes 15.0–16.0, pushed 20.0); by 05:44Z they had all
+  "risen" to ~18.5 — **+3.24 on the zone average in one 15-min tick** — while the
+  independent ceiling rose just 0.6 (16.2 → 18.2 over the whole hour, smoothly) and
+  `hall_surface` sat at 55.9 °C. The easing engaged on that jumped average, pushed
+  **18.5, below the 19.0 target**, the elements cut, and the room then sat **dead flat
+  at 18.62 for the entire 20-min box** (`drive_coast_end.rise` 0.0) — there was no tail
+  to land because the room had never arrived. **This is the cold-arrival mechanism the
+  first-winter watch anticipated, but not for the reason it guessed:** the gates are
+  not too loose in temperature, the gate simply *trusted a reading the rest of the
+  system already knew was frozen*. Every other consumer of these probes has a jump
+  guard (`probe_moved`, `MAX_WARMUP_TICK_RISE`, `max_probe_tick_rise`); the coast had
+  none. Fix: `_note_coast_jump` refuses to ease when the zone average rises ≥ 1.0
+  between evaluations — arithmetically impossible from the readings themselves, since
+  every probe in a zone stepping a whole 0.5 °C quantum at once moves the average by
+  only 0.5 — and keeps the reading distrusted for 15 min afterwards, because across a
+  catch-up the room's real approach RATE (the thing the easing's premise rests on) is
+  unknowable. A jump also ends an easing already running. `drive_coast_jump` records
+  the edge. Strictly fail-safe: withholding the easing restores full drive, never
+  less. Cost that morning: ~20 min of withheld drive with 2 h 45 min of lead still to
+  run, so recoverable — but on a short lead it is a cold arrival. **First-winter
+  watch:** `drive_coast_jump` should appear on cold mornings and a 0.0-rise full box
+  should become rare; if one still follows a *clean* (un-jumped) approach, the
+  easing's premise is wrong in cold weather and the allowance should scale down with
+  the indoor-outdoor gap.
   **The 15-min trace now carries `hall_fire` and `drive_off` (2026-08-28) so a
   climb is retrospectively attributable** — `hall_fire` is the count of hall
   heaters reporting `hvac_action == heating`, `drive_off` the largest overdrive
