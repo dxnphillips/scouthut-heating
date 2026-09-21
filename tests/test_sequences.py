@@ -66,6 +66,60 @@ def test_booking_ends_reverts_then_cools_to_ice():
     assert ctrl.applied[ZA] == PRESET_ICE
 
 
+def test_booking_end_does_not_relight_comfort_off_the_stale_preheat_window():
+    # Field 2026-09-17 -> 09-21, four times: the calendar entity goes off at the
+    # end of the slot but the look-ahead only refreshes every five minutes, so
+    # the tick that sees the end still carries `cal_window` True with `cal_on`
+    # False and re-lights comfort as a phantom `preheat` (heater writes, a drive
+    # push, a 10-min reverse fan min-run on an empty hall). The testkit's
+    # `end_booking` closes the window itself, which is why this never showed in
+    # a test — here only the entity goes off, as in the field.
+    ctrl, hass = make_controller()
+    hall_temp(ctrl, 15.0)
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZA] == PRESET_COMFORT
+
+    advance(ctrl, 20)                                   # everyone has gone...
+    hass.states.set(E["cal_hall"], "off")               # ...and the slot ends
+    run(ctrl.async_reconcile())
+    assert ctrl.cal_window[ZA] is False                 # closed on the edge
+    assert ctrl._preheat_open_for[ZA] is None
+    assert ctrl.applied[ZA] == PRESET_ICE               # not a phantom pre-heat
+    reasons = [e.get("reason") for e in ctrl.audit.to_list() if e.get("event") == "preset"]
+    assert "preheat" not in reasons
+    assert ctrl._cal_refresh_due is True                # next event judged promptly
+
+
+def test_the_tick_after_a_booking_end_refreshes_the_calendar_at_once(monkeypatch):
+    from datetime import datetime, timezone
+
+    from custom_components.scout_hut_heating import coordinator as mod
+
+    ctrl, _ = make_controller()
+    calls = []
+
+    async def _refresh():
+        calls.append(1)
+
+    async def _reconcile():
+        pass
+
+    monkeypatch.setattr(ctrl, "_async_refresh_calendars", _refresh)
+    monkeypatch.setattr(ctrl, "async_reconcile", _reconcile)
+    # A minute the five-minute cadence would skip.
+    monkeypatch.setattr(mod.dt_util, "now", lambda: datetime(2026, 9, 21, 11, 1, tzinfo=timezone.utc))
+    run(ctrl._async_tick(None))
+    assert calls == []                                  # ordinary tick: no refresh
+    ctrl._cal_refresh_due = True                        # a booking just ended
+    run(ctrl._async_tick(None))
+    assert calls == [1]
+    assert ctrl._cal_refresh_due is False               # one-shot
+    run(ctrl._async_tick(None))
+    assert calls == [1]
+
+
 def test_motion_outside_booking_then_times_out():
     ctrl, _ = make_controller()
     hall_temp(ctrl, 15.0)           # cold -> occupancy heats to comfort

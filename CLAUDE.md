@@ -1952,6 +1952,36 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   should become rare; if one still follows a *clean* (un-jumped) approach, the
   easing's premise is wrong in cold weather and the allowance should scale down with
   the indoor-outdoor gap.
+  **A clean 0.0-rise box DID follow the same morning — and the premise was not
+  wrong, the panel gate was (`DRIVE_COAST_MIN_SURFACE_C` = 45, v1.43.1, 15:13Z
+  export).** The pre-heat re-lit comfort at 08:06:08Z (the room had cooled to
+  coldest 18.5 after the 07:36Z `booking_warm` ice) and the easing engaged 27 s
+  later on panels at 32 °C **and falling, nothing firing** — residue of the 05:39Z
+  burn, not heat this approach had stored. Pushed 18.5 below the 19.0 target, the
+  room fell 18.88 → 18.5 for the whole box (`rise` 0.0), 54 min before the booking
+  (it still arrived −0.5, on the reverse fans and the 08:39Z burn). The "panels hot"
+  gate was borrowed from the cool-off anchor — hottest panel > room + 5 °C — which
+  asks "is the panel disturbing the probe beside it", not "can the mass lift the
+  room 0.5 °C". Read across every hall easing on record with the trace's
+  `hall_surface` beside it: **the tails that arrived (+0.87 on 09-17, +1.12 on 09-18)
+  sat on panels at 50 °C or hotter; every zero-rise full box (09-18 12:03, 16:52,
+  19:03, 19:30; 09-21 08:06) on panels at 33 °C or cooler.** So the easing now also
+  needs the hottest panel ≥ 45 °C (between the clusters; a panel reaches 35 within
+  minutes of firing, the stored mass that carries half a degree needs a sustained
+  burn), and `drive_coast_ease` / `drive_coast_end` record `surface` so the line is
+  set from data next. Withholding the easing restores full drive — arrive-warm.
+  **Same export, a second bug: a booking's end re-lit comfort as a phantom
+  `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
+  09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`
+  True for the whole running event and only refreshes every five minutes, so the
+  tick that saw the calendar entity go off still had the window open with `cal_on`
+  False → the pre-heat rung → comfort (a four-heater write, a drive push, and the
+  reverse fans for their 10-min min-run on an empty hall at ~60 W), until the alarm
+  arm or the next refresh iced it. The testkit's `end_booking` closed the window
+  itself, which is why no test saw it. Now `_record_booking_edges` closes the window
+  and the latch on the end edge and flags a calendar refresh for the next tick
+  (`_cal_refresh_due`), so a genuine next event is judged on its own lead within
+  30 s instead of inheriting the finished one's window.
   **The 15-min trace now carries `hall_fire` and `drive_off` (2026-08-28) so a
   climb is retrospectively attributable** — `hall_fire` is the count of hall
   heaters reporting `hvac_action == heating`, `drive_off` the largest overdrive
@@ -2350,7 +2380,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   on a bare `gap <= lead`; the 2026-09-17 07:43Z deploy restart did that off a
   panel-inflated reading, closed the window and the 09:00Z booking arrived +1.0
   short (Q2). A saved latch whose event has already started is dropped on restore,
-  so it can never hold a window open for a past event.
+  so it can never hold a window open for a past event. **And the window closes on
+  the booking's END edge (v1.43.1):** while an event runs the refresh holds
+  `cal_window` True and only re-derives it every five minutes, so the tick that saw
+  the entity go off re-lit comfort as a phantom `preheat` (four times, 09-17 →
+  09-21). `_record_booking_edges` now closes the window and latch on the edge and
+  flags an immediate refresh, so the next event is judged fresh within a tick.
 - **Warm-enough reads reject a frozen Rointe value (2026-08-06).** The Rointe
   cloud can freeze while the entity still reads `available`, so every path that
   decides "is the room warm enough?" — pre-heat sizing (`_zone_preheat_minutes`),

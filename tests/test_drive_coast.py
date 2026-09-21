@@ -19,6 +19,7 @@ import pytest
 from custom_components.scout_hut_heating.coordinator import (
     DRIVE_COAST_ALLOWANCE,
     DRIVE_COAST_MAX_MINUTES,
+    DRIVE_COAST_MIN_SURFACE_C,
 )
 from custom_components.scout_hut_heating.drive import STEP, update_drive
 from scout_testkit import E, ZA, make_controller, set_registry
@@ -105,6 +106,7 @@ def test_hot_panels_and_a_room_on_the_approach_engage_the_coast():
     (evt,) = _events(ctrl, "drive_coast_ease")
     assert evt["zone"] == ZA
     assert evt["zone_avg"] == 18.75
+    assert evt["surface"] == 55.0  # the number DRIVE_COAST_MIN_SURFACE_C is set from
 
 
 def test_cold_panels_never_engage_it():
@@ -113,6 +115,37 @@ def test_cold_panels_never_engage_it():
     ctrl, _ = _ctrl(panel=19.0)
     assert _coast(ctrl, 18.75) == 0.0
     assert _events(ctrl, "drive_coast_ease") == []
+
+
+def test_warm_residue_from_an_earlier_burn_does_not_engage_it():
+    # Field 2026-09-21 08:06Z: comfort re-lit on panels still cooling from the
+    # earlier pre-heat burn (32 °C over an 18.88 room, nothing firing). That is
+    # "warmer than the room" — the cool-off anchor's question — but holds next to
+    # nothing, and the room fell 18.88 -> 18.5 through the whole 20-min box. A
+    # panel below the line is residue, not stored heat this approach can land on.
+    ctrl, _ = _ctrl(panel=32.75)
+    assert _coast(ctrl, 18.88) == 0.0
+    assert _events(ctrl, "drive_coast_ease") == []
+
+
+def test_the_line_sits_between_the_observed_tails_and_the_zero_rise_boxes():
+    # Every real tail on record sat on panels >= 50 °C; every zero-rise full box
+    # on panels <= 33 °C.
+    assert 33.0 < DRIVE_COAST_MIN_SURFACE_C <= 50.0
+    ctrl, _ = _ctrl(panel=DRIVE_COAST_MIN_SURFACE_C)
+    assert _coast(ctrl, 18.75) == DRIVE_COAST_ALLOWANCE  # on the line engages
+    ctrl2, _ = _ctrl(panel=DRIVE_COAST_MIN_SURFACE_C - 0.5)
+    assert _coast(ctrl2, 18.75) == 0.0
+
+
+def test_the_end_event_records_the_panel_it_let_go_on():
+    ctrl, hass = _ctrl(panel=55.0)
+    now = ctrl._now()
+    _coast(ctrl, 18.75, at=now)
+    hass.states.set(HB_SURFACE, "41.0")  # the panels cooled through the episode
+    _coast(ctrl, 17.5, at=now + timedelta(minutes=5))  # out of band -> ends
+    (evt,) = _events(ctrl, "drive_coast_end")
+    assert evt["surface"] == 41.0
 
 
 def test_an_install_with_no_surface_sensor_never_engages_it():
