@@ -463,7 +463,7 @@ restarts) of everything it decides and learns:
   the lead — the optimistic fan-assisted one or the base) and `fan_w_last` (the
   transformer tap the fans were last seen at, since the master is off while the
   pre-heat is idle and the live power reads zero).
-- **`probe_nudge` / `probe_nudge_result`** — while a zone is booked, a heater
+- **`probe_nudge` / `probe_nudge_result`** — while a zone is booked or occupied, a heater
   whose reading has sat unchanged for ten minutes has its comfort number
   re-written with the value it already holds, to make the device sync a fresh
   reading (the Rointe cloud only carries what the heater last synced, and an

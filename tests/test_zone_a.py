@@ -316,6 +316,34 @@ def test_once_relit_the_zone_holds_comfort_on_the_ordinary_gate():
     assert ctrl._preset_reason[ZA] == "preheat"
 
 
+def test_an_occupied_zone_iced_as_warm_relights_on_a_stale_reading_too():
+    # Motion-only heating ices on `occupied_warm` on the same coldest probe, so
+    # a frozen reading at target would hold people in a cooling room. Same rule.
+    ctrl, _ = make_controller()
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.0)
+    ctrl._track_probe_changes()
+    advance(ctrl, BOOKING_RELIGHT_STALE_MIN + 1)
+    motion(ctrl, "hall")  # still here
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._preset_reason[ZA] = "occupied_warm"
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "occupied_stale"
+
+
+def test_an_occupied_zone_with_a_fresh_reading_at_target_stays_on_ice():
+    ctrl, _ = make_controller()
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.0)
+    ctrl._track_probe_changes()
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._preset_reason[ZA] = "occupied_warm"
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "occupied_warm"
+
+
 def test_a_zone_iced_for_another_reason_is_not_relit_by_staleness():
     # Only a `booking_warm` ice is a reading-held decision. A zone that was
     # iced for some other reason is judged on the ordinary gate, where a

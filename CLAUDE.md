@@ -489,6 +489,13 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    `refreshed` → keep it (and consider lowering the stale relight to lean on it);
    mostly `unchanged` → the number write does not wake the device, remove the step
    and the honest fix is upstream (`last_sync_datetime_device`).
+   **Both cover occupancy too (v1.44.1, owner: "does it do the same for motion
+   only?").** Bare occupancy heats and ices (`occupied_warm`) on the same coldest
+   probe as a booking, so a frozen reading at target holds people in a cooling
+   room just the same: `_iced_on_a_stale_reading` relights an `occupied_warm` ice
+   past the same 20 min (`occupied_stale`, the cooling-regime commit still runs
+   after it), and the nudge runs for any ATTENDED zone (`_zone_attended`: booked,
+   or motion / override / night arm), not only a booked one.
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the

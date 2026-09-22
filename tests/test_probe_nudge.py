@@ -20,6 +20,7 @@ from scout_testkit import (
     advance,
     booking,
     make_controller,
+    motion,
     preheat_window,
     run,
     service_calls,
@@ -94,6 +95,19 @@ def test_an_unbooked_zone_is_never_nudged():
     advance(ctrl, 60)
     run(ctrl._reconcile_probe_nudge())
     assert not service_calls(hass, "number", "set_value")
+
+
+def test_a_motion_only_occupied_zone_is_nudged_too():
+    # Occupancy heats and ices on the same coldest probe as a booking, so a
+    # stale reading costs the people in the room just the same (v1.44.1).
+    ctrl, hass = make_controller()
+    _wire(hass)
+    _probes(hass, 19.0, 19.0)
+    ctrl._track_probe_changes()
+    advance(ctrl, PROBE_NUDGE_FLAT_MIN + 1)
+    motion(ctrl, "hall")
+    run(ctrl._reconcile_probe_nudge())
+    assert _nudges(hass, NUM_HB) and _nudges(hass, NUM_HF)
 
 
 def test_a_running_booking_counts_as_booked():
