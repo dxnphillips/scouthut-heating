@@ -336,6 +336,39 @@ def test_aborted_warmup_is_not_folded():
     assert evt["reached_target"] is False and evt["accepted"] is False
 
 
+def test_a_climb_released_on_the_tick_it_arrives_still_counts_as_reached():
+    # Field 2026-09-22, the first v1.43.0 pre-heat: the coldest probe caught up
+    # 16.0 -> 20.0 in one jump, past the 19.5 release line, so `booking_warm`
+    # iced the zone on the SAME tick the learning first read >= target — and the
+    # presets step runs first. Judged on "still in comfort" the sample read as
+    # ended early and the fold the redesign exists for was thrown away. A zone
+    # released BECAUSE it arrived has arrived: judged on the reading alone.
+    ctrl, hass = make_controller()
+    _set_rate(ctrl, "zone_a_warmup_rate", 15)
+    _set_rate(ctrl, "zone_a_heatloss_pct", 0)
+    _set_rate(ctrl, "hall_comfort_temp", 19)
+    _hall_temp(hass, 15.5)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 12})
+    _start_preheat(ctrl)
+    ctrl._update_warmup_learning()
+    advance(ctrl, 20)
+    _hall_temp(hass, 16.0)
+    ctrl._update_warmup_learning()
+    advance(ctrl, 23)
+    _hall_temp(hass, 20.0)  # the catch-up lands past target...
+    ctrl.applied[ZA] = "ice"  # ...and the zone is iced on the same tick
+    ctrl._preset_reason[ZA] = "booking_warm"
+    ctrl._update_warmup_learning()
+    (evt,) = [e for e in ctrl.audit.to_list() if e.get("event") == "warmup_sample"]
+    assert evt["reached_target"] is True
+    assert evt["accepted"] is True
+    assert evt["rise"] == pytest.approx(3.5)  # clamped to the 19 target
+    assert evt["minutes"] == pytest.approx(43, abs=0.1)
+    assert evt["observed_gain"] == pytest.approx(60 / (6.0 / (43 / 60)), abs=0.05)
+    # Folded under the 25 % step cap: 15 -> no lower than 11.25.
+    assert 11.25 <= ctrl.number("zone_a_warmup_rate") < 15
+
+
 def test_the_sample_is_timed_on_the_coldest_probe():
     # The lead is sized on the coldest end and the shortfall judges it, so the
     # climb is timed on it too: the warm end arriving does not close the sample.

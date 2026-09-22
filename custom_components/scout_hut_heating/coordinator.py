@@ -1649,9 +1649,17 @@ class ScoutController:
 
             started, start_temp, fan_ticks, ticks, watt_sum, watt_n, n_probes = sample
             readable = len(self._zone_probe_readings(zone))
+            # "Arrived" is judged on the reading alone, NOT on the zone still
+            # being in comfort: the presets step runs before this one, and on
+            # this hardware the coldest probe usually lands PAST target in one
+            # catch-up jump, so the tick that first reads >= target is the same
+            # tick `booking_warm` ices the zone. Requiring comfort here read the
+            # first v1.43.0 pre-heat (2026-09-22, 15.5 -> 20.0 in 43 min) as
+            # "ended early" and threw the sample away — the fold the whole
+            # redesign exists to make. A zone released BECAUSE it arrived has
+            # arrived.
             done = (
-                comfort
-                and temp is not None
+                temp is not None
                 and temp >= target
                 and readable >= n_probes
             )
