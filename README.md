@@ -463,6 +463,14 @@ restarts) of everything it decides and learns:
   the lead — the optimistic fan-assisted one or the base) and `fan_w_last` (the
   transformer tap the fans were last seen at, since the master is off while the
   pre-heat is idle and the live power reads zero).
+- **`probe_nudge` / `probe_nudge_result`** — while a zone is booked, a heater
+  whose reading has sat unchanged for ten minutes has its comfort number
+  re-written with the value it already holds, to make the device sync a fresh
+  reading (the Rointe cloud only carries what the heater last synced, and an
+  idle heater can sit silent for hours). A number write alone never moves the
+  live setpoint, so it cannot heat or cool. Each nudge is then verified: did
+  the reading change within three minutes? The tally lives in the diagnostics
+  under `state.probe_nudges`, and is the evidence for keeping or dropping it.
 - **`booking_start` / `booking_end`** — the ground truth: the coldest reading
   against the target at the moment each booking begins (a positive
   `shortfall` means the room arrived under target — lead too short; a
