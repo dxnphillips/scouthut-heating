@@ -487,8 +487,15 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    within 3 min) or not, and `state.probe_nudges` tallies nudged/refreshed/unchanged.
    **Decision rule:** read the tally after a few booked sessions — mostly
    `refreshed` → keep it (and consider lowering the stale relight to lean on it);
-   mostly `unchanged` → the number write does not wake the device, remove the step
-   and the honest fix is upstream (`last_sync_datetime_device`).
+   mostly `missed` → the number write does not wake the device, remove the step
+   and the honest fix is upstream (`last_sync_datetime_device`). **The first
+   result (10:02Z, `hall_left` 19.0 → 19.0 in a static hall on eco) showed that
+   "unchanged" alone is ambiguous** — a probe genuinely still on the same quantum
+   reads unchanged whether or not the device synced — so since v1.44.2 an unchanged
+   reading is `missed` only when the heater's own panel surface or the independent
+   ceiling moved inside the window, and `inconclusive` when nothing did;
+   `probe_nudge_result` carries `outcome` plus the surface/ceiling before and after,
+   and only refreshed vs missed count. That first result is inconclusive.
    **Both cover occupancy too (v1.44.1, owner: "does it do the same for motion
    only?").** Bare occupancy heats and ices (`occupied_warm`) on the same coldest
    probe as a booking, so a frozen reading at target holds people in a cooling
