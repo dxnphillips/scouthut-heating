@@ -225,6 +225,28 @@ ROOM_READING_GRACE_MIN = 2.0
 # that does not move. The cooling-regime commit still applies after this, so a
 # genuinely warm hall being breezed is not relit into the fans.
 BOOKING_RELIGHT_STALE_MIN = 20.0
+# ...and, earlier than that, try to get a FRESH reading rather than argue with a
+# stale one (v1.44.0). The Rointe cloud only carries what the heater last
+# synced, and an idle heater syncs rarely (the week's trace has the hall probes
+# flat for 30-255 min at a stretch through overnight cool-downs), so re-reading
+# the cloud from HA cannot help — but a COMMAND to the heater makes it act and
+# report back, which is exactly what the 2026-09-22 08:46Z restart's preset
+# re-apply did. So while a zone is BOOKED (pre-heat window or running slot — the
+# times a stale reading costs comfort), a heater whose reading has sat unchanged
+# for PROBE_NUDGE_FLAT_MIN is "nudged": its comfort NUMBER is re-written with the
+# value it already holds. That write is one we already make (the drive and the
+# withdrawal path), and a number write on its own never moves the live setpoint,
+# so it cannot heat or cool anything; its only cost is one cloud command (which
+# the Rointe integration answers with a full 8-heater refresh), bounded by the
+# per-heater cooldown. Whether a bare number write actually provokes a device
+# sync is UNPROVEN — the restart used heavier writes — so every nudge is audited
+# (`probe_nudge`) and verified (`probe_nudge_result`: did the reading change
+# within PROBE_NUDGE_VERIFY_MIN?), and the tally rides in diagnostics
+# (`state.probe_nudges`). If the results come back `refreshed` False across a
+# few bookings, the nudge does nothing and should be removed.
+PROBE_NUDGE_FLAT_MIN = 10.0      # reading unchanged this long in a booked zone -> nudge
+PROBE_NUDGE_VERIFY_MIN = 3.0     # a change within this long after the nudge counts as caused
+PROBE_NUDGE_COOLDOWN_MIN = 30.0  # at most one nudge per heater per this long
 
 # Coast predictor (coast.py) measurement window. The rolling idle-room samples
 # span at most PASSIVE_RISE_WINDOW_MIN and a rate is only computed once at least
@@ -811,6 +833,12 @@ class ScoutController:
         self._drive_target: dict[str, float] = {}
         # Heater writes whose last attempt raised; audited on the edges only.
         self._write_failing: set[str] = set()
+        # Probe nudges (v1.44.0): last nudge per heater, the nudges awaiting
+        # verification (climate -> (nudged_at, reading_before, flat_min)) and
+        # the running tally the diagnostics export for the owner to judge by.
+        self._probe_nudged_at: dict[str, datetime] = {}
+        self._probe_nudge_pending: dict[str, tuple[datetime, float | None, float]] = {}
+        self._probe_nudge_tally: dict[str, int] = {"nudged": 0, "refreshed": 0, "unchanged": 0}
         # Sustained heater outage watch (Q18): when a zone's heaters ALL went
         # offline, which zones have ever been seen online (so a boot into an
         # unconfigured/slow start does not cry wolf), and which are alerted.
@@ -1388,6 +1416,95 @@ class ScoutController:
         """Has this heater's reading sat unchanged for at least ``minutes``?"""
         flat = self._probe_flat_minutes(climate)
         return flat is not None and flat >= minutes
+
+    async def _reconcile_probe_nudge(self) -> None:
+        """Provoke a fresh reading from a booked zone's stale heater (v1.44.0).
+
+        See ``PROBE_NUDGE_FLAT_MIN``. Two halves, both audited:
+
+        1. Verify earlier nudges: a heater whose reading has CHANGED since its
+           nudge (the freeze tracker's stamp is newer than the nudge) counts as
+           ``refreshed``; one still unchanged after ``PROBE_NUDGE_VERIFY_MIN``
+           counts as ``unchanged``. Either way ``probe_nudge_result`` records
+           it and the tally moves — this is the field test of whether a bare
+           number write makes a Rointe sync at all.
+        2. Nudge: for each BOOKED zone (pre-heat window or running slot, with
+           its automation on), any heater whose reading has sat unchanged for
+           ``PROBE_NUDGE_FLAT_MIN`` and has not been nudged inside the cooldown
+           gets its comfort number re-written with the value it already holds.
+           Blocking, failure-audited and spaced like every other heater write.
+        """
+        now = self._now()
+        for climate, (at, before, flat) in list(self._probe_nudge_pending.items()):
+            changed_at = self._probe_changed_at.get(climate)
+            elapsed = (now - at).total_seconds() / 60
+            if changed_at is not None and changed_at > at:
+                outcome = "refreshed"
+            elif elapsed >= PROBE_NUDGE_VERIFY_MIN:
+                outcome = "unchanged"
+            else:
+                continue
+            self._probe_nudge_pending.pop(climate, None)
+            self._probe_nudge_tally[outcome] += 1
+            self.audit.record(
+                "probe_nudge_result",
+                now,
+                heater=climate,
+                refreshed=outcome == "refreshed",
+                minutes=round(elapsed, 2),
+                before=before,
+                after=self._zone_probe_readings_all().get(climate),
+                flat_min=round(flat, 1),
+            )
+
+        for zone in (ZONE_A, ZONE_B):
+            if not self._cal_active(zone):
+                continue
+            if not self.switch_on(f"{zone}_automation_enabled", default=True):
+                continue
+            for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+                if climate in self._probe_nudge_pending:
+                    continue
+                flat = self._probe_flat_minutes(climate)
+                if flat is None or flat < PROBE_NUDGE_FLAT_MIN:
+                    continue
+                last = self._probe_nudged_at.get(climate)
+                if last is not None and (now - last).total_seconds() / 60 < PROBE_NUDGE_COOLDOWN_MIN:
+                    continue
+                number = self._heater_comfort_number(climate)
+                st = self.hass.states.get(number) if number else None
+                try:
+                    value = float(st.state) if st is not None else None
+                except (TypeError, ValueError):
+                    value = None
+                if value is None:
+                    continue
+                self._probe_nudged_at[climate] = now
+                before = self._zone_probe_readings_all().get(climate)
+                self.audit.record(
+                    "probe_nudge",
+                    now,
+                    zone=zone,
+                    heater=climate,
+                    flat_min=round(flat, 1),
+                    reading=before,
+                    value=value,
+                )
+                ok = await self._async_heater_call(
+                    "number", "set_value", {"entity_id": number, "value": value}, climate=climate
+                )
+                if ok:
+                    self._probe_nudge_tally["nudged"] += 1
+                    self._probe_nudge_pending[climate] = (now, before, flat)
+                if HEATER_WRITE_SPACING_S > 0:
+                    await asyncio.sleep(HEATER_WRITE_SPACING_S)
+
+    def _zone_probe_readings_all(self) -> dict[str, float]:
+        """Every driven heater's readable room reading, keyed by climate."""
+        out: dict[str, float] = {}
+        for zone in (ZONE_A, ZONE_B):
+            out.update(self._zone_probe_readings(zone))
+        return out
 
     def _zone_coldest_flat_minutes(self, zone: str) -> float | None:
         """Minutes since the zone's COLDEST heater reading last changed.
@@ -2748,6 +2865,13 @@ class ScoutController:
                 # is being skipped each tick, so anything it owns (fans, the trace,
                 # the drive) is stale. Non-empty is a fault, not a curiosity.
                 "reconcile_failing": sorted(self._step_failing),
+                # Probe nudges: how many stale booked-zone readings were nudged
+                # with a no-op number write, and how many then refreshed — the
+                # field test of whether a bare number write makes a Rointe sync.
+                "probe_nudges": {
+                    **self._probe_nudge_tally,
+                    "pending": sorted(self._probe_nudge_pending),
+                },
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
                 # Booking titles carry hirer names; the export keeps only what
@@ -3663,6 +3787,7 @@ class ScoutController:
                 ("fire_alarm", self._update_fire_alarm),
                 ("shared", self._reconcile_shared),
                 ("drive", self._reconcile_drive),
+                ("probe_nudge", self._reconcile_probe_nudge),
                 ("water", self._reconcile_water),
                 ("fans", self._reconcile_fans),
                 ("fan_speed", self._note_fan_speed),

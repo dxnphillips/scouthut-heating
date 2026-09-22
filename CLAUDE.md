@@ -468,6 +468,27 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    on a reading that does not move; the cooling-regime commit still runs after it.
    `booking_start.shortfall` at 09:00Z is the measure of what the 20 frozen minutes
    cost this time.
+   **And a way to get a FRESH reading instead of arguing with a stale one — the
+   probe nudge (v1.44.0, `PROBE_NUDGE_FLAT_MIN` = 10, `PROBE_NUDGE_VERIFY_MIN` = 3,
+   `PROBE_NUDGE_COOLDOWN_MIN` = 30; owner asked for the test to run itself).** The
+   cloud only carries what the heater last synced and an idle heater syncs rarely
+   (the week's trace has the hall probes flat for 30–255 min at a stretch through
+   overnight cool-downs that certainly crossed several 0.5 °C steps), so re-reading
+   the cloud from HA (`update_entity`, a reload) cannot help; what refreshed the
+   probes on 09-22 was the restart's preset re-apply — a COMMAND makes the heater
+   act and report back. So while a zone is booked (window or slot), any heater
+   whose reading has sat 10 min unchanged has its comfort NUMBER re-written with
+   the value it already holds (`_reconcile_probe_nudge`, a step after the drive):
+   a write we already make, and a number alone never moves the live setpoint, so it
+   cannot heat or cool; cost is one cloud command (= one 8-heater refresh inside the
+   Rointe integration), one per heater per 30 min at most. **Whether a bare number
+   write provokes a device sync is UNPROVEN**, so it verifies itself: `probe_nudge`
+   on the write, `probe_nudge_result` with `refreshed` (the freeze stamp moved
+   within 3 min) or not, and `state.probe_nudges` tallies nudged/refreshed/unchanged.
+   **Decision rule:** read the tally after a few booked sessions — mostly
+   `refreshed` → keep it (and consider lowering the stale relight to lean on it);
+   mostly `unchanged` → the number write does not wake the device, remove the step
+   and the honest fix is upstream (`last_sync_datetime_device`).
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the
