@@ -345,6 +345,8 @@ def advance(ctrl, minutes):
         ctrl._probe_nudged_at[climate] = ts - delta
     for pending in ctrl._probe_nudge_pending.values():
         pending["at"] = pending["at"] - delta
+    for climate, ts in list(ctrl._sync_seen_at.items()):
+        ctrl._sync_seen_at[climate] = ts - delta
     for zone, ts in ctrl._cooloff_cooling_since.items():
         if ts is not None:
             ctrl._cooloff_cooling_since[zone] = ts - delta
@@ -460,6 +462,50 @@ def set_registry(entries_by_device, entity_devices):
         dev: [er._RegEntry(e, dev) for e in ents]
         for dev, ents in entries_by_device.items()
     }
+
+
+def naive_now(ctrl):
+    """Our clock in the SDK's terms (naive, host-local — UTC under the stubs)."""
+    return ctrl._now().replace(tzinfo=None)
+
+
+def set_sync_clock(hass, stamps):
+    """Wire the Rointe integration's in-memory device objects (v1.45.0).
+
+    ``stamps`` maps a heater climate — already in the entity-registry stub with
+    a device id (``set_registry``) — to its naive ``last_sync_datetime_device``.
+    Mirrors the real chain: the HA device carries a ``("rointe", <id>)``
+    identifier, ``hass.data["rointe"]`` holds a coordinator whose
+    ``device_manager.rointe_devices`` is keyed by that id. Returns
+    ``{climate: device}`` so a test can move a stamp later.
+    """
+    from types import SimpleNamespace
+
+    from homeassistant.helpers import device_registry as dr
+
+    devices = {}
+    by_rointe = {}
+    for climate, stamp in stamps.items():
+        entry = er._REG.by_id[climate]
+        rointe_id = f"rointe-{climate}"
+        dr._REG.by_id[entry.device_id] = dr._DevEntry({("rointe", rointe_id)})
+        device = SimpleNamespace(last_sync_datetime_device=stamp)
+        devices[climate] = device
+        by_rointe[rointe_id] = device
+    hass.data["rointe"] = {
+        "entry": SimpleNamespace(
+            device_manager=SimpleNamespace(rointe_devices=by_rointe)
+        )
+    }
+    return devices
+
+
+def trust_sync_clock(ctrl):
+    """Two observations SYNC_CLOCK_TRUST_MIN apart with every stamp standing still
+    (this also ages the readings by that much)."""
+    ctrl._track_probe_changes()
+    advance(ctrl, C.SYNC_CLOCK_TRUST_MIN + 0.5)
+    ctrl._track_probe_changes()
 
 
 def add_texecom_alarm(hass, entry_id="alarm_entry", keys=None):

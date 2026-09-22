@@ -150,7 +150,7 @@ def test_a_nudge_with_nothing_of_the_device_moving_is_inconclusive():
     assert all(e["refreshed"] is False for e in results)
     assert ctrl._probe_nudge_tally["inconclusive"] == 2
     assert ctrl._probe_nudge_tally["synced"] == 0
-    assert "missed" not in ctrl._probe_nudge_tally
+    assert ctrl._probe_nudge_tally["missed"] == 0  # no clock: never a miss
 
 
 def test_the_ceiling_is_not_a_witness():

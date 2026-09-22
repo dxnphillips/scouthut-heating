@@ -515,12 +515,52 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    keyed by the Rointe id in the HA device's registry identifiers; the dict
    survives the coordinator-data emptying bug). Trap: when the key is absent the
    SDK substitutes `datetime.now()`, so a sync time must not gate anything until
-   it has been seen standing still (> 1 min old) at least once. Proposed, awaiting
-   the owner's go (it couples to another component's private objects, fully
-   guarded → None → today's value test): stage one reads the sync age per heater
-   into diagnostics/trace and settles the nudge verdict (sync clock advanced after
-   the write = the write woke the device); stage two gates the stale relight and
-   the nudge on sync age instead of flat minutes.
+   it has been seen standing still at least once. **BUILT, all at once, v1.45.0
+   (owner: "build it all at once"; `SYNC_CLOCK_TRUST_MIN` = 2).** Four pieces,
+   all in `coordinator.py` beside the freeze tracker: (1) *The read* —
+   `_heater_sync_stamp` walks climate → entity registry → HA device → the
+   `("rointe", <id>)` identifier → `hass.data["rointe"][entry].device_manager
+   .rointe_devices[<id>].last_sync_datetime_device`, every link guarded (any
+   miss → None, never a raise); `sync_clock_found` / `sync_clock_lost` audit the
+   availability edges so a Rointe upgrade that renames something is visible, not
+   silent. (2) *Trust* — `_track_sync_clock` notes when each stamp CHANGES on our
+   clock and latches a heater's clock as trusted (`sync_clock_trusted`, with the
+   device-vs-our `skew_min` measured at that upload) only once its stamp has stood
+   still ≥ 2 min; the SDK's now()-every-poll fallback never stands still, so it
+   can never gate anything. Age (`_sync_age_minutes`) is primarily how long WE
+   have watched the stamp stand, floored by the device's own reckoning (a stamp
+   old at startup reads old; a stamp in the future is ignored). (3) *One stale
+   primitive* — `_probe_silent_minutes` returns the sync age on a trusted clock,
+   else the flat minutes, and every stale test reads it: the 120-min frozen-probe
+   gate (`_probe_frozen`), the 20-min stale relight (`_zone_coldest_flat_minutes`)
+   and the 10-min nudge trigger. A flat value the heater keeps uploading is
+   static, not stale — no relight, no nudge; a silent heater still gets both.
+   (4) *The nudge verdict and the escalation* — with a trusted clock the stamp
+   advancing inside the 3-min window is `synced` (the write woke the device;
+   `refreshed` if the reading moved too), no advance is `missed`; the first
+   clock-proven `missed` NUMBER write flips `_nudge_escalated`
+   (`probe_nudge_escalated`) and every later nudge sends `climate.set_temperature`
+   with the setpoint the heater already holds — the drive's pushed value for a
+   driven heater, else its live setpoint (never the live attribute for a driven
+   one: it can lag the push and would undo a stair) — the command the 08:46Z
+   restart proved does wake them. Nothing heavier exists; a missed climate nudge
+   stays audited and is retried after the cooldown. Without a clock the
+   surface-witness classification of v1.44.3 stands. `probe_nudge` /
+   `probe_nudge_result` carry `method`, `clock`, `uploaded`, `sync_before/after`;
+   the tally is nudged / refreshed / synced / missed / inconclusive plus `method`;
+   per-heater diagnostics carry `sync_at` / `sync_clock` / `sync_age_min` /
+   `sync_skew_min`; `state.sync_clock` says whether the read works at all and which
+   clocks are trusted; the trace carries `hall_sync` (the stalest trusted hall
+   heater's age — the overnight sync-gap measurement the findings lacked).
+   **First-run watch:** `sync_clock_found` then `sync_clock_trusted` for each
+   heater within minutes of the deploy (`skew_min` near 0 — a large steady skew
+   means the device clock is off and the age is being carried by our watch alone);
+   `hall_sync` in the trace should show the real overnight gaps; the first booked
+   session's `probe_nudge_result` outcomes are now definite — a run of `missed`
+   number nudges followed by `probe_nudge_escalated` and `synced` climate nudges
+   is the expected shape if the number write is inert; all-`missed` on BOTH
+   methods means no write wakes an idle heater and the relight is the only lever.
+   Tests in `tests/test_sync_clock.py`.
    **Both cover occupancy too (v1.44.1, owner: "does it do the same for motion
    only?").** Bare occupancy heats and ices (`occupied_warm`) on the same coldest
    probe as a booking, so a frozen reading at target holds people in a cooling

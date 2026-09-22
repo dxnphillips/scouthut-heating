@@ -475,8 +475,25 @@ restarts) of everything it decides and learns:
   reading is genuinely unchanged (`synced`) — or did nothing of the device's
   move (`inconclusive`, since a silent device and a static one look the same
   from here)? The tally lives in the diagnostics under `state.probe_nudges`.
-  It can confirm the nudge works; it cannot prove it does not — that needs
-  the device's own sync clock, which the Rointe integration does not expose.
+  Where the heater's own sync clock is readable (below) the verdict is
+  definite instead: an upload inside the window is `synced`, none is
+  `missed`, and the first proven-missed number write escalates every later
+  nudge to a climate command (`probe_nudge_escalated`) — the same no-op
+  value, sent the way a restart sends it, which is known to wake the heaters.
+- **`sync_clock_found` / `sync_clock_lost` / `sync_clock_trusted`** — the
+  Rointe cloud only carries what a heater last uploaded, and the Rointe
+  integration's poll keeps Home Assistant current with the cloud, not the
+  room, so a reading that has not changed could be a static room or a silent
+  heater. The heater's own upload time (`last_sync_datetime_device`) tells
+  them apart; the Rointe integration parses it but publishes it nowhere, so
+  it is read from that integration's in-memory device objects — read-only,
+  and degrading to the value-based tests if a Rointe update ever changes
+  shape (`sync_clock_lost` says so). A heater's clock is trusted only once its
+  stamp has been seen standing still, because a heater with no sync data
+  reports the current time on every poll. On a trusted clock the stale tests
+  (frozen probe, stale relight, nudge) judge silence, not a flat value. Each
+  heater's `sync_at` / `sync_clock` / `sync_age_min` are in the export and the
+  trace carries `hall_sync`, the stalest hall heater's upload age.
 - **`booking_start` / `booking_end`** — the ground truth: the coldest reading
   against the target at the moment each booking begins (a positive
   `shortfall` means the room arrived under target — lead too short; a
