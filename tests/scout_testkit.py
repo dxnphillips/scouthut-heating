@@ -343,8 +343,8 @@ def advance(ctrl, minutes):
         ctrl._probe_changed_at[climate] = ts - delta
     for climate, ts in list(ctrl._probe_nudged_at.items()):
         ctrl._probe_nudged_at[climate] = ts - delta
-    for climate, (at, before, flat) in list(ctrl._probe_nudge_pending.items()):
-        ctrl._probe_nudge_pending[climate] = (at - delta, before, flat)
+    for pending in ctrl._probe_nudge_pending.values():
+        pending["at"] = pending["at"] - delta
     for zone, ts in ctrl._cooloff_cooling_since.items():
         if ts is not None:
             ctrl._cooloff_cooling_since[zone] = ts - delta

@@ -469,8 +469,12 @@ restarts) of everything it decides and learns:
   reading (the Rointe cloud only carries what the heater last synced, and an
   idle heater can sit silent for hours). A number write alone never moves the
   live setpoint, so it cannot heat or cool. Each nudge is then verified: did
-  the reading change within three minutes? The tally lives in the diagnostics
-  under `state.probe_nudges`, and is the evidence for keeping or dropping it.
+  the reading change within three minutes (`refreshed`)? If not, did anything
+  else about that heater move — its panel surface, or the ceiling — so that
+  the silence counts (`missed`), or was the room simply static
+  (`inconclusive`)? The tally lives in the diagnostics under
+  `state.probe_nudges`, and refreshed against missed is the evidence for
+  keeping or dropping it.
 - **`booking_start` / `booking_end`** — the ground truth: the coldest reading
   against the target at the moment each booking begins (a positive
   `shortfall` means the room arrived under target — lead too short; a

@@ -837,8 +837,10 @@ class ScoutController:
         # verification (climate -> (nudged_at, reading_before, flat_min)) and
         # the running tally the diagnostics export for the owner to judge by.
         self._probe_nudged_at: dict[str, datetime] = {}
-        self._probe_nudge_pending: dict[str, tuple[datetime, float | None, float]] = {}
-        self._probe_nudge_tally: dict[str, int] = {"nudged": 0, "refreshed": 0, "unchanged": 0}
+        self._probe_nudge_pending: dict[str, dict[str, Any]] = {}
+        self._probe_nudge_tally: dict[str, int] = {
+            "nudged": 0, "refreshed": 0, "missed": 0, "inconclusive": 0,
+        }
         # Sustained heater outage watch (Q18): when a zone's heaters ALL went
         # offline, which zones have ever been seen online (so a boot into an
         # unconfigured/slow start does not cry wolf), and which are alerted.
@@ -1424,10 +1426,15 @@ class ScoutController:
 
         1. Verify earlier nudges: a heater whose reading has CHANGED since its
            nudge (the freeze tracker's stamp is newer than the nudge) counts as
-           ``refreshed``; one still unchanged after ``PROBE_NUDGE_VERIFY_MIN``
-           counts as ``unchanged``. Either way ``probe_nudge_result`` records
-           it and the tally moves — this is the field test of whether a bare
-           number write makes a Rointe sync at all.
+           ``refreshed``. One still unchanged after ``PROBE_NUDGE_VERIFY_MIN``
+           is only a ``missed`` nudge if something ELSE moved in the window —
+           the heater's own panel surface or the independent ceiling — because
+           a probe genuinely still at the same 0.5 °C quantum in a static room
+           would read unchanged whether or not the device synced; with nothing
+           moved at all it is ``inconclusive``. Either way ``probe_nudge_result``
+           records it and the tally moves — this is the field test of whether
+           a bare number write makes a Rointe sync at all, judged on
+           refreshed vs missed only.
         2. Nudge: for each ATTENDED zone (booked — window or slot — or occupied
            by motion, override or a night arm; automation on), any heater
            whose reading has sat unchanged for
@@ -1436,13 +1443,25 @@ class ScoutController:
            Blocking, failure-audited and spaced like every other heater write.
         """
         now = self._now()
-        for climate, (at, before, flat) in list(self._probe_nudge_pending.items()):
+        for climate, pending in list(self._probe_nudge_pending.items()):
+            at = pending["at"]
             changed_at = self._probe_changed_at.get(climate)
             elapsed = (now - at).total_seconds() / 60
+            surface = self._num_state(self._heater_sensor(climate, "surface"))
+            ceiling = self._ceiling_temp()
             if changed_at is not None and changed_at > at:
                 outcome = "refreshed"
             elif elapsed >= PROBE_NUDGE_VERIFY_MIN:
-                outcome = "unchanged"
+                moved = (
+                    surface is not None
+                    and pending["surface"] is not None
+                    and surface != pending["surface"]
+                ) or (
+                    ceiling is not None
+                    and pending["ceiling"] is not None
+                    and ceiling != pending["ceiling"]
+                )
+                outcome = "missed" if moved else "inconclusive"
             else:
                 continue
             self._probe_nudge_pending.pop(climate, None)
@@ -1451,11 +1470,16 @@ class ScoutController:
                 "probe_nudge_result",
                 now,
                 heater=climate,
+                outcome=outcome,
                 refreshed=outcome == "refreshed",
                 minutes=round(elapsed, 2),
-                before=before,
+                before=pending["before"],
                 after=self._zone_probe_readings_all().get(climate),
-                flat_min=round(flat, 1),
+                surface_before=pending["surface"],
+                surface_after=surface,
+                ceiling_before=pending["ceiling"],
+                ceiling_after=ceiling,
+                flat_min=round(pending["flat"], 1),
             )
 
         for zone in (ZONE_A, ZONE_B):
@@ -1496,7 +1520,13 @@ class ScoutController:
                 )
                 if ok:
                     self._probe_nudge_tally["nudged"] += 1
-                    self._probe_nudge_pending[climate] = (now, before, flat)
+                    self._probe_nudge_pending[climate] = {
+                        "at": now,
+                        "before": before,
+                        "flat": flat,
+                        "surface": self._num_state(self._heater_sensor(climate, "surface")),
+                        "ceiling": self._ceiling_temp(),
+                    }
                 if HEATER_WRITE_SPACING_S > 0:
                     await asyncio.sleep(HEATER_WRITE_SPACING_S)
 
