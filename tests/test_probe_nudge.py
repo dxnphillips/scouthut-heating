@@ -136,44 +136,49 @@ def test_a_nudge_that_refreshes_the_reading_is_verified_as_such():
     assert ctrl._probe_nudge_pending == {}
 
 
-def test_a_nudge_with_nothing_else_moving_is_inconclusive_not_a_miss():
+def test_a_nudge_with_nothing_of_the_device_moving_is_inconclusive():
     # Field 2026-09-22 10:02Z: hall_left read 19.0 before and after in a static
-    # room — the probe may simply still have been 19.0. Without independent
-    # evidence that anything moved, the result cannot count against the nudge.
+    # room — the probe may simply still have been 19.0. HA state cannot tell a
+    # silent device from a static one, so the result cannot count either way.
     ctrl, hass = _stale_booked_hall()
     run(ctrl._reconcile_probe_nudge())
     advance(ctrl, PROBE_NUDGE_VERIFY_MIN + 0.5)
-    ctrl._track_probe_changes()  # still 19.0 / 19.0, no surface or ceiling mapped
+    ctrl._track_probe_changes()  # still 19.0 / 19.0, no surface mapped
     run(ctrl._reconcile_probe_nudge())
     results = _events(ctrl, "probe_nudge_result")
     assert results and all(e["outcome"] == "inconclusive" for e in results)
     assert all(e["refreshed"] is False for e in results)
     assert ctrl._probe_nudge_tally["inconclusive"] == 2
-    assert ctrl._probe_nudge_tally["missed"] == 0
+    assert ctrl._probe_nudge_tally["synced"] == 0
+    assert "missed" not in ctrl._probe_nudge_tally
 
 
-def test_a_nudge_unchanged_while_the_ceiling_moved_is_a_miss():
-    # The room demonstrably changed (the independent ceiling stepped) and the
-    # heater's reading still did not: the write did not make it sync.
+def test_the_ceiling_is_not_a_witness():
+    # Field 2026-09-22 10:54Z: three verdicts of "missed" on a 0.1 °C solar
+    # ceiling step while every panel sat still. The ceiling says nothing about
+    # whether THIS device reported, so it must not decide the outcome.
     ctrl, hass = make_controller(config_overrides={CONF_CEILING_TEMP: "sensor.ceiling"})
     _wire(hass)
     preheat_window(ctrl, ZA)
     _probes(hass, 19.0, 19.0)
     ctrl._track_probe_changes()
     advance(ctrl, PROBE_NUDGE_FLAT_MIN + 1)
-    hass.states.set("sensor.ceiling", "20.0")
+    hass.states.set("sensor.ceiling", "23.0")
     run(ctrl._reconcile_probe_nudge())
-    hass.states.set("sensor.ceiling", "20.5")
+    hass.states.set("sensor.ceiling", "23.1")
     advance(ctrl, PROBE_NUDGE_VERIFY_MIN + 0.5)
     ctrl._track_probe_changes()
     run(ctrl._reconcile_probe_nudge())
     back = next(e for e in _events(ctrl, "probe_nudge_result") if e["heater"] == HB)
-    assert back["outcome"] == "missed"
-    assert back["ceiling_before"] == 20.0 and back["ceiling_after"] == 20.5
-    assert ctrl._probe_nudge_tally["missed"] == 2
+    assert back["outcome"] == "inconclusive"
+    assert "ceiling_before" not in back
+    assert ctrl._probe_nudge_tally["inconclusive"] == 2
 
 
-def test_a_nudge_unchanged_while_its_own_panel_moved_is_a_miss():
+def test_a_nudge_unchanged_while_its_own_panel_moved_proves_the_device_synced():
+    # The surface rides in the same cloud record as the probe: a surface that
+    # moved inside the window means the device reported, so an unchanged
+    # reading is genuinely still on that quantum — evidence FOR the nudge.
     ctrl, hass = _stale_booked_hall()
     surface = "sensor.hall_back_surface_temperature"
     set_registry(
@@ -182,14 +187,17 @@ def test_a_nudge_unchanged_while_its_own_panel_moved_is_a_miss():
     )
     hass.states.set(surface, "30.0")
     run(ctrl._reconcile_probe_nudge())
-    hass.states.set(surface, "27.5")  # the panel is cooling: the device is alive
+    hass.states.set(surface, "27.5")  # the panel is cooling: the device reported
     advance(ctrl, PROBE_NUDGE_VERIFY_MIN + 0.5)
     ctrl._track_probe_changes()
     run(ctrl._reconcile_probe_nudge())
     results = {e["heater"]: e for e in _events(ctrl, "probe_nudge_result")}
-    assert results[HB]["outcome"] == "missed"
+    assert results[HB]["outcome"] == "synced"
+    assert results[HB]["refreshed"] is False
     assert results[HB]["surface_before"] == 30.0 and results[HB]["surface_after"] == 27.5
     assert results[HF]["outcome"] == "inconclusive"  # nothing of HF's moved
+    assert ctrl._probe_nudge_tally["synced"] == 1
+    assert ctrl._probe_nudge_tally["inconclusive"] == 1
 
 
 def test_a_heater_is_not_re_nudged_inside_the_cooldown():

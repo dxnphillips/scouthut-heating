@@ -242,8 +242,20 @@ BOOKING_RELIGHT_STALE_MIN = 20.0
 # sync is UNPROVEN — the restart used heavier writes — so every nudge is audited
 # (`probe_nudge`) and verified (`probe_nudge_result`: did the reading change
 # within PROBE_NUDGE_VERIFY_MIN?), and the tally rides in diagnostics
-# (`state.probe_nudges`). If the results come back `refreshed` False across a
-# few bookings, the nudge does nothing and should be removed.
+# (`state.probe_nudges`). An unchanged reading is ambiguous on its own (a probe
+# still on the same 0.5 °C quantum reads the same whether or not the device
+# synced), and the only witness HA state offers is the heater's OWN panel
+# surface — it rides in the same cloud record as the probe, so a surface that
+# moved inside the window proves the device synced and the reading is genuinely
+# unchanged (`synced`). Nothing in HA state can prove the opposite: with neither
+# field moved the device may simply have had nothing new to say
+# (`inconclusive`). The independent ceiling is NOT a witness — the sun moves it
+# (field 2026-09-22: three "missed" verdicts on a 0.1 °C solar ceiling step
+# while the panels sat still) and it says nothing about whether this device
+# reported. So the tally can confirm the nudge (refreshed + synced) but never
+# refute it; refuting it needs the device's own sync clock
+# (`last_sync_datetime_device`), which the Rointe integration parses but does
+# not expose.
 PROBE_NUDGE_FLAT_MIN = 10.0      # reading unchanged this long in a booked zone -> nudge
 PROBE_NUDGE_VERIFY_MIN = 3.0     # a change within this long after the nudge counts as caused
 PROBE_NUDGE_COOLDOWN_MIN = 30.0  # at most one nudge per heater per this long
@@ -839,7 +851,7 @@ class ScoutController:
         self._probe_nudged_at: dict[str, datetime] = {}
         self._probe_nudge_pending: dict[str, dict[str, Any]] = {}
         self._probe_nudge_tally: dict[str, int] = {
-            "nudged": 0, "refreshed": 0, "missed": 0, "inconclusive": 0,
+            "nudged": 0, "refreshed": 0, "synced": 0, "inconclusive": 0,
         }
         # Sustained heater outage watch (Q18): when a zone's heaters ALL went
         # offline, which zones have ever been seen online (so a boot into an
@@ -1427,14 +1439,15 @@ class ScoutController:
         1. Verify earlier nudges: a heater whose reading has CHANGED since its
            nudge (the freeze tracker's stamp is newer than the nudge) counts as
            ``refreshed``. One still unchanged after ``PROBE_NUDGE_VERIFY_MIN``
-           is only a ``missed`` nudge if something ELSE moved in the window —
-           the heater's own panel surface or the independent ceiling — because
-           a probe genuinely still at the same 0.5 °C quantum in a static room
-           would read unchanged whether or not the device synced; with nothing
-           moved at all it is ``inconclusive``. Either way ``probe_nudge_result``
-           records it and the tally moves — this is the field test of whether
-           a bare number write makes a Rointe sync at all, judged on
-           refreshed vs missed only.
+           is ``synced`` if the heater's OWN panel surface moved in the window
+           — the surface rides in the same cloud record as the probe, so the
+           device demonstrably reported and the reading is genuinely still on
+           that quantum — and ``inconclusive`` when neither field moved (the
+           device may simply have had nothing new to say; HA state cannot tell
+           a silent device from a static one — see ``PROBE_NUDGE_FLAT_MIN``).
+           Either way ``probe_nudge_result`` records it and the tally moves —
+           refreshed + synced is the evidence FOR the nudge; there is no
+           ``missed`` verdict without the device's own sync clock.
         2. Nudge: for each ATTENDED zone (booked — window or slot — or occupied
            by motion, override or a night arm; automation on), any heater
            whose reading has sat unchanged for
@@ -1448,20 +1461,15 @@ class ScoutController:
             changed_at = self._probe_changed_at.get(climate)
             elapsed = (now - at).total_seconds() / 60
             surface = self._num_state(self._heater_sensor(climate, "surface"))
-            ceiling = self._ceiling_temp()
             if changed_at is not None and changed_at > at:
                 outcome = "refreshed"
             elif elapsed >= PROBE_NUDGE_VERIFY_MIN:
-                moved = (
+                device_reported = (
                     surface is not None
                     and pending["surface"] is not None
                     and surface != pending["surface"]
-                ) or (
-                    ceiling is not None
-                    and pending["ceiling"] is not None
-                    and ceiling != pending["ceiling"]
                 )
-                outcome = "missed" if moved else "inconclusive"
+                outcome = "synced" if device_reported else "inconclusive"
             else:
                 continue
             self._probe_nudge_pending.pop(climate, None)
@@ -1477,8 +1485,6 @@ class ScoutController:
                 after=self._zone_probe_readings_all().get(climate),
                 surface_before=pending["surface"],
                 surface_after=surface,
-                ceiling_before=pending["ceiling"],
-                ceiling_after=ceiling,
                 flat_min=round(pending["flat"], 1),
             )
 
@@ -1525,7 +1531,6 @@ class ScoutController:
                         "before": before,
                         "flat": flat,
                         "surface": self._num_state(self._heater_sensor(climate, "surface")),
-                        "ceiling": self._ceiling_temp(),
                     }
                 if HEATER_WRITE_SPACING_S > 0:
                     await asyncio.sleep(HEATER_WRITE_SPACING_S)

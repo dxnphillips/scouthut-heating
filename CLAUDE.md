@@ -484,18 +484,43 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    Rointe integration), one per heater per 30 min at most. **Whether a bare number
    write provokes a device sync is UNPROVEN**, so it verifies itself: `probe_nudge`
    on the write, `probe_nudge_result` with `refreshed` (the freeze stamp moved
-   within 3 min) or not, and `state.probe_nudges` tallies nudged/refreshed/unchanged.
+   within 3 min) or not, and `state.probe_nudges` tallies the outcomes.
    **Decision rule:** read the tally after a few booked sessions — mostly
-   `refreshed` → keep it (and consider lowering the stale relight to lean on it);
-   mostly `missed` → the number write does not wake the device, remove the step
-   and the honest fix is upstream (`last_sync_datetime_device`). **The first
+   `refreshed` / `synced` → keep it (and consider lowering the stale relight to
+   lean on it); if it never confirms, the honest fix is upstream
+   (`last_sync_datetime_device`) or the in-memory read of it below. **The first
    result (10:02Z, `hall_left` 19.0 → 19.0 in a static hall on eco) showed that
    "unchanged" alone is ambiguous** — a probe genuinely still on the same quantum
-   reads unchanged whether or not the device synced — so since v1.44.2 an unchanged
-   reading is `missed` only when the heater's own panel surface or the independent
-   ceiling moved inside the window, and `inconclusive` when nothing did;
-   `probe_nudge_result` carries `outcome` plus the surface/ceiling before and after,
-   and only refreshed vs missed count. That first result is inconclusive.
+   reads unchanged whether or not the device synced. v1.44.2 tried to break the
+   tie with two witnesses (the heater's own panel surface or the independent
+   ceiling moving inside the window = `missed`), **and the first afternoon on it
+   showed that verdict was inverted and the ceiling is no witness at all (v1.44.3,
+   12:47Z export).** Three `missed` at 10:54Z on a 0.1 °C solar ceiling step
+   (23.0 → 23.1) with every panel sitting still — while the hall probes were
+   genuinely static (they climbed 18.5 → 20.0 on their own over the next two
+   hours, on ice, no writes, so the heaters DO report unprompted). The panel
+   surface rides in the same cloud record as the probe, so a surface that moved
+   proves the device *reported* and the unchanged reading is genuinely still on
+   that quantum — that is evidence FOR the nudge (`synced`), not against it; and
+   the sun moving the roof says nothing about whether this device spoke. With
+   neither field moved HA state cannot tell a silent device from a static one
+   (`inconclusive`). So the tally (nudged / refreshed / synced / inconclusive) can
+   confirm the nudge but never refute it; `probe_nudge_result` carries `outcome` +
+   the surface before/after. **Refuting it needs the device's own sync clock.**
+   The Nexa payload carries `last_sync_datetime_device`; the Rointe SDK parses it
+   into every device object each 15-s poll (`rointesdk/device.py`,
+   `update_data`) but nothing publishes it — no sensor, attribute, service or
+   diagnostics — so it is invisible in HA state. It IS reachable read-only in
+   memory (`hass.data["rointe"][entry_id].device_manager.rointe_devices[<id>]`,
+   keyed by the Rointe id in the HA device's registry identifiers; the dict
+   survives the coordinator-data emptying bug). Trap: when the key is absent the
+   SDK substitutes `datetime.now()`, so a sync time must not gate anything until
+   it has been seen standing still (> 1 min old) at least once. Proposed, awaiting
+   the owner's go (it couples to another component's private objects, fully
+   guarded → None → today's value test): stage one reads the sync age per heater
+   into diagnostics/trace and settles the nudge verdict (sync clock advanced after
+   the write = the write woke the device); stage two gates the stale relight and
+   the nudge on sync age instead of flat minutes.
    **Both cover occupancy too (v1.44.1, owner: "does it do the same for motion
    only?").** Bare occupancy heats and ices (`occupied_warm`) on the same coldest
    probe as a booking, so a frozen reading at target holds people in a cooling

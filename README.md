@@ -469,12 +469,14 @@ restarts) of everything it decides and learns:
   reading (the Rointe cloud only carries what the heater last synced, and an
   idle heater can sit silent for hours). A number write alone never moves the
   live setpoint, so it cannot heat or cool. Each nudge is then verified: did
-  the reading change within three minutes (`refreshed`)? If not, did anything
-  else about that heater move — its panel surface, or the ceiling — so that
-  the silence counts (`missed`), or was the room simply static
-  (`inconclusive`)? The tally lives in the diagnostics under
-  `state.probe_nudges`, and refreshed against missed is the evidence for
-  keeping or dropping it.
+  the reading change within three minutes (`refreshed`)? If not, did the
+  heater's own panel surface move in that window — it comes from the same
+  cloud record as the reading, so the device demonstrably reported and the
+  reading is genuinely unchanged (`synced`) — or did nothing of the device's
+  move (`inconclusive`, since a silent device and a static one look the same
+  from here)? The tally lives in the diagnostics under `state.probe_nudges`.
+  It can confirm the nudge works; it cannot prove it does not — that needs
+  the device's own sync clock, which the Rointe integration does not expose.
 - **`booking_start` / `booking_end`** — the ground truth: the coldest reading
   against the target at the moment each booking begins (a positive
   `shortfall` means the room arrived under target — lead too short; a
