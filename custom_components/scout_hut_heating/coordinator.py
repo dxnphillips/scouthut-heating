@@ -1428,8 +1428,9 @@ class ScoutController:
            counts as ``unchanged``. Either way ``probe_nudge_result`` records
            it and the tally moves — this is the field test of whether a bare
            number write makes a Rointe sync at all.
-        2. Nudge: for each BOOKED zone (pre-heat window or running slot, with
-           its automation on), any heater whose reading has sat unchanged for
+        2. Nudge: for each ATTENDED zone (booked — window or slot — or occupied
+           by motion, override or a night arm; automation on), any heater
+           whose reading has sat unchanged for
            ``PROBE_NUDGE_FLAT_MIN`` and has not been nudged inside the cooldown
            gets its comfort number re-written with the value it already holds.
            Blocking, failure-audited and spaced like every other heater write.
@@ -1458,7 +1459,7 @@ class ScoutController:
             )
 
         for zone in (ZONE_A, ZONE_B):
-            if not self._cal_active(zone):
+            if not self._zone_attended(zone):
                 continue
             if not self.switch_on(f"{zone}_automation_enabled", default=True):
                 continue
@@ -1505,6 +1506,31 @@ class ScoutController:
         for zone in (ZONE_A, ZONE_B):
             out.update(self._zone_probe_readings(zone))
         return out
+
+    def _iced_on_a_stale_reading(self, zone: str, reason: str) -> bool:
+        """Is this zone sitting on ice for ``reason`` ("warm enough") on a coldest
+        reading that has not moved for ``BOOKING_RELIGHT_STALE_MIN``?
+
+        A frozen probe at target never falls below it, so the ordinary relight
+        never comes; past this window the zone is relit anyway (err warm — the
+        Rointe fires only against its own live probe).
+        """
+        if self.applied[zone] != PRESET_ICE or self._preset_reason.get(zone) != reason:
+            return False
+        flat = self._zone_coldest_flat_minutes(zone)
+        return flat is not None and flat >= BOOKING_RELIGHT_STALE_MIN
+
+    def _zone_attended(self, zone: str) -> bool:
+        """Booked (window or slot) or occupied (motion, override, night arm):
+        the times a stale reading costs somebody comfort."""
+        if self._cal_active(zone):
+            return True
+        timeout = self.number("motion_timeout_minutes")
+        return (
+            self.switch_on(f"{zone}_occupied_override")
+            or self._motion_recent(ZONE_MOTION_AREA[zone], timeout)
+            or self._alarm_present(self.config.get(ZONE_ALARM[zone]))
+        )
 
     def _zone_coldest_flat_minutes(self, zone: str) -> float | None:
         """Minutes since the zone's COLDEST heater reading last changed.
@@ -3427,13 +3453,7 @@ class ScoutController:
             # Rointe fires against its own live probe, so a room really at
             # target does not burn). Field 2026-09-22: four probes flat at 19.0
             # for 20+ min while the hall cooled to 18.0.
-            flat = self._zone_coldest_flat_minutes(zone)
-            stale = (
-                self.applied[zone] == PRESET_ICE
-                and self._preset_reason.get(zone) == "booking_warm"
-                and flat is not None
-                and flat >= BOOKING_RELIGHT_STALE_MIN
-            )
+            stale = self._iced_on_a_stale_reading(zone, "booking_warm")
             if not stale and not self._room_wants_heat(zone, booking_target):
                 # Already warm enough for what this booking asked — no heat, and
                 # ice lets the cooling fans run if the room is genuinely hot.
@@ -3517,7 +3537,11 @@ class ScoutController:
         motion = self._motion_recent(area, timeout)
         alarm_present = self._alarm_present(self.config.get(ZONE_ALARM[zone]))
         if occupied_override or motion or alarm_present:
-            if self._room_wants_heat(zone, self._zone_target(zone)):
+            # An occupied zone iced as "warm" relights on the same stale-reading
+            # rule as a booking (v1.44.1): a frozen probe at target would
+            # otherwise hold people in a cooling room.
+            stale = self._iced_on_a_stale_reading(zone, "occupied_warm")
+            if stale or self._room_wants_heat(zone, self._zone_target(zone)):
                 # Just cooled: hold the regime so a rest between games can't flip
                 # the hall straight to heating (a manual override still heats).
                 if not occupied_override and self._cool_regime_holds_heat(
@@ -3527,6 +3551,8 @@ class ScoutController:
                 reason = (
                     "occupied_override"
                     if occupied_override
+                    else "occupied_stale"
+                    if stale
                     else "motion"
                     if motion
                     else "sleepover"
