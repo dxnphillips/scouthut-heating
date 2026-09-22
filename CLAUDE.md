@@ -236,7 +236,12 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   throttle; never occupancy or a mid-booking top-up — free gain), timed on the
   **coldest** probe (the quantity the lead sizes and `shortfall` judges), not inside
   the 25-min startup grace (a restart mid-pre-heat re-applies comfort on an already
-  heating room), folded only if it **reached target** (a truncated climb has not paid
+  heating room), folded only if it **reached target** — judged on the reading alone,
+  not on the zone still being in comfort (v1.43.2: the presets step runs first and
+  the coldest probe lands past the 19.5 release line in one catch-up jump, so the
+  first tick reading ≥ target is the tick `booking_warm` ices the zone; the first
+  v1.43.0 pre-heat, 2026-09-22 07:05Z, 15.5 → 20.0 in 43 min, was read as "ended
+  early" and dropped for exactly that) — (a truncated climb has not paid
   the finish), rise clamped `min(temp, target) − start` (a probe unfreezing past
   target cannot inflate it), and the close needs as many readable probes as the open.
   Kept: the cold gate (average outdoor ≤ 14) and the 25 % step cap. Removed:
@@ -259,6 +264,18 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   (deficit < 1.5) with the lead well under the cap → raise `APPROACH_TAIL_C` 2.5 → 3.0,
   not the rate; if the leak term over-leads (lead pinned at cap while `net_c_per_h`
   reads < 1 on a merely cool day), the hall `heatloss_pct` is the number to check.
+  **First live run (2026-09-22 07:05Z, outdoor 12, coldest 15.5, 09:00Z booking):**
+  lead **116 min** (predicted 14.83, net 3.46 °C/h) against yesterday's 240 for the
+  same deficit. The climb: all four probes freeze-held at 16–17 (07:35Z), then the
+  average jumped +1.0 twice in consecutive minutes (07:45–07:46Z, `drive_coast_jump`
+  both times — the v1.42.0 guard doing its job, no easing engaged) and the coldest
+  landed at **20.0** at 07:48Z, 43 min in — while the independent ceiling had risen
+  only 16.7 → 18.9 and the floor read back down to 19.0 by 08:26Z on ice, so the 20.0
+  was a landing-high artefact and the honest arrival was nearer 50–65 min. Still
+  ~2× over-led at gain 15, and the sample that would have started the learn-down
+  (rise 3.5 clamped, 42.9 min, mild False — gross ≈ 6.7 min/°C, folding 15 → 12.5
+  under the step cap) was **dropped as "ended early"** because `booking_warm` iced the
+  zone on the same tick (v1.43.2 fix above). Expect the next cold pre-heat to fold.
 - The Rointe integration is **cloud-based and quirky**: it accepts
   `set_preset_mode` but publishes `preset_mode: null` (drift detection falls
   back to setpoints), exposes a constant nominal "Power" sensor alongside
