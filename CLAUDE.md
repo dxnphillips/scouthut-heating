@@ -450,6 +450,24 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    measured leak); the same morning sizes ~110–140 min. The cap and the frost
    arithmetic above are unchanged in kind: frost 7 → 19 at −5 still pins 240, so
    the overnight pre-charge remains the lever for that case.
+   **(b) recurred in a second form the same week — a FROZEN probe, not an inflated
+   one (2026-09-22, v1.43.3, `BOOKING_RELIGHT_STALE_MIN` = 20).** The 07:05Z
+   pre-heat arrived and iced on `booking_warm` at 07:48Z; from 08:26Z all four hall
+   probes read exactly 19.0 and did not move, while the independent ceiling eased
+   19.1 → 19.0 and the room was really cooling. The relight needs coldest < 19.0,
+   which a frozen 19.0 never gives, so the window sat shut until the owner's
+   08:46Z restart refreshed the probes to 18.0/18.0/18.5/18.0 — the relight then
+   came with 14 min to the 09:00Z booking (lead 57 at that reading). The owner
+   spotted it as a 0.9 °C floor step on reboot after half an hour flat. The 120-min
+   `_probe_frozen` window is right for the general gate (a slow insulated room can
+   legitimately sit on one quantum for an hour) but far too long for THIS decision,
+   so a booked zone waiting on `booking_warm` whose coldest reading has not changed
+   for 20 min is relit anyway (`preheat_stale` / `booking_stale`). Cheap in the
+   warm direction: the Rointe fires only against its own live probe, so a room that
+   is really at target does not burn, and the drive's freeze-guard cannot wind up
+   on a reading that does not move; the cooling-regime commit still runs after it.
+   `booking_start.shortfall` at 09:00Z is the measure of what the 20 frozen minutes
+   cost this time.
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the

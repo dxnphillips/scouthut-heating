@@ -2,11 +2,13 @@
 
 from datetime import timedelta
 
+from custom_components.scout_hut_heating.coordinator import BOOKING_RELIGHT_STALE_MIN
 from scout_testkit import (
     PRESET_COMFORT,
     PRESET_ECO,
     PRESET_ICE,
     ZA,
+    advance,
     booking,
     boost,
     hall_temp,
@@ -262,6 +264,67 @@ def test_preheat_window_holds_comfort_while_empty():
     ctrl, _ = make_controller()
     ctrl.cal_window[ZA] = True  # event within pre-heat window, not yet started
     assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+# --- A frozen probe must not hold a booked zone on ice ------------------------
+def _iced_as_warm_in_window(ctrl, minutes_flat):
+    """Hall iced on booking_warm inside a pre-heat window, coldest probe exactly
+    at target and unchanged for `minutes_flat` (field 2026-09-22 07:48-08:46Z)."""
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    ctrl.cal_window[ZA] = True
+    hall_temp(ctrl, 19.0)
+    ctrl._track_probe_changes()
+    advance(ctrl, minutes_flat)
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._preset_reason[ZA] = "booking_warm"
+
+
+def test_a_probe_frozen_at_target_relights_the_preheat():
+    # All four hall probes sat at 19.0 for 20+ min while the room cooled to
+    # 18.0; on "coldest < target" alone the relight waited for a restart and
+    # came 14 min before the booking. Past the stale window the zone relights.
+    ctrl, _ = make_controller()
+    _iced_as_warm_in_window(ctrl, BOOKING_RELIGHT_STALE_MIN + 1)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "preheat_stale"
+
+
+def test_a_reading_that_moved_recently_keeps_the_warm_zone_on_ice():
+    ctrl, _ = make_controller()
+    _iced_as_warm_in_window(ctrl, BOOKING_RELIGHT_STALE_MIN - 5)
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_warm"
+
+
+def test_the_stale_relight_covers_a_running_booking_too():
+    ctrl, _ = make_controller()
+    _iced_as_warm_in_window(ctrl, BOOKING_RELIGHT_STALE_MIN + 1)
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "booking_stale"
+
+
+def test_once_relit_the_zone_holds_comfort_on_the_ordinary_gate():
+    # The next tick sees comfort applied: the stale test no longer applies and
+    # the release band (target + 0.5) keeps it heating on the same reading.
+    ctrl, _ = make_controller()
+    _iced_as_warm_in_window(ctrl, BOOKING_RELIGHT_STALE_MIN + 1)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    ctrl.applied[ZA] = PRESET_COMFORT
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "preheat"
+
+
+def test_a_zone_iced_for_another_reason_is_not_relit_by_staleness():
+    # Only a `booking_warm` ice is a reading-held decision. A zone that was
+    # iced for some other reason is judged on the ordinary gate, where a
+    # reading exactly at target is "warm enough" — and lands on booking_warm.
+    ctrl, _ = make_controller()
+    _iced_as_warm_in_window(ctrl, BOOKING_RELIGHT_STALE_MIN + 1)
+    ctrl._preset_reason[ZA] = "cooling_hold"
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_warm"
 
 
 def test_alarm_clears_the_occupied_override():
