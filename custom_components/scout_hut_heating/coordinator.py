@@ -902,6 +902,10 @@ class ScoutController:
         self._sync_skew: dict[str, float] = {}
         self._sync_rointe_ids: dict[str, str] | None = None
         self._sync_clock_available: bool | None = None
+        # When each zone was last relit on a STALE reading (v1.45.1): the relight
+        # then holds until that reading is refreshed, instead of being re-judged
+        # warm on the same stale value and iced again every tick.
+        self._stale_relit_at: dict[str, datetime] = {}
         # Sustained heater outage watch (Q18): when a zone's heaters ALL went
         # offline, which zones have ever been seen online (so a boot into an
         # unconfigured/slow start does not cry wolf), and which are alerted.
@@ -1778,18 +1782,76 @@ class ScoutController:
             out.update(self._zone_probe_readings(zone))
         return out
 
-    def _iced_on_a_stale_reading(self, zone: str, reason: str) -> bool:
+    def _iced_on_a_stale_reading(self, zone: str, reason: str, target: float) -> bool:
         """Is this zone sitting on ice for ``reason`` ("warm enough") on a coldest
-        reading that has not moved for ``BOOKING_RELIGHT_STALE_MIN``?
+        reading that has been stale for ``BOOKING_RELIGHT_STALE_MIN`` — and could
+        the room have fallen below ``target`` in that time?
 
         A frozen probe at target never falls below it, so the ordinary relight
         never comes; past this window the zone is relit anyway (err warm — the
-        Rointe fires only against its own live probe).
+        Rointe fires only against its own live probe). But only when the fall is
+        PHYSICALLY POSSIBLE (v1.45.1): the stale reading is decayed toward the
+        outdoor over the stale minutes at the zone's learned loss rate (the same
+        Newton model the pre-heat lead uses; an unknown outdoor assumes the cold
+        fallback, erring warm), and the zone is relit only if that lands below
+        the target. Field 2026-09-22 16:30Z: a sal-vation eco booking (target 14)
+        on a hall reading 22.5 stale for 40–130 min was relit — no room loses
+        8 °C in two hours — and then iced and relit four times in five minutes.
         """
         if self.applied[zone] != PRESET_ICE or self._preset_reason.get(zone) != reason:
             return False
-        flat = self._zone_coldest_flat_minutes(zone)
-        return flat is not None and flat >= BOOKING_RELIGHT_STALE_MIN
+        readings = self._zone_probe_readings(zone)
+        if not readings:
+            return False
+        coldest = min(readings, key=readings.get)
+        stale = self._probe_silent_minutes(coldest)
+        if stale is None or stale < BOOKING_RELIGHT_STALE_MIN:
+            return False
+        predicted = predicted_room_temp(
+            readings[coldest],
+            self._outdoor_temp(),
+            stale / 60,
+            self.number(f"{zone}_heatloss_pct") / 100,
+        )
+        if predicted >= target:
+            return False
+        self._stale_relit_at[zone] = self._now()
+        return True
+
+    def _holding_stale_relight(self, zone: str) -> bool:
+        """Is this zone heating on a stale-reading relight whose reading has
+        still not been refreshed?
+
+        Relighting does not change the reading, so re-judging "warm enough" on
+        the same stale value the next tick just ices the zone again, and the
+        stale test then relights it — a flap of a heater write pair every tick
+        (field 2026-09-22 16:30Z, the hall four times in five minutes and the
+        office five times in two). The relight therefore HOLDS until the coldest
+        reading changes, or (on a trusted sync clock) the heater uploads at all.
+        Unbounded on purpose: the relight's premise is that the reading cannot
+        be trusted, and a Rointe fires only against its own live probe, so a
+        room that is really warm does not burn while it holds.
+        """
+        reason = self._preset_reason.get(zone) or ""
+        if self.applied[zone] not in (PRESET_COMFORT, PRESET_ECO) or not reason.endswith("_stale"):
+            return False
+        relit_at = self._stale_relit_at.get(zone)
+        if relit_at is None:
+            return False
+        readings = self._zone_probe_readings(zone)
+        if not readings:
+            return False
+        coldest = min(readings, key=readings.get)
+        return not self._reading_fresh_since(coldest, relit_at)
+
+    def _reading_fresh_since(self, climate: str, at: datetime) -> bool:
+        """Has this heater's reading changed, or (trusted clock) has it uploaded
+        at all, since ``at``?"""
+        changed = self._probe_changed_at.get(climate)
+        if changed is not None and changed > at:
+            return True
+        seen = self._sync_seen_at.get(climate)
+        return self._sync_clock_trusted(climate) and seen is not None and seen > at
 
     def _zone_attended(self, zone: str) -> bool:
         """Booked (window or slot) or occupied (motion, override, night arm):
@@ -3742,7 +3804,9 @@ class ScoutController:
             # Rointe fires against its own live probe, so a room really at
             # target does not burn). Field 2026-09-22: four probes flat at 19.0
             # for 20+ min while the hall cooled to 18.0.
-            stale = self._iced_on_a_stale_reading(zone, "booking_warm")
+            stale = self._iced_on_a_stale_reading(
+                zone, "booking_warm", booking_goal
+            ) or self._holding_stale_relight(zone)
             if not stale and not self._room_wants_heat(zone, booking_target):
                 # Already warm enough for what this booking asked — no heat, and
                 # ice lets the cooling fans run if the room is genuinely hot.
@@ -3802,7 +3866,7 @@ class ScoutController:
             if base == PRESET_COMFORT and event_running and not occupied:
                 return self._reason(zone, "booking_quiet", PRESET_ECO)
             if base == PRESET_ECO:
-                return self._reason(zone, "booking_eco", base)
+                return self._reason(zone, "booking_stale" if stale else "booking_eco", base)
             if stale:
                 # Relit on a reading that stopped moving, not on one that fell.
                 return self._reason(
@@ -3829,7 +3893,9 @@ class ScoutController:
             # An occupied zone iced as "warm" relights on the same stale-reading
             # rule as a booking (v1.44.1): a frozen probe at target would
             # otherwise hold people in a cooling room.
-            stale = self._iced_on_a_stale_reading(zone, "occupied_warm")
+            stale = self._iced_on_a_stale_reading(
+                zone, "occupied_warm", self._zone_target(zone)
+            ) or self._holding_stale_relight(zone)
             if stale or self._room_wants_heat(zone, self._zone_target(zone)):
                 # Just cooled: hold the regime so a rest between games can't flip
                 # the hall straight to heating (a manual override still heats).

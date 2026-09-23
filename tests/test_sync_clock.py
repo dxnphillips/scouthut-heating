@@ -220,10 +220,31 @@ def test_the_stale_relight_fires_on_silence_not_on_a_flat_value():
     # Flat for 21 min — but the heater uploaded a minute ago: genuinely 19.0.
     devices[HB].last_sync_datetime_device = naive_now(ctrl) - timedelta(minutes=1)
     ctrl._track_probe_changes()
-    assert not ctrl._iced_on_a_stale_reading(ZA, "booking_warm")
+    assert not ctrl._iced_on_a_stale_reading(ZA, "booking_warm", 19.0)
     # Now silent for 21 min: relit.
     advance(ctrl, BOOKING_RELIGHT_STALE_MIN + 1)
-    assert ctrl._iced_on_a_stale_reading(ZA, "booking_warm")
+    assert ctrl._iced_on_a_stale_reading(ZA, "booking_warm", 19.0)
+
+
+def test_a_held_stale_relight_releases_on_a_same_value_upload():
+    # Relit on a silent heater; the heater then uploads the SAME value. On a
+    # trusted clock that upload is a fresh reading: the hold ends and the
+    # ordinary gate takes over (here still heating — 19.0 is inside the
+    # release band — but by the ordinary reason, not the stale one).
+    ctrl, hass, devices = _trusted_hall(minutes_old=BOOKING_RELIGHT_STALE_MIN + 5)
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._preset_reason[ZA] = "booking_warm"
+    assert ctrl._desired_zone(ZA) == "comfort"
+    assert ctrl._preset_reason[ZA] == "preheat_stale"
+    ctrl.applied[ZA] = "comfort"
+    ctrl._track_probe_changes()
+    assert ctrl._desired_zone(ZA) == "comfort"
+    assert ctrl._preset_reason[ZA] == "preheat_stale"  # still silent: held
+    devices[HB].last_sync_datetime_device = naive_now(ctrl)  # uploaded, same 19.0
+    ctrl._track_probe_changes()
+    assert ctrl._desired_zone(ZA) == "comfort"
+    assert ctrl._preset_reason[ZA] == "preheat"  # released to the ordinary gate
 
 
 # --- the nudge on the clock --------------------------------------------------

@@ -347,6 +347,8 @@ def advance(ctrl, minutes):
         pending["at"] = pending["at"] - delta
     for climate, ts in list(ctrl._sync_seen_at.items()):
         ctrl._sync_seen_at[climate] = ts - delta
+    for zone, ts in list(ctrl._stale_relit_at.items()):
+        ctrl._stale_relit_at[zone] = ts - delta
     for zone, ts in ctrl._cooloff_cooling_since.items():
         if ts is not None:
             ctrl._cooloff_cooling_since[zone] = ts - delta

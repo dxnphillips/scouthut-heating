@@ -568,6 +568,37 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    past the same 20 min (`occupied_stale`, the cooling-regime commit still runs
    after it), and the nudge runs for any ATTENDED zone (`_zone_attended`: booked,
    or motion / override / night arm), not only a booked one.
+   **The relight FLAPPED on its first warm-room evening, and it relit a room that
+   could not possibly be cold (2026-09-22 16:30Z, 1.44.2 still deployed; fixed
+   v1.45.1).** A sal-vation eco booking (target 14) opened on a hall reading 22.5
+   whose probes had sat 40–130 min. The stale rule relit it (`booking_eco`), the
+   next tick re-judged the same 22.5 as warm and iced it (`booking_warm`), the
+   tick after relit it again — four ice↔eco cycles in five minutes, then the
+   office did the same five times in two minutes (`occupied_stale` ↔
+   `occupied_warm`, reading 22.0 against comfort 21); and again 08:56–09:00Z the
+   next morning (`preheat_stale` twice on a 20.5 reading). Each cycle is a heater
+   write pair (each a full 8-heater refresh inside the Rointe integration), and
+   the momentary eco also latched `_booking_over_heated`, so `booking_end` logged
+   a meaningless `peak_over` 9.12 for a room never driven. Two flaws, two fixes:
+   (a) *the relight ignored physics* — a reading 8 °C above target cannot have
+   fallen below it in two hours, so `_iced_on_a_stale_reading` now decays the
+   stale reading toward the outdoor over the stale minutes at the zone's learned
+   loss rate (`predicted_room_temp`, the pre-heat's own Newton model; an unknown
+   outdoor assumes the cold fallback, erring warm) and relights only if that
+   lands below the rung's target — the 09-22 morning case (19.0 stale 20 min,
+   outdoor 12) still relights, 22.5-against-14 and 22-against-21 never do; (b)
+   *relighting does not change the reading*, so re-judging warm-enough on the same
+   stale value is a guaranteed flap whenever the reading sits above the release
+   band — `_holding_stale_relight` now holds a `*_stale` relight until the coldest
+   reading actually changes, or (on a trusted sync clock, v1.45.0) the heater
+   uploads at all (`_reading_fresh_since`); an eco booking's relight is now
+   reasoned `booking_stale` so the hold covers it too. Unbounded on purpose: the
+   relight's premise is that the reading cannot be trusted, and a Rointe fires only
+   against its own live probe, so a room that is really warm does not burn while it
+   holds. The stale test itself reads `_probe_silent_minutes`, so on a trusted
+   clock a static-but-uploading probe is never relit in the first place. Tests in
+   `tests/test_zone_a.py` (the flap, the physical bound, the occupancy hold) and
+   `tests/test_sync_clock.py` (a same-value upload releases the hold).
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the

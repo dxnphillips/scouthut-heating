@@ -267,12 +267,13 @@ def test_preheat_window_holds_comfort_while_empty():
 
 
 # --- A frozen probe must not hold a booked zone on ice ------------------------
-def _iced_as_warm_in_window(ctrl, minutes_flat):
-    """Hall iced on booking_warm inside a pre-heat window, coldest probe exactly
-    at target and unchanged for `minutes_flat` (field 2026-09-22 07:48-08:46Z)."""
+def _iced_as_warm_in_window(ctrl, minutes_flat, temp=19.0):
+    """Hall iced on booking_warm inside a pre-heat window, coldest probe at
+    `temp` (default exactly the 19.0 target) and unchanged for `minutes_flat`
+    (field 2026-09-22 07:48-08:46Z)."""
     ctrl._numbers["hall_comfort_temp"].native_value = 19.0
     ctrl.cal_window[ZA] = True
-    hall_temp(ctrl, 19.0)
+    hall_temp(ctrl, temp)
     ctrl._track_probe_changes()
     advance(ctrl, minutes_flat)
     ctrl.applied[ZA] = PRESET_ICE
@@ -305,15 +306,74 @@ def test_the_stale_relight_covers_a_running_booking_too():
     assert ctrl._preset_reason[ZA] == "booking_stale"
 
 
-def test_once_relit_the_zone_holds_comfort_on_the_ordinary_gate():
-    # The next tick sees comfort applied: the stale test no longer applies and
-    # the release band (target + 0.5) keeps it heating on the same reading.
+def test_once_relit_the_zone_holds_comfort_until_the_reading_is_refreshed():
+    # The next tick sees comfort applied on the SAME stale reading: the relight
+    # holds (v1.45.1) rather than being re-judged warm and iced again.
     ctrl, _ = make_controller()
     _iced_as_warm_in_window(ctrl, BOOKING_RELIGHT_STALE_MIN + 1)
     assert ctrl._desired_zone(ZA) == PRESET_COMFORT
     ctrl.applied[ZA] = PRESET_COMFORT
     assert ctrl._desired_zone(ZA) == PRESET_COMFORT
-    assert ctrl._preset_reason[ZA] == "preheat"
+    assert ctrl._preset_reason[ZA] == "preheat_stale"
+
+
+def test_a_stale_reading_far_above_target_is_not_relit():
+    # Field 2026-09-22 16:30Z: a sal-vation eco booking (target 14) on a hall
+    # reading 22.5 that had sat 40-130 min was relit — no room loses 8 °C in
+    # two hours. The relight now needs the fall to be physically possible.
+    ctrl, hass = make_controller()
+    ctrl._numbers["zone_a_heatloss_pct"].native_value = 11.0  # the learned hall k
+    hass.states.set(E["weather"], "cloudy", {"temperature": 20.0})
+    _iced_as_warm_in_window(ctrl, BOOKING_RELIGHT_STALE_MIN + 40, temp=22.5)
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_warm"
+    # Even with the outdoor unknown (the cold fallback errs warm) 22.5 cannot
+    # have reached 19 in an hour at the learned loss rate.
+    hass.states.set(E["weather"], "cloudy", {})
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+
+
+def test_a_stale_relight_above_the_release_band_does_not_flap():
+    # Field 2026-09-22 16:30-16:35Z and 08:56-09:00Z the next morning: relit
+    # on a stale reading above target + 0.5, re-judged warm on the same value
+    # the next tick, iced, relit — a heater write pair every tick. The relight
+    # holds until the reading actually changes; then the ordinary gate ices it
+    # and the flat clock has restarted, so it is not immediately relit again.
+    ctrl, hass = make_controller()
+    hass.states.set(E["weather"], "cloudy", {"temperature": 5.0})
+    _iced_as_warm_in_window(ctrl, BOOKING_RELIGHT_STALE_MIN + 40, temp=20.0)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "preheat_stale"
+    ctrl.applied[ZA] = PRESET_COMFORT
+    for _ in range(3):  # ticks on the same stale reading: held, not iced
+        ctrl._track_probe_changes()
+        assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+        assert ctrl._preset_reason[ZA] == "preheat_stale"
+    hall_temp(ctrl, 20.5)  # a fresh reading arrives, still warm
+    ctrl._track_probe_changes()
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_warm"
+    ctrl.applied[ZA] = PRESET_ICE
+    assert ctrl._desired_zone(ZA) == PRESET_ICE  # flat clock restarted: no relight
+
+
+def test_an_occupied_stale_relight_holds_too():
+    ctrl, hass = make_controller()
+    hass.states.set(E["weather"], "cloudy", {"temperature": 5.0})
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 20.0)
+    ctrl._track_probe_changes()
+    advance(ctrl, BOOKING_RELIGHT_STALE_MIN + 40)
+    motion(ctrl, "hall")
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._preset_reason[ZA] = "occupied_warm"
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "occupied_stale"
+    ctrl.applied[ZA] = PRESET_COMFORT
+    ctrl._track_probe_changes()
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "occupied_stale"
 
 
 def test_an_occupied_zone_iced_as_warm_relights_on_a_stale_reading_too():
