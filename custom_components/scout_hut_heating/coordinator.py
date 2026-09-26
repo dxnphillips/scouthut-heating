@@ -1563,11 +1563,18 @@ class ScoutController:
                 continue
             seen_any = True
             if self._sync_stamp.get(climate) != stamp:
+                # Skew (the device's clock against ours) is only measurable on
+                # an upload we SAW happen: the first sighting after startup
+                # carries however old the stamp already was, not a skew (field
+                # 2026-09-26: eight "skews" of 4-20 min at the deploy, all
+                # startup ages; the one live upload read 0.41).
+                first = climate not in self._sync_stamp
                 self._sync_stamp[climate] = stamp
                 self._sync_seen_at[climate] = now
-                self._sync_skew[climate] = round(
-                    (self._local_naive_now() - stamp).total_seconds() / 60, 2
-                )
+                if not first:
+                    self._sync_skew[climate] = round(
+                        (self._local_naive_now() - stamp).total_seconds() / 60, 2
+                    )
             elif (
                 climate not in self._sync_trusted
                 and (now - self._sync_seen_at[climate]).total_seconds() / 60

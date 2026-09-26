@@ -139,7 +139,8 @@ def test_a_stamp_is_trusted_only_once_it_has_stood_still():
     assert ctrl._sync_clock_trusted(HB)
     (evt,) = _events(ctrl, "sync_clock_trusted")
     assert evt["heater"] == HB
-    assert evt["skew_min"] is not None
+    # No skew yet: the first sighting only says how old the stamp already was.
+    assert evt.get("skew_min") is None
 
 
 def test_the_sdks_missing_key_fallback_is_never_trusted():
@@ -165,10 +166,13 @@ def test_age_is_how_long_we_watched_the_stamp_floored_by_the_devices_own_reckoni
     ctrl, hass, devices = _trusted_hall(minutes_old=40)
     # Trusted after 2.5 min of watching, but the device says 40: the floor wins.
     assert ctrl._sync_age_minutes(HB) >= 40
-    # A fresh upload: the age collapses to the device's ~1 min.
+    # A fresh upload: the age collapses to the device's ~1 min, and the skew
+    # (device clock against ours) is measured on this live upload, not before.
+    assert ctrl._sync_skew.get(HB) is None
     devices[HB].last_sync_datetime_device = naive_now(ctrl) - timedelta(minutes=1)
     ctrl._track_probe_changes()
     assert 0.9 <= ctrl._sync_age_minutes(HB) <= 1.5
+    assert 0.9 <= ctrl._sync_skew[HB] <= 1.5
     # Then time passes with no upload: our watch carries the age.
     advance(ctrl, 25)
     assert 25 <= ctrl._sync_age_minutes(HB) <= 27
@@ -348,7 +352,7 @@ def test_diagnostics_and_the_trace_carry_the_clock():
     back = data["readings"]["zones"][ZA]["heaters"][HB]
     assert back["sync_clock"] == "trusted"
     assert back["sync_age_min"] >= 40
-    assert back["sync_at"] is not None and back["sync_skew_min"] is not None
+    assert back["sync_at"] is not None and back["sync_skew_min"] is None
     assert "sync_clock" not in data["readings"]["zones"][ZA]["heaters"][HF]
     assert data["state"]["sync_clock"] == {"available": True, "trusted": [HB]}
     ctrl._sample_trace()

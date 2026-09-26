@@ -552,9 +552,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    `sync_skew_min`; `state.sync_clock` says whether the read works at all and which
    clocks are trusted; the trace carries `hall_sync` (the stalest trusted hall
    heater's age — the overnight sync-gap measurement the findings lacked).
+   **First run (2026-09-26 08:20Z deploy): `sync_clock_found` at the first tick,
+   all eight heaters `sync_clock_trusted` two minutes later, the floor reading
+   (lost to the 120-min flat gate at 08:05Z) back within the tick, idle upload
+   ages 4–29 min.** The eight `skew_min` values of 4–20 min were NOT skews: the
+   first sighting after startup carries however old the stamp already was, and
+   the one upload actually seen live read 0.41 min — so since v1.45.2 the skew is
+   recorded only on an upload observed to happen (null until then).
    **First-run watch:** `sync_clock_found` then `sync_clock_trusted` for each
-   heater within minutes of the deploy (`skew_min` near 0 — a large steady skew
-   means the device clock is off and the age is being carried by our watch alone);
+   heater within minutes of the deploy (`skew_min` near 0 once a live upload has
+   been seen — a large steady skew means the device clock is off and the age is
+   being carried by our watch alone);
    `hall_sync` in the trace should show the real overnight gaps; the first booked
    session's `probe_nudge_result` outcomes are now definite — a run of `missed`
    number nudges followed by `probe_nudge_escalated` and `synced` climate nudges
