@@ -33,6 +33,7 @@ from typing import Any
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
@@ -242,11 +243,58 @@ BOOKING_RELIGHT_STALE_MIN = 20.0
 # sync is UNPROVEN — the restart used heavier writes — so every nudge is audited
 # (`probe_nudge`) and verified (`probe_nudge_result`: did the reading change
 # within PROBE_NUDGE_VERIFY_MIN?), and the tally rides in diagnostics
-# (`state.probe_nudges`). If the results come back `refreshed` False across a
-# few bookings, the nudge does nothing and should be removed.
+# (`state.probe_nudges`). An unchanged reading is ambiguous on its own (a probe
+# still on the same 0.5 °C quantum reads the same whether or not the device
+# synced), and the only witness HA state offers is the heater's OWN panel
+# surface — it rides in the same cloud record as the probe, so a surface that
+# moved inside the window proves the device synced and the reading is genuinely
+# unchanged (`synced`). Nothing in HA state can prove the opposite: with neither
+# field moved the device may simply have had nothing new to say
+# (`inconclusive`). The independent ceiling is NOT a witness — the sun moves it
+# (field 2026-09-22: three "missed" verdicts on a 0.1 °C solar ceiling step
+# while the panels sat still) and it says nothing about whether this device
+# reported. So the tally can confirm the nudge (refreshed + synced) but never
+# refute it; refuting it needs the device's own sync clock
+# (`last_sync_datetime_device`), which the Rointe integration parses but does
+# not expose.
 PROBE_NUDGE_FLAT_MIN = 10.0      # reading unchanged this long in a booked zone -> nudge
 PROBE_NUDGE_VERIFY_MIN = 3.0     # a change within this long after the nudge counts as caused
 PROBE_NUDGE_COOLDOWN_MIN = 30.0  # at most one nudge per heater per this long
+
+# The device sync clock (v1.45.0). The Rointe cloud is two hops from the room:
+# the heater uploads its readings when it chooses (daytime gaps of 1–16 min
+# measured, overnight unmeasured, and on 2026-09-22 a full degree of cooling
+# sat unuploaded for 20 min until a command made it), and the Rointe
+# integration then polls the cloud every 15 s. The poll keeps HA current with
+# the cloud, not with the room, and rewrites every entity timestamp as it goes
+# — so no HA state can tell a SILENT heater (nothing uploaded) from a STATIC one
+# (uploaded, same value). The heater's own record of hop one is
+# `last_sync_datetime_device`: the Rointe SDK parses it into every device object
+# each poll but publishes it nowhere (no sensor, attribute, service or
+# diagnostics), so it is read here straight from that integration's in-memory
+# device objects — read-only, nothing patched, and every access guarded so a
+# renamed attribute on a Rointe upgrade degrades to the value-based tests below
+# rather than raising. Two traps, both handled: (1) when the payload lacks the
+# key the SDK substitutes the CURRENT time, so a heater with no sync data looks
+# freshly synced on every poll — a clock is therefore only TRUSTED once its
+# stamp has been seen standing still for SYNC_CLOCK_TRUST_MIN (the fallback
+# never stands still); (2) the stamp is the heater's clock, parsed naive-local,
+# so staleness is judged first on OUR observation of the stamp changing and only
+# floored by the device's own age (a stamp in the future is ignored, `skew` is
+# recorded per heater for the export). With a trusted clock every stale test —
+# the 120-min frozen-probe gate, the 20-min stale relight and the nudge trigger —
+# judges SILENCE (minutes since the heater last uploaded) instead of a flat
+# value: a genuinely static room is no longer relit or nudged, a silent heater
+# still is. The nudge verdict becomes definite: the stamp advancing inside the
+# verify window means the write woke the device (`refreshed` if the reading
+# moved, `synced` if not); no advance with a trusted clock is a `missed` write.
+# And the first clock-proven `missed` number write ESCALATES the nudge for every
+# heater to the command the 08:46Z restart proved does wake them —
+# `climate.set_temperature` with the value the heater already holds (the drive's
+# own pushed value for a driven heater, else its live setpoint), a no-op on the
+# setpoint but a real climate command. Nothing heavier exists; a climate nudge
+# that is also missed stays audited.
+SYNC_CLOCK_TRUST_MIN = 2.0  # a stamp must have been seen this old once before the clock is used
 
 # Coast predictor (coast.py) measurement window. The rolling idle-room samples
 # span at most PASSIVE_RISE_WINDOW_MIN and a rate is only computed once at least
@@ -839,8 +887,25 @@ class ScoutController:
         self._probe_nudged_at: dict[str, datetime] = {}
         self._probe_nudge_pending: dict[str, dict[str, Any]] = {}
         self._probe_nudge_tally: dict[str, int] = {
-            "nudged": 0, "refreshed": 0, "missed": 0, "inconclusive": 0,
+            "nudged": 0, "refreshed": 0, "synced": 0, "missed": 0, "inconclusive": 0,
         }
+        # Once a clock-proven `missed` number write has shown the bare number
+        # write does not wake these heaters, every nudge uses the climate command.
+        self._nudge_escalated = False
+        # The device sync clock (v1.45.0, see SYNC_CLOCK_TRUST_MIN): per heater the
+        # last stamp read, when WE first saw that stamp (our clock), whether the
+        # clock has proven itself, the device-vs-our clock skew measured at the
+        # last upload, and the memoised climate -> Rointe device id map.
+        self._sync_stamp: dict[str, datetime] = {}
+        self._sync_seen_at: dict[str, datetime] = {}
+        self._sync_trusted: set[str] = set()
+        self._sync_skew: dict[str, float] = {}
+        self._sync_rointe_ids: dict[str, str] | None = None
+        self._sync_clock_available: bool | None = None
+        # When each zone was last relit on a STALE reading (v1.45.1): the relight
+        # then holds until that reading is refreshed, instead of being re-judged
+        # warm on the same stale value and iced again every tick.
+        self._stale_relit_at: dict[str, datetime] = {}
         # Sustained heater outage watch (Q18): when a zone's heaters ALL went
         # offline, which zones have ever been seen online (so a boot into an
         # unconfigured/slow start does not cry wolf), and which are alerted.
@@ -1408,16 +1473,161 @@ class ScoutController:
             if self._probe_last_value.get(climate) != value:
                 self._probe_last_value[climate] = value
                 self._probe_changed_at[climate] = now
+        self._track_sync_clock(climates)
 
     def _probe_flat_minutes(self, climate: str) -> float | None:
         """Minutes since this heater's reading last changed, or None if untracked."""
         at = self._probe_changed_at.get(climate)
         return None if at is None else (self._now() - at).total_seconds() / 60
 
+    # ------------------------------------------------------------------
+    # The device sync clock (v1.45.0) — see SYNC_CLOCK_TRUST_MIN
+    # ------------------------------------------------------------------
+    def _heater_rointe_ids(self) -> dict[str, str]:
+        """Map each mapped heater climate to its Rointe device id.
+
+        Walks the entity registry to the heater's HA device and reads the
+        Rointe identifier the Rointe integration registers on it
+        (``identifiers={("rointe", <device id>)}``). Memoised once anything
+        resolves; an install without the Rointe integration maps nothing.
+        """
+        if self._sync_rointe_ids is not None:
+            return self._sync_rointe_ids
+        result: dict[str, str] = {}
+        try:
+            ent_reg = er.async_get(self.hass)
+            dev_reg = dr.async_get(self.hass)
+            climates = (
+                self._as_list(self.config.get(CONF_HALL_CLIMATES))
+                + self._as_list(self.config.get(CONF_OFFICE_CLIMATES))
+                + self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+            )
+            for climate in climates:
+                entry = ent_reg.async_get(climate)
+                if entry is None or entry.device_id is None:
+                    continue
+                device = dev_reg.async_get(entry.device_id)
+                for ident in getattr(device, "identifiers", None) or ():
+                    if isinstance(ident, tuple) and len(ident) == 2 and ident[0] == "rointe":
+                        result[climate] = str(ident[1])
+                        break
+        except Exception:  # noqa: BLE001 — another component's registry shape; degrade, never raise
+            return {}
+        if result:
+            self._sync_rointe_ids = result
+        return result
+
+    def _heater_sync_stamp(self, climate: str) -> datetime | None:
+        """The heater's own last-upload time, read from the Rointe integration's
+        in-memory device object (naive, the host's local time — the SDK parses it
+        with ``datetime.fromtimestamp``). None whenever any link in the chain is
+        missing: no Rointe integration loaded, an unmapped heater, a renamed
+        attribute after an upgrade. Read-only; nothing of theirs is written."""
+        rointe_id = self._heater_rointe_ids().get(climate)
+        if rointe_id is None:
+            return None
+        try:
+            coordinators = self.hass.data.get("rointe") or {}
+            for coord in list(coordinators.values()):
+                manager = getattr(coord, "device_manager", None)
+                devices = getattr(manager, "rointe_devices", None) or {}
+                device = devices.get(rointe_id)
+                if device is None:
+                    continue
+                stamp = getattr(device, "last_sync_datetime_device", None)
+                if isinstance(stamp, datetime):
+                    return stamp.replace(tzinfo=None) if stamp.tzinfo else stamp
+                return None
+        except Exception:  # noqa: BLE001 — another component's private objects; degrade, never raise
+            return None
+        return None
+
+    def _local_naive_now(self) -> datetime:
+        """Our clock in the same terms as the SDK's stamp (naive, host-local)."""
+        return dt_util.as_local(self._now()).replace(tzinfo=None)
+
+    def _track_sync_clock(self, climates: list[str]) -> None:
+        """Observe each heater's sync stamp: note when it changes (our clock),
+        measure the device-vs-our skew at that upload, and latch the clock as
+        TRUSTED once its stamp has been seen standing still for
+        ``SYNC_CLOCK_TRUST_MIN`` — the SDK's missing-key fallback (the current
+        time on every poll) never stands still, so it can never be trusted."""
+        now = self._now()
+        seen_any = False
+        for climate in climates:
+            stamp = self._heater_sync_stamp(climate)
+            if stamp is None:
+                self._sync_stamp.pop(climate, None)
+                self._sync_seen_at.pop(climate, None)
+                self._sync_trusted.discard(climate)
+                continue
+            seen_any = True
+            if self._sync_stamp.get(climate) != stamp:
+                self._sync_stamp[climate] = stamp
+                self._sync_seen_at[climate] = now
+                self._sync_skew[climate] = round(
+                    (self._local_naive_now() - stamp).total_seconds() / 60, 2
+                )
+            elif (
+                climate not in self._sync_trusted
+                and (now - self._sync_seen_at[climate]).total_seconds() / 60
+                >= SYNC_CLOCK_TRUST_MIN
+            ):
+                self._sync_trusted.add(climate)
+                self.audit.record(
+                    "sync_clock_trusted",
+                    now,
+                    heater=climate,
+                    skew_min=self._sync_skew.get(climate),
+                )
+        if seen_any != self._sync_clock_available:
+            if self._sync_clock_available is not None or seen_any:
+                self.audit.record(
+                    "sync_clock_found" if seen_any else "sync_clock_lost", now
+                )
+            self._sync_clock_available = seen_any
+
+    def _sync_clock_trusted(self, climate: str) -> bool:
+        return climate in self._sync_trusted
+
+    def _sync_age_minutes(self, climate: str) -> float | None:
+        """Minutes since this heater last uploaded, on a trusted clock; else None.
+
+        Primarily how long WE have watched the current stamp stand (immune to
+        the device's clock), floored by the device's own reckoning so a stamp
+        already old at startup reads old; a stamp in the future is ignored.
+        """
+        if climate not in self._sync_trusted:
+            return None
+        stamp = self._sync_stamp.get(climate)
+        seen = self._sync_seen_at.get(climate)
+        if stamp is None or seen is None:
+            return None
+        observed = (self._now() - seen).total_seconds() / 60
+        device = (self._local_naive_now() - stamp).total_seconds() / 60
+        return max(observed, device) if device > 0 else observed
+
+    def _probe_silent_minutes(self, climate: str) -> float | None:
+        """How stale this heater's reading is: minutes since it last UPLOADED
+        when its sync clock is trusted, otherwise minutes since the value last
+        changed. The one primitive every stale test reads."""
+        age = self._sync_age_minutes(climate)
+        return age if age is not None else self._probe_flat_minutes(climate)
+
+    def _hall_sync_age_max(self) -> float | None:
+        """The stalest trusted hall heater's sync age, for the trace."""
+        ages = [
+            age
+            for climate in self._as_list(self.config.get(CONF_HALL_CLIMATES))
+            if (age := self._sync_age_minutes(climate)) is not None
+        ]
+        return max(ages) if ages else None
+
     def _probe_frozen(self, climate: str, minutes: float) -> bool:
-        """Has this heater's reading sat unchanged for at least ``minutes``?"""
-        flat = self._probe_flat_minutes(climate)
-        return flat is not None and flat >= minutes
+        """Has this heater's reading been stale for at least ``minutes`` —
+        silent that long on a trusted sync clock, else unchanged that long?"""
+        stale = self._probe_silent_minutes(climate)
+        return stale is not None and stale >= minutes
 
     async def _reconcile_probe_nudge(self) -> None:
         """Provoke a fresh reading from a booked zone's stale heater (v1.44.0).
@@ -1426,20 +1636,26 @@ class ScoutController:
 
         1. Verify earlier nudges: a heater whose reading has CHANGED since its
            nudge (the freeze tracker's stamp is newer than the nudge) counts as
-           ``refreshed``. One still unchanged after ``PROBE_NUDGE_VERIFY_MIN``
-           is only a ``missed`` nudge if something ELSE moved in the window —
-           the heater's own panel surface or the independent ceiling — because
-           a probe genuinely still at the same 0.5 °C quantum in a static room
-           would read unchanged whether or not the device synced; with nothing
-           moved at all it is ``inconclusive``. Either way ``probe_nudge_result``
-           records it and the tally moves — this is the field test of whether
-           a bare number write makes a Rointe sync at all, judged on
-           refreshed vs missed only.
+           ``refreshed``. With a TRUSTED sync clock (v1.45.0, see
+           ``SYNC_CLOCK_TRUST_MIN``) the verdict is definite: the heater's
+           upload stamp advancing inside the window with the reading unchanged
+           is ``synced`` (the write woke the device; the reading is genuinely
+           still on that quantum), and no advance by ``PROBE_NUDGE_VERIFY_MIN``
+           is a ``missed`` write. Without the clock the only witness HA state
+           offers is the heater's OWN panel surface — it rides in the same
+           cloud record as the probe, so a surface that moved means the device
+           reported (``synced``) — and nothing moved is ``inconclusive`` (a
+           silent device and a static one look the same from here). The first
+           clock-proven ``missed`` NUMBER write escalates every later nudge to
+           the climate command (``probe_nudge_escalated``).
         2. Nudge: for each ATTENDED zone (booked — window or slot — or occupied
            by motion, override or a night arm; automation on), any heater
-           whose reading has sat unchanged for
-           ``PROBE_NUDGE_FLAT_MIN`` and has not been nudged inside the cooldown
-           gets its comfort number re-written with the value it already holds.
+           whose reading has been stale for ``PROBE_NUDGE_FLAT_MIN`` — silent
+           that long on a trusted clock, else unchanged that long — and has
+           not been nudged inside the cooldown is nudged: its comfort number
+           re-written with the value it already holds, or once escalated
+           ``climate.set_temperature`` with the setpoint it already holds (the
+           drive's pushed value for a driven heater, else its live setpoint).
            Blocking, failure-audited and spaced like every other heater write.
         """
         now = self._now()
@@ -1448,37 +1664,46 @@ class ScoutController:
             changed_at = self._probe_changed_at.get(climate)
             elapsed = (now - at).total_seconds() / 60
             surface = self._num_state(self._heater_sensor(climate, "surface"))
-            ceiling = self._ceiling_temp()
+            clock = bool(pending["clock"]) and self._sync_clock_trusted(climate)
+            stamp = self._sync_stamp.get(climate)
+            uploaded = clock and stamp is not None and stamp != pending["sync"]
             if changed_at is not None and changed_at > at:
                 outcome = "refreshed"
+            elif uploaded:
+                outcome = "synced"
             elif elapsed >= PROBE_NUDGE_VERIFY_MIN:
-                moved = (
-                    surface is not None
-                    and pending["surface"] is not None
-                    and surface != pending["surface"]
-                ) or (
-                    ceiling is not None
-                    and pending["ceiling"] is not None
-                    and ceiling != pending["ceiling"]
-                )
-                outcome = "missed" if moved else "inconclusive"
+                if clock:
+                    outcome = "missed"
+                else:
+                    device_reported = (
+                        surface is not None
+                        and pending["surface"] is not None
+                        and surface != pending["surface"]
+                    )
+                    outcome = "synced" if device_reported else "inconclusive"
             else:
                 continue
             self._probe_nudge_pending.pop(climate, None)
             self._probe_nudge_tally[outcome] += 1
+            if outcome == "missed" and pending["method"] == "number" and not self._nudge_escalated:
+                self._nudge_escalated = True
+                self.audit.record("probe_nudge_escalated", now, heater=climate)
             self.audit.record(
                 "probe_nudge_result",
                 now,
                 heater=climate,
                 outcome=outcome,
+                method=pending["method"],
+                clock=clock,
+                uploaded=bool(uploaded),
                 refreshed=outcome == "refreshed",
                 minutes=round(elapsed, 2),
                 before=pending["before"],
                 after=self._zone_probe_readings_all().get(climate),
                 surface_before=pending["surface"],
                 surface_after=surface,
-                ceiling_before=pending["ceiling"],
-                ceiling_after=ceiling,
+                sync_before=self._iso_naive(pending["sync"]),
+                sync_after=self._iso_naive(stamp),
                 flat_min=round(pending["flat"], 1),
             )
 
@@ -1490,45 +1715,65 @@ class ScoutController:
             for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
                 if climate in self._probe_nudge_pending:
                     continue
-                flat = self._probe_flat_minutes(climate)
+                flat = self._probe_silent_minutes(climate)
                 if flat is None or flat < PROBE_NUDGE_FLAT_MIN:
                     continue
                 last = self._probe_nudged_at.get(climate)
                 if last is not None and (now - last).total_seconds() / 60 < PROBE_NUDGE_COOLDOWN_MIN:
                     continue
-                number = self._heater_comfort_number(climate)
-                st = self.hass.states.get(number) if number else None
-                try:
-                    value = float(st.state) if st is not None else None
-                except (TypeError, ValueError):
-                    value = None
+                method = "climate" if self._nudge_escalated else "number"
+                if method == "number":
+                    number = self._heater_comfort_number(climate)
+                    st = self.hass.states.get(number) if number else None
+                    try:
+                        value = float(st.state) if st is not None else None
+                    except (TypeError, ValueError):
+                        value = None
+                else:
+                    value = (
+                        self._drive_pushed.get(climate)
+                        if climate in self._drive_driven
+                        else self._heater_setpoint(climate)
+                    )
                 if value is None:
                     continue
                 self._probe_nudged_at[climate] = now
                 before = self._zone_probe_readings_all().get(climate)
+                trusted = self._sync_clock_trusted(climate)
                 self.audit.record(
                     "probe_nudge",
                     now,
                     zone=zone,
                     heater=climate,
+                    method=method,
+                    clock=trusted,
                     flat_min=round(flat, 1),
                     reading=before,
                     value=value,
                 )
-                ok = await self._async_heater_call(
-                    "number", "set_value", {"entity_id": number, "value": value}, climate=climate
-                )
+                if method == "number":
+                    ok = await self._async_heater_call(
+                        "number", "set_value", {"entity_id": number, "value": value}, climate=climate
+                    )
+                else:
+                    ok = await self._async_set_live_setpoint(climate, value)
                 if ok:
                     self._probe_nudge_tally["nudged"] += 1
                     self._probe_nudge_pending[climate] = {
                         "at": now,
                         "before": before,
                         "flat": flat,
+                        "method": method,
+                        "clock": trusted,
+                        "sync": self._sync_stamp.get(climate),
                         "surface": self._num_state(self._heater_sensor(climate, "surface")),
-                        "ceiling": self._ceiling_temp(),
                     }
                 if HEATER_WRITE_SPACING_S > 0:
                     await asyncio.sleep(HEATER_WRITE_SPACING_S)
+
+    @staticmethod
+    def _iso_naive(stamp: datetime | None) -> str | None:
+        return stamp.isoformat(timespec="seconds") if stamp is not None else None
 
     def _zone_probe_readings_all(self) -> dict[str, float]:
         """Every driven heater's readable room reading, keyed by climate."""
@@ -1537,18 +1782,76 @@ class ScoutController:
             out.update(self._zone_probe_readings(zone))
         return out
 
-    def _iced_on_a_stale_reading(self, zone: str, reason: str) -> bool:
+    def _iced_on_a_stale_reading(self, zone: str, reason: str, target: float) -> bool:
         """Is this zone sitting on ice for ``reason`` ("warm enough") on a coldest
-        reading that has not moved for ``BOOKING_RELIGHT_STALE_MIN``?
+        reading that has been stale for ``BOOKING_RELIGHT_STALE_MIN`` — and could
+        the room have fallen below ``target`` in that time?
 
         A frozen probe at target never falls below it, so the ordinary relight
         never comes; past this window the zone is relit anyway (err warm — the
-        Rointe fires only against its own live probe).
+        Rointe fires only against its own live probe). But only when the fall is
+        PHYSICALLY POSSIBLE (v1.45.1): the stale reading is decayed toward the
+        outdoor over the stale minutes at the zone's learned loss rate (the same
+        Newton model the pre-heat lead uses; an unknown outdoor assumes the cold
+        fallback, erring warm), and the zone is relit only if that lands below
+        the target. Field 2026-09-22 16:30Z: a sal-vation eco booking (target 14)
+        on a hall reading 22.5 stale for 40–130 min was relit — no room loses
+        8 °C in two hours — and then iced and relit four times in five minutes.
         """
         if self.applied[zone] != PRESET_ICE or self._preset_reason.get(zone) != reason:
             return False
-        flat = self._zone_coldest_flat_minutes(zone)
-        return flat is not None and flat >= BOOKING_RELIGHT_STALE_MIN
+        readings = self._zone_probe_readings(zone)
+        if not readings:
+            return False
+        coldest = min(readings, key=readings.get)
+        stale = self._probe_silent_minutes(coldest)
+        if stale is None or stale < BOOKING_RELIGHT_STALE_MIN:
+            return False
+        predicted = predicted_room_temp(
+            readings[coldest],
+            self._outdoor_temp(),
+            stale / 60,
+            self.number(f"{zone}_heatloss_pct") / 100,
+        )
+        if predicted >= target:
+            return False
+        self._stale_relit_at[zone] = self._now()
+        return True
+
+    def _holding_stale_relight(self, zone: str) -> bool:
+        """Is this zone heating on a stale-reading relight whose reading has
+        still not been refreshed?
+
+        Relighting does not change the reading, so re-judging "warm enough" on
+        the same stale value the next tick just ices the zone again, and the
+        stale test then relights it — a flap of a heater write pair every tick
+        (field 2026-09-22 16:30Z, the hall four times in five minutes and the
+        office five times in two). The relight therefore HOLDS until the coldest
+        reading changes, or (on a trusted sync clock) the heater uploads at all.
+        Unbounded on purpose: the relight's premise is that the reading cannot
+        be trusted, and a Rointe fires only against its own live probe, so a
+        room that is really warm does not burn while it holds.
+        """
+        reason = self._preset_reason.get(zone) or ""
+        if self.applied[zone] not in (PRESET_COMFORT, PRESET_ECO) or not reason.endswith("_stale"):
+            return False
+        relit_at = self._stale_relit_at.get(zone)
+        if relit_at is None:
+            return False
+        readings = self._zone_probe_readings(zone)
+        if not readings:
+            return False
+        coldest = min(readings, key=readings.get)
+        return not self._reading_fresh_since(coldest, relit_at)
+
+    def _reading_fresh_since(self, climate: str, at: datetime) -> bool:
+        """Has this heater's reading changed, or (trusted clock) has it uploaded
+        at all, since ``at``?"""
+        changed = self._probe_changed_at.get(climate)
+        if changed is not None and changed > at:
+            return True
+        seen = self._sync_seen_at.get(climate)
+        return self._sync_clock_trusted(climate) and seen is not None and seen > at
 
     def _zone_attended(self, zone: str) -> bool:
         """Booked (window or slot) or occupied (motion, override, night arm):
@@ -1563,7 +1866,8 @@ class ScoutController:
         )
 
     def _zone_coldest_flat_minutes(self, zone: str) -> float | None:
-        """Minutes since the zone's COLDEST heater reading last changed.
+        """How stale the zone's COLDEST heater reading is (silent minutes on a
+        trusted sync clock, else minutes unchanged — ``_probe_silent_minutes``).
 
         The coldest probe is the one that gates "does this booked room want
         heat?", so its staleness is what can hold a relight off. None when the
@@ -1573,7 +1877,7 @@ class ScoutController:
         if not readings:
             return None
         coldest = min(readings, key=readings.get)
-        return self._probe_flat_minutes(coldest)
+        return self._probe_silent_minutes(coldest)
 
     @property
     def hall_temp_spread(self) -> float | None:
@@ -2793,6 +3097,15 @@ class ScoutController:
             eid = self._heater_sensor(climate, key)
             if eid is not None:
                 detail[key] = self._num_state(eid)
+        # The device sync clock (v1.45.0): when the heater last UPLOADED, read
+        # from the Rointe integration's device object — absent when unreachable.
+        if climate in self._sync_stamp:
+            detail["sync_at"] = self._iso_naive(self._sync_stamp[climate])
+            detail["sync_clock"] = "trusted" if self._sync_clock_trusted(climate) else "untrusted"
+            detail["sync_skew_min"] = self._sync_skew.get(climate)
+            age = self._sync_age_minutes(climate)
+            if age is not None:
+                detail["sync_age_min"] = round(age, 1)
         return detail
 
     def diagnostics_data(self) -> dict[str, Any]:
@@ -2926,7 +3239,15 @@ class ScoutController:
                 # field test of whether a bare number write makes a Rointe sync.
                 "probe_nudges": {
                     **self._probe_nudge_tally,
+                    "method": "climate" if self._nudge_escalated else "number",
                     "pending": sorted(self._probe_nudge_pending),
+                },
+                # The device sync clock (v1.45.0): whether the Rointe integration's
+                # in-memory upload stamps are reachable at all, and which heaters'
+                # clocks have proven themselves (stood still >= SYNC_CLOCK_TRUST_MIN).
+                "sync_clock": {
+                    "available": self._sync_clock_available,
+                    "trusted": sorted(self._sync_trusted),
                 },
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
@@ -3483,7 +3804,9 @@ class ScoutController:
             # Rointe fires against its own live probe, so a room really at
             # target does not burn). Field 2026-09-22: four probes flat at 19.0
             # for 20+ min while the hall cooled to 18.0.
-            stale = self._iced_on_a_stale_reading(zone, "booking_warm")
+            stale = self._iced_on_a_stale_reading(
+                zone, "booking_warm", booking_goal
+            ) or self._holding_stale_relight(zone)
             if not stale and not self._room_wants_heat(zone, booking_target):
                 # Already warm enough for what this booking asked — no heat, and
                 # ice lets the cooling fans run if the room is genuinely hot.
@@ -3543,7 +3866,7 @@ class ScoutController:
             if base == PRESET_COMFORT and event_running and not occupied:
                 return self._reason(zone, "booking_quiet", PRESET_ECO)
             if base == PRESET_ECO:
-                return self._reason(zone, "booking_eco", base)
+                return self._reason(zone, "booking_stale" if stale else "booking_eco", base)
             if stale:
                 # Relit on a reading that stopped moving, not on one that fell.
                 return self._reason(
@@ -3570,7 +3893,9 @@ class ScoutController:
             # An occupied zone iced as "warm" relights on the same stale-reading
             # rule as a booking (v1.44.1): a frozen probe at target would
             # otherwise hold people in a cooling room.
-            stale = self._iced_on_a_stale_reading(zone, "occupied_warm")
+            stale = self._iced_on_a_stale_reading(
+                zone, "occupied_warm", self._zone_target(zone)
+            ) or self._holding_stale_relight(zone)
             if stale or self._room_wants_heat(zone, self._zone_target(zone)):
                 # Just cooled: hold the regime so a rest between games can't flip
                 # the hall straight to heating (a manual override still heats).
@@ -4062,6 +4387,9 @@ class ScoutController:
             # Independent probe: the Rointe surface temperature, to compare against
             # the freeze-then-jump `current_temperature` the `floor` is built from.
             hall_surface=self._hall_surface_temp(),
+            # The stalest hall heater's upload age on a trusted sync clock
+            # (v1.45.0) — the overnight sync-gap measurement the findings lacked.
+            hall_sync=self._hall_sync_age_max(),
         )
 
     def _reset_booking_overshoot(self, zone: str) -> None:

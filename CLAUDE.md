@@ -484,18 +484,83 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    Rointe integration), one per heater per 30 min at most. **Whether a bare number
    write provokes a device sync is UNPROVEN**, so it verifies itself: `probe_nudge`
    on the write, `probe_nudge_result` with `refreshed` (the freeze stamp moved
-   within 3 min) or not, and `state.probe_nudges` tallies nudged/refreshed/unchanged.
+   within 3 min) or not, and `state.probe_nudges` tallies the outcomes.
    **Decision rule:** read the tally after a few booked sessions — mostly
-   `refreshed` → keep it (and consider lowering the stale relight to lean on it);
-   mostly `missed` → the number write does not wake the device, remove the step
-   and the honest fix is upstream (`last_sync_datetime_device`). **The first
+   `refreshed` / `synced` → keep it (and consider lowering the stale relight to
+   lean on it); if it never confirms, the honest fix is upstream
+   (`last_sync_datetime_device`) or the in-memory read of it below. **The first
    result (10:02Z, `hall_left` 19.0 → 19.0 in a static hall on eco) showed that
    "unchanged" alone is ambiguous** — a probe genuinely still on the same quantum
-   reads unchanged whether or not the device synced — so since v1.44.2 an unchanged
-   reading is `missed` only when the heater's own panel surface or the independent
-   ceiling moved inside the window, and `inconclusive` when nothing did;
-   `probe_nudge_result` carries `outcome` plus the surface/ceiling before and after,
-   and only refreshed vs missed count. That first result is inconclusive.
+   reads unchanged whether or not the device synced. v1.44.2 tried to break the
+   tie with two witnesses (the heater's own panel surface or the independent
+   ceiling moving inside the window = `missed`), **and the first afternoon on it
+   showed that verdict was inverted and the ceiling is no witness at all (v1.44.3,
+   12:47Z export).** Three `missed` at 10:54Z on a 0.1 °C solar ceiling step
+   (23.0 → 23.1) with every panel sitting still — while the hall probes were
+   genuinely static (they climbed 18.5 → 20.0 on their own over the next two
+   hours, on ice, no writes, so the heaters DO report unprompted). The panel
+   surface rides in the same cloud record as the probe, so a surface that moved
+   proves the device *reported* and the unchanged reading is genuinely still on
+   that quantum — that is evidence FOR the nudge (`synced`), not against it; and
+   the sun moving the roof says nothing about whether this device spoke. With
+   neither field moved HA state cannot tell a silent device from a static one
+   (`inconclusive`). So the tally (nudged / refreshed / synced / inconclusive) can
+   confirm the nudge but never refute it; `probe_nudge_result` carries `outcome` +
+   the surface before/after. **Refuting it needs the device's own sync clock.**
+   The Nexa payload carries `last_sync_datetime_device`; the Rointe SDK parses it
+   into every device object each 15-s poll (`rointesdk/device.py`,
+   `update_data`) but nothing publishes it — no sensor, attribute, service or
+   diagnostics — so it is invisible in HA state. It IS reachable read-only in
+   memory (`hass.data["rointe"][entry_id].device_manager.rointe_devices[<id>]`,
+   keyed by the Rointe id in the HA device's registry identifiers; the dict
+   survives the coordinator-data emptying bug). Trap: when the key is absent the
+   SDK substitutes `datetime.now()`, so a sync time must not gate anything until
+   it has been seen standing still at least once. **BUILT, all at once, v1.45.0
+   (owner: "build it all at once"; `SYNC_CLOCK_TRUST_MIN` = 2).** Four pieces,
+   all in `coordinator.py` beside the freeze tracker: (1) *The read* —
+   `_heater_sync_stamp` walks climate → entity registry → HA device → the
+   `("rointe", <id>)` identifier → `hass.data["rointe"][entry].device_manager
+   .rointe_devices[<id>].last_sync_datetime_device`, every link guarded (any
+   miss → None, never a raise); `sync_clock_found` / `sync_clock_lost` audit the
+   availability edges so a Rointe upgrade that renames something is visible, not
+   silent. (2) *Trust* — `_track_sync_clock` notes when each stamp CHANGES on our
+   clock and latches a heater's clock as trusted (`sync_clock_trusted`, with the
+   device-vs-our `skew_min` measured at that upload) only once its stamp has stood
+   still ≥ 2 min; the SDK's now()-every-poll fallback never stands still, so it
+   can never gate anything. Age (`_sync_age_minutes`) is primarily how long WE
+   have watched the stamp stand, floored by the device's own reckoning (a stamp
+   old at startup reads old; a stamp in the future is ignored). (3) *One stale
+   primitive* — `_probe_silent_minutes` returns the sync age on a trusted clock,
+   else the flat minutes, and every stale test reads it: the 120-min frozen-probe
+   gate (`_probe_frozen`), the 20-min stale relight (`_zone_coldest_flat_minutes`)
+   and the 10-min nudge trigger. A flat value the heater keeps uploading is
+   static, not stale — no relight, no nudge; a silent heater still gets both.
+   (4) *The nudge verdict and the escalation* — with a trusted clock the stamp
+   advancing inside the 3-min window is `synced` (the write woke the device;
+   `refreshed` if the reading moved too), no advance is `missed`; the first
+   clock-proven `missed` NUMBER write flips `_nudge_escalated`
+   (`probe_nudge_escalated`) and every later nudge sends `climate.set_temperature`
+   with the setpoint the heater already holds — the drive's pushed value for a
+   driven heater, else its live setpoint (never the live attribute for a driven
+   one: it can lag the push and would undo a stair) — the command the 08:46Z
+   restart proved does wake them. Nothing heavier exists; a missed climate nudge
+   stays audited and is retried after the cooldown. Without a clock the
+   surface-witness classification of v1.44.3 stands. `probe_nudge` /
+   `probe_nudge_result` carry `method`, `clock`, `uploaded`, `sync_before/after`;
+   the tally is nudged / refreshed / synced / missed / inconclusive plus `method`;
+   per-heater diagnostics carry `sync_at` / `sync_clock` / `sync_age_min` /
+   `sync_skew_min`; `state.sync_clock` says whether the read works at all and which
+   clocks are trusted; the trace carries `hall_sync` (the stalest trusted hall
+   heater's age — the overnight sync-gap measurement the findings lacked).
+   **First-run watch:** `sync_clock_found` then `sync_clock_trusted` for each
+   heater within minutes of the deploy (`skew_min` near 0 — a large steady skew
+   means the device clock is off and the age is being carried by our watch alone);
+   `hall_sync` in the trace should show the real overnight gaps; the first booked
+   session's `probe_nudge_result` outcomes are now definite — a run of `missed`
+   number nudges followed by `probe_nudge_escalated` and `synced` climate nudges
+   is the expected shape if the number write is inert; all-`missed` on BOTH
+   methods means no write wakes an idle heater and the relight is the only lever.
+   Tests in `tests/test_sync_clock.py`.
    **Both cover occupancy too (v1.44.1, owner: "does it do the same for motion
    only?").** Bare occupancy heats and ices (`occupied_warm`) on the same coldest
    probe as a booking, so a frozen reading at target holds people in a cooling
@@ -503,6 +568,37 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    past the same 20 min (`occupied_stale`, the cooling-regime commit still runs
    after it), and the nudge runs for any ATTENDED zone (`_zone_attended`: booked,
    or motion / override / night arm), not only a booked one.
+   **The relight FLAPPED on its first warm-room evening, and it relit a room that
+   could not possibly be cold (2026-09-22 16:30Z, 1.44.2 still deployed; fixed
+   v1.45.1).** A sal-vation eco booking (target 14) opened on a hall reading 22.5
+   whose probes had sat 40–130 min. The stale rule relit it (`booking_eco`), the
+   next tick re-judged the same 22.5 as warm and iced it (`booking_warm`), the
+   tick after relit it again — four ice↔eco cycles in five minutes, then the
+   office did the same five times in two minutes (`occupied_stale` ↔
+   `occupied_warm`, reading 22.0 against comfort 21); and again 08:56–09:00Z the
+   next morning (`preheat_stale` twice on a 20.5 reading). Each cycle is a heater
+   write pair (each a full 8-heater refresh inside the Rointe integration), and
+   the momentary eco also latched `_booking_over_heated`, so `booking_end` logged
+   a meaningless `peak_over` 9.12 for a room never driven. Two flaws, two fixes:
+   (a) *the relight ignored physics* — a reading 8 °C above target cannot have
+   fallen below it in two hours, so `_iced_on_a_stale_reading` now decays the
+   stale reading toward the outdoor over the stale minutes at the zone's learned
+   loss rate (`predicted_room_temp`, the pre-heat's own Newton model; an unknown
+   outdoor assumes the cold fallback, erring warm) and relights only if that
+   lands below the rung's target — the 09-22 morning case (19.0 stale 20 min,
+   outdoor 12) still relights, 22.5-against-14 and 22-against-21 never do; (b)
+   *relighting does not change the reading*, so re-judging warm-enough on the same
+   stale value is a guaranteed flap whenever the reading sits above the release
+   band — `_holding_stale_relight` now holds a `*_stale` relight until the coldest
+   reading actually changes, or (on a trusted sync clock, v1.45.0) the heater
+   uploads at all (`_reading_fresh_since`); an eco booking's relight is now
+   reasoned `booking_stale` so the hold covers it too. Unbounded on purpose: the
+   relight's premise is that the reading cannot be trusted, and a Rointe fires only
+   against its own live probe, so a room that is really warm does not burn while it
+   holds. The stale test itself reads `_probe_silent_minutes`, so on a trusted
+   clock a static-but-uploading probe is never relit in the first place. Tests in
+   `tests/test_zone_a.py` (the flap, the physical bound, the occupancy hold) and
+   `tests/test_sync_clock.py` (a same-value upload releases the hold).
 3. **Warm-up rates (seeded 60 min/°C, fail-safe).** Expect `warmup_sample`
    events to pull the hall (fans-assisted and base) and office rates toward
    truth over the first booked weeks; `booking_start.shortfall` ≈ 0 is the

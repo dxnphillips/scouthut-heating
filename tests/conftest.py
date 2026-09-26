@@ -131,6 +131,23 @@ def _install_stubs() -> None:
     dr = _mod("homeassistant.helpers.device_registry")
     dr.DeviceInfo = lambda **k: k
 
+    # Mutable device-registry stub (the Rointe sync-clock lookup walks the
+    # heater's HA device for its ("rointe", <id>) identifier).
+    class _DevEntry:
+        def __init__(self, identifiers):
+            self.identifiers = identifiers
+
+    class _DevReg:
+        def __init__(self):
+            self.by_id = {}
+
+        def async_get(self, device_id):
+            return self.by_id.get(device_id)
+
+    dr._REG = _DevReg()
+    dr._DevEntry = _DevEntry
+    dr.async_get = lambda hass: dr._REG
+
     # Mutable entity-registry stub used by auto-discovery tests.
     erm = _mod("homeassistant.helpers.entity_registry")
 
@@ -193,6 +210,7 @@ def _install_stubs() -> None:
     # Aware, like real HA (naive would break event-start arithmetic).
     dtm.now = lambda: datetime.now(timezone.utc)
     dtm.DEFAULT_TIME_ZONE = timezone.utc
+    dtm.as_local = lambda d: d.astimezone(timezone.utc)
 
     storage = _mod("homeassistant.helpers.storage")
 
@@ -254,8 +272,10 @@ import pytest  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_entity_registry():
     """Keep the stubbed entity registry isolated between tests."""
+    from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
 
     er._REG.by_id = {}
     er._REG.by_device = {}
+    dr._REG.by_id = {}
     yield
