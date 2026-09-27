@@ -225,7 +225,14 @@ ROOM_READING_GRACE_MIN = 2.0
 # target does not burn, and the drive's freeze-guard cannot wind up on a reading
 # that does not move. The cooling-regime commit still applies after this, so a
 # genuinely warm hall being breezed is not relit into the fans.
-BOOKING_RELIGHT_STALE_MIN = 20.0
+# Sized above the idle heartbeat (v1.45.3): on a trusted sync clock the stale
+# test judges SILENCE, and the first night on the clock (2026-09-26/27, trace
+# `hall_sync`) showed an idle heater uploads about every 30 min whether or not
+# its reading changed — ages cycled 8–29 min through readings flat for an hour,
+# with one 60-min gap. A 20-min line sat inside that ordinary cadence, so it
+# would have relit a merely-quiet heater; 35 clears the heartbeat and only a
+# heater that has genuinely fallen silent trips it.
+BOOKING_RELIGHT_STALE_MIN = 35.0
 # ...and, earlier than that, try to get a FRESH reading rather than argue with a
 # stale one (v1.44.0). The Rointe cloud only carries what the heater last
 # synced, and an idle heater syncs rarely (the week's trace has the hall probes
@@ -256,8 +263,10 @@ BOOKING_RELIGHT_STALE_MIN = 20.0
 # reported. So the tally can confirm the nudge (refreshed + synced) but never
 # refute it; refuting it needs the device's own sync clock
 # (`last_sync_datetime_device`), which the Rointe integration parses but does
-# not expose.
-PROBE_NUDGE_FLAT_MIN = 10.0      # reading unchanged this long in a booked zone -> nudge
+# not expose. The trigger sits above the measured ~30-min idle heartbeat for the
+# same reason as the relight above (v1.45.3): a heater that uploads every half
+# hour is not stale at ten minutes, and each nudge is a full 8-heater refresh.
+PROBE_NUDGE_FLAT_MIN = 35.0      # heater silent/flat this long in an attended zone -> nudge
 PROBE_NUDGE_VERIFY_MIN = 3.0     # a change within this long after the nudge counts as caused
 PROBE_NUDGE_COOLDOWN_MIN = 30.0  # at most one nudge per heater per this long
 
@@ -282,7 +291,7 @@ PROBE_NUDGE_COOLDOWN_MIN = 30.0  # at most one nudge per heater per this long
 # so staleness is judged first on OUR observation of the stamp changing and only
 # floored by the device's own age (a stamp in the future is ignored, `skew` is
 # recorded per heater for the export). With a trusted clock every stale test —
-# the 120-min frozen-probe gate, the 20-min stale relight and the nudge trigger —
+# the 120-min frozen-probe gate, the 35-min stale relight and the nudge trigger —
 # judges SILENCE (minutes since the heater last uploaded) instead of a flat
 # value: a genuinely static room is no longer relit or nudged, a silent heater
 # still is. The nudge verdict becomes definite: the stamp advancing inside the

@@ -264,6 +264,22 @@ def test_a_static_but_uploading_heater_is_not_nudged():
     assert _calls(hass, "number", "set_value", NUM_HF)  # no clock: flat rule
 
 
+def test_the_stale_lines_sit_above_the_measured_idle_heartbeat():
+    # 2026-09-26/27, the first night on the clock: an idle Rointe uploads about
+    # every 30 min whether or not its reading changed (`hall_sync` cycled 8–29
+    # min through hour-long flat readings). A heater 30 min into that ordinary
+    # gap is quiet, not stale — neither relit nor nudged (v1.45.3; the old 20/10
+    # lines sat inside the cadence). Past the line it is both.
+    assert BOOKING_RELIGHT_STALE_MIN > 30 and PROBE_NUDGE_FLAT_MIN > 30
+    for silent, expected in ((30, False), (max(BOOKING_RELIGHT_STALE_MIN, PROBE_NUDGE_FLAT_MIN) + 1, True)):
+        ctrl, hass, devices = _trusted_hall(minutes_old=silent)
+        ctrl.applied[ZA] = PRESET_ICE
+        ctrl._preset_reason[ZA] = "booking_warm"
+        assert ctrl._iced_on_a_stale_reading(ZA, "booking_warm", 19.0) is expected
+        run(ctrl._reconcile_probe_nudge())
+        assert bool(_calls(hass, "number", "set_value", NUM_HB)) is expected
+
+
 def test_a_silent_heater_is_nudged_and_the_event_says_the_clock_judged_it():
     ctrl, hass, devices = _trusted_hall(minutes_old=PROBE_NUDGE_FLAT_MIN + 1)
     run(ctrl._reconcile_probe_nudge())

@@ -532,8 +532,8 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    old at startup reads old; a stamp in the future is ignored). (3) *One stale
    primitive* — `_probe_silent_minutes` returns the sync age on a trusted clock,
    else the flat minutes, and every stale test reads it: the 120-min frozen-probe
-   gate (`_probe_frozen`), the 20-min stale relight (`_zone_coldest_flat_minutes`)
-   and the 10-min nudge trigger. A flat value the heater keeps uploading is
+   gate (`_probe_frozen`), the stale relight (`_zone_coldest_flat_minutes`)
+   and the nudge trigger. A flat value the heater keeps uploading is
    static, not stale — no relight, no nudge; a silent heater still gets both.
    (4) *The nudge verdict and the escalation* — with a trusted clock the stamp
    advancing inside the 3-min window is `synced` (the write woke the device;
@@ -559,6 +559,23 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    first sighting after startup carries however old the stamp already was, and
    the one upload actually seen live read 0.41 min — so since v1.45.2 the skew is
    recorded only on an upload observed to happen (null until then).
+   **The first night on the clock measured the idle heartbeat, and both silence
+   thresholds moved above it (v1.45.3, 2026-09-27 07:18Z export).** `hall_sync`
+   cycled 8–29 min all night with one 60-min gap (04:14–04:29Z, 44 then 59) while
+   the hall readings sat flat for an hour at a time — so an idle Rointe uploads
+   about **every 30 min whether or not its reading changed** (the overnight
+   sync-gap question the findings left open, answered), and live skews read
+   0.2–0.8 min on every heater. On a trusted clock the stale tests judge silence,
+   so the 20-min relight and the 10-min nudge trigger — both sized to the flat
+   VALUE, before the clock existed — sat inside that ordinary cadence: a merely
+   quiet heater would have been relit or nudged for nothing (each nudge is a full
+   8-heater refresh). `BOOKING_RELIGHT_STALE_MIN` and `PROBE_NUDGE_FLAT_MIN` are
+   both **35** now, just clear of the heartbeat, so only a heater that has
+   genuinely fallen silent trips either. The physical bound still relights the
+   09-22 case (19.0 stale 35 min at outdoor 12 decays below 19 at the hall's
+   ~11 %/h). The 60-min gap is the one to watch: if a booked morning shows
+   `preheat_stale` on a heater whose next upload lands a minute later, the
+   heartbeat is looser than one night suggested and the line goes to ~65.
    **First-run watch:** `sync_clock_found` then `sync_clock_trusted` for each
    heater within minutes of the deploy (`skew_min` near 0 once a live upload has
    been seen — a large steady skew means the device clock is off and the age is
@@ -573,7 +590,7 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    only?").** Bare occupancy heats and ices (`occupied_warm`) on the same coldest
    probe as a booking, so a frozen reading at target holds people in a cooling
    room just the same: `_iced_on_a_stale_reading` relights an `occupied_warm` ice
-   past the same 20 min (`occupied_stale`, the cooling-regime commit still runs
+   past the same stale line (`occupied_stale`, the cooling-regime commit still runs
    after it), and the nudge runs for any ATTENDED zone (`_zone_attended`: booked,
    or motion / override / night arm), not only a booked one.
    **The relight FLAPPED on its first warm-room evening, and it relit a room that

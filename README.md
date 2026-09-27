@@ -464,10 +464,11 @@ restarts) of everything it decides and learns:
   transformer tap the fans were last seen at, since the master is off while the
   pre-heat is idle and the live power reads zero).
 - **`probe_nudge` / `probe_nudge_result`** — while a zone is booked or occupied, a heater
-  whose reading has sat unchanged for ten minutes has its comfort number
+  whose reading has been stale for 35 minutes (silent, where its sync clock is
+  readable — an idle heater uploads about every half hour, so the line sits
+  just above that heartbeat — otherwise unchanged) has its comfort number
   re-written with the value it already holds, to make the device sync a fresh
-  reading (the Rointe cloud only carries what the heater last synced, and an
-  idle heater can sit silent for hours). A number write alone never moves the
+  reading (the Rointe cloud only carries what the heater last synced). A number write alone never moves the
   live setpoint, so it cannot heat or cool. Each nudge is then verified: did
   the reading change within three minutes (`refreshed`)? If not, did the
   heater's own panel surface move in that window — it comes from the same
