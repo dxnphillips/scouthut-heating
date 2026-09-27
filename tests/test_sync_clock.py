@@ -15,9 +15,6 @@ from types import SimpleNamespace
 from custom_components.scout_hut_heating.coordinator import (
     BOOKING_RELIGHT_STALE_MIN,
     PRESET_ICE,
-    PROBE_NUDGE_COOLDOWN_MIN,
-    PROBE_NUDGE_FLAT_MIN,
-    PROBE_NUDGE_VERIFY_MIN,
     SYNC_CLOCK_TRUST_MIN,
 )
 from scout_testkit import (
@@ -251,111 +248,33 @@ def test_a_held_stale_relight_releases_on_a_same_value_upload():
     assert ctrl._preset_reason[ZA] == "preheat"  # released to the ordinary gate
 
 
-# --- the nudge on the clock --------------------------------------------------
+# --- the heartbeat --------------------------------------------------------------
 
 
-def test_a_static_but_uploading_heater_is_not_nudged():
-    ctrl, hass, devices = _trusted_hall()
-    advance(ctrl, PROBE_NUDGE_FLAT_MIN + 1)
-    devices[HB].last_sync_datetime_device = naive_now(ctrl) - timedelta(minutes=1)
-    ctrl._track_probe_changes()
-    run(ctrl._reconcile_probe_nudge())
-    assert not _calls(hass, "number", "set_value", NUM_HB)
-    assert _calls(hass, "number", "set_value", NUM_HF)  # no clock: flat rule
-
-
-def test_the_stale_lines_sit_above_the_measured_idle_heartbeat():
+def test_the_stale_relight_line_sits_above_the_measured_idle_heartbeat():
     # 2026-09-26/27, the first night on the clock: an idle Rointe uploads about
     # every 30 min whether or not its reading changed (`hall_sync` cycled 8–29
     # min through hour-long flat readings). A heater 30 min into that ordinary
-    # gap is quiet, not stale — neither relit nor nudged (v1.45.3; the old 20/10
-    # lines sat inside the cadence). Past the line it is both.
-    assert BOOKING_RELIGHT_STALE_MIN > 30 and PROBE_NUDGE_FLAT_MIN > 30
-    for silent, expected in ((30, False), (max(BOOKING_RELIGHT_STALE_MIN, PROBE_NUDGE_FLAT_MIN) + 1, True)):
+    # gap is quiet, not stale — not relit (v1.45.3; the old 20-min line sat
+    # inside the cadence). Past the line it is.
+    assert BOOKING_RELIGHT_STALE_MIN > 30
+    for silent, expected in ((30, False), (BOOKING_RELIGHT_STALE_MIN + 1, True)):
         ctrl, hass, devices = _trusted_hall(minutes_old=silent)
         ctrl.applied[ZA] = PRESET_ICE
         ctrl._preset_reason[ZA] = "booking_warm"
         assert ctrl._iced_on_a_stale_reading(ZA, "booking_warm", 19.0) is expected
-        run(ctrl._reconcile_probe_nudge())
-        assert bool(_calls(hass, "number", "set_value", NUM_HB)) is expected
 
 
-def test_a_silent_heater_is_nudged_and_the_event_says_the_clock_judged_it():
-    ctrl, hass, devices = _trusted_hall(minutes_old=PROBE_NUDGE_FLAT_MIN + 1)
-    run(ctrl._reconcile_probe_nudge())
-    assert _calls(hass, "number", "set_value", NUM_HB)
-    evt = next(e for e in _events(ctrl, "probe_nudge") if e["heater"] == HB)
-    assert evt["clock"] is True and evt["method"] == "number"
-    assert evt["flat_min"] >= PROBE_NUDGE_FLAT_MIN
-
-
-def test_an_upload_after_the_nudge_with_the_reading_unchanged_is_synced():
-    ctrl, hass, devices = _trusted_hall(minutes_old=PROBE_NUDGE_FLAT_MIN + 1)
-    run(ctrl._reconcile_probe_nudge())
-    advance(ctrl, 1)
-    devices[HB].last_sync_datetime_device = naive_now(ctrl)  # the device answered
-    ctrl._track_probe_changes()  # reading still 19.0
-    run(ctrl._reconcile_probe_nudge())
-    back = next(e for e in _events(ctrl, "probe_nudge_result") if e["heater"] == HB)
-    assert back["outcome"] == "synced"
-    assert back["uploaded"] is True and back["clock"] is True
-    assert back["sync_before"] != back["sync_after"]
-    assert ctrl._probe_nudge_tally["synced"] == 1
-    assert not ctrl._nudge_escalated
-
-
-def test_no_upload_by_the_verify_window_on_a_trusted_clock_is_missed_and_escalates():
-    ctrl, hass, devices = _trusted_hall(minutes_old=PROBE_NUDGE_FLAT_MIN + 1)
-    advance(ctrl, PROBE_NUDGE_FLAT_MIN)  # hall_front (no clock) goes flat too
-    run(ctrl._reconcile_probe_nudge())
-    advance(ctrl, PROBE_NUDGE_VERIFY_MIN + 0.5)
-    ctrl._track_probe_changes()  # stamp untouched, reading untouched
-    run(ctrl._reconcile_probe_nudge())
-    results = {e["heater"]: e for e in _events(ctrl, "probe_nudge_result")}
-    assert results[HB]["outcome"] == "missed"
-    assert results[HF]["outcome"] == "inconclusive"  # no clock on hall_front
-    assert ctrl._probe_nudge_tally["missed"] == 1
-    assert ctrl._nudge_escalated
-    (esc,) = _events(ctrl, "probe_nudge_escalated")
-    assert esc["heater"] == HB
-    assert ctrl.diagnostics_data()["state"]["probe_nudges"]["method"] == "climate"
-
-
-def test_an_escalated_nudge_re_sends_the_setpoint_the_heater_already_holds():
-    ctrl, hass, devices = _trusted_hall(minutes_old=PROBE_NUDGE_FLAT_MIN + 1)
-    ctrl._nudge_escalated = True
-    # hall_back is being driven: the drive's own pushed value is re-sent, never
-    # the (possibly lagging) live attribute. hall_front idles at its live 19.0.
-    ctrl._drive_driven.add(HB)
-    ctrl._drive_pushed[HB] = 20.0
-    _probes(hass, 19.0, 19.0, setpoint=19.5)
-    ctrl._track_probe_changes()
-    advance(ctrl, PROBE_NUDGE_FLAT_MIN)  # hall_front (no clock) goes flat too
-    run(ctrl._reconcile_probe_nudge())
-    assert not service_calls(hass, "number", "set_value")
-    (back,) = _calls(hass, "climate", "set_temperature", HB)
-    assert back["data"]["temperature"] == 20.0
-    (front,) = _calls(hass, "climate", "set_temperature", HF)
-    assert front["data"]["temperature"] == 19.5
-    evt = next(e for e in _events(ctrl, "probe_nudge") if e["heater"] == HB)
-    assert evt["method"] == "climate" and evt["value"] == 20.0
-    assert ctrl._probe_nudge_pending[HB]["method"] == "climate"
-
-
-def test_a_missed_climate_nudge_stays_a_miss_with_nothing_heavier_to_try():
-    ctrl, hass, devices = _trusted_hall(minutes_old=PROBE_NUDGE_FLAT_MIN + 1)
-    ctrl._nudge_escalated = True
-    run(ctrl._reconcile_probe_nudge())
-    advance(ctrl, PROBE_NUDGE_VERIFY_MIN + 0.5)
-    ctrl._track_probe_changes()
-    run(ctrl._reconcile_probe_nudge())
-    back = next(e for e in _events(ctrl, "probe_nudge_result") if e["heater"] == HB)
-    assert back["outcome"] == "missed" and back["method"] == "climate"
-    assert len(_events(ctrl, "probe_nudge_escalated")) == 0
-    # And it is retried after the cooldown, still by the climate command.
-    advance(ctrl, PROBE_NUDGE_COOLDOWN_MIN)
-    run(ctrl._reconcile_probe_nudge())
-    assert len(_calls(hass, "climate", "set_temperature", HB)) == 2
+def test_nothing_writes_to_a_silent_heater_just_to_wake_it():
+    # v1.46.0: the probe nudge is gone. 102 no-op writes on 2026-09-27 showed a
+    # Rointe uploads on its own heartbeat, on a reading change and on a real
+    # setpoint change — never on a write of the value it already holds.
+    ctrl, hass, devices = _trusted_hall(minutes_old=90)
+    run(ctrl.async_reconcile())
+    assert not hasattr(ctrl, "_reconcile_probe_nudge")
+    assert not [e for e in ctrl.audit.to_list() if e.get("event", "").startswith("probe_nudge")]
+    assert "probe_nudges" not in ctrl.diagnostics_data()["state"]
+    assert ctrl.diagnostics_data()["state"]["reconcile_failing"] == []
 
 
 # --- the export --------------------------------------------------------------

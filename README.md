@@ -463,24 +463,17 @@ restarts) of everything it decides and learns:
   the lead — the optimistic fan-assisted one or the base) and `fan_w_last` (the
   transformer tap the fans were last seen at, since the master is off while the
   pre-heat is idle and the live power reads zero).
-- **`probe_nudge` / `probe_nudge_result`** — while a zone is booked or occupied, a heater
-  whose reading has been stale for 35 minutes (silent, where its sync clock is
-  readable — an idle heater uploads about every half hour, so the line sits
-  just above that heartbeat — otherwise unchanged) has its comfort number
-  re-written with the value it already holds, to make the device sync a fresh
-  reading (the Rointe cloud only carries what the heater last synced). A number write alone never moves the
-  live setpoint, so it cannot heat or cool. Each nudge is then verified: did
-  the reading change within three minutes (`refreshed`)? If not, did the
-  heater's own panel surface move in that window — it comes from the same
-  cloud record as the reading, so the device demonstrably reported and the
-  reading is genuinely unchanged (`synced`) — or did nothing of the device's
-  move (`inconclusive`, since a silent device and a static one look the same
-  from here)? The tally lives in the diagnostics under `state.probe_nudges`.
-  Where the heater's own sync clock is readable (below) the verdict is
-  definite instead: an upload inside the window is `synced`, none is
-  `missed`, and the first proven-missed number write escalates every later
-  nudge to a climate command (`probe_nudge_escalated`) — the same no-op
-  value, sent the way a restart sends it, which is known to wake the heaters.
+- **Nothing "nudges" a silent heater any more (v1.46.0).** From v1.44.0 to
+  v1.45.3 a stale heater in an attended zone was sent a no-op write (its own
+  comfort number, then its own setpoint) to make it upload a fresh reading,
+  each one verified against the sync clock below. The verdict from 102 of them
+  on 2026-09-27: every upload that followed one was the heater's own 30-minute
+  heartbeat or a real setpoint change made seconds earlier, and every clean
+  trial by either method was missed. A Rointe uploads on its heartbeat, when
+  its reading changes, and within seconds of a setpoint change — never on a
+  write of a value it already holds. The stale relight is a setpoint change,
+  so it refreshes the reading by itself; the nudge only cost a full
+  eight-heater refresh per send, so it is gone.
 - **`sync_clock_found` / `sync_clock_lost` / `sync_clock_trusted`** — the
   Rointe cloud only carries what a heater last uploaded, and the Rointe
   integration's poll keeps Home Assistant current with the cloud, not the
@@ -492,7 +485,7 @@ restarts) of everything it decides and learns:
   shape (`sync_clock_lost` says so). A heater's clock is trusted only once its
   stamp has been seen standing still, because a heater with no sync data
   reports the current time on every poll. On a trusted clock the stale tests
-  (frozen probe, stale relight, nudge) judge silence, not a flat value. Each
+  (frozen probe, stale relight) judge silence, not a flat value. Each
   heater's `sync_at` / `sync_clock` / `sync_age_min` are in the export and the
   trace carries `hall_sync`, the stalest hall heater's upload age.
 - **`booking_start` / `booking_end`** — the ground truth: the coldest reading

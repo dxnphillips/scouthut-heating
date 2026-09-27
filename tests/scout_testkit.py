@@ -341,10 +341,6 @@ def advance(ctrl, minutes):
             ctrl._cooloff_start[zone] = tuple(aged)
     for climate, ts in list(ctrl._probe_changed_at.items()):
         ctrl._probe_changed_at[climate] = ts - delta
-    for climate, ts in list(ctrl._probe_nudged_at.items()):
-        ctrl._probe_nudged_at[climate] = ts - delta
-    for pending in ctrl._probe_nudge_pending.values():
-        pending["at"] = pending["at"] - delta
     for climate, ts in list(ctrl._sync_seen_at.items()):
         ctrl._sync_seen_at[climate] = ts - delta
     for zone, ts in list(ctrl._stale_relit_at.items()):
