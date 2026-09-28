@@ -532,8 +532,8 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    old at startup reads old; a stamp in the future is ignored). (3) *One stale
    primitive* — `_probe_silent_minutes` returns the sync age on a trusted clock,
    else the flat minutes, and every stale test reads it: the 120-min frozen-probe
-   gate (`_probe_frozen`), the 20-min stale relight (`_zone_coldest_flat_minutes`)
-   and the 10-min nudge trigger. A flat value the heater keeps uploading is
+   gate (`_probe_frozen`), the stale relight (`_zone_coldest_flat_minutes`)
+   and the nudge trigger. A flat value the heater keeps uploading is
    static, not stale — no relight, no nudge; a silent heater still gets both.
    (4) *The nudge verdict and the escalation* — with a trusted clock the stamp
    advancing inside the 3-min window is `synced` (the write woke the device;
@@ -552,9 +552,71 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    `sync_skew_min`; `state.sync_clock` says whether the read works at all and which
    clocks are trusted; the trace carries `hall_sync` (the stalest trusted hall
    heater's age — the overnight sync-gap measurement the findings lacked).
-   **First-run watch:** `sync_clock_found` then `sync_clock_trusted` for each
-   heater within minutes of the deploy (`skew_min` near 0 — a large steady skew
-   means the device clock is off and the age is being carried by our watch alone);
+   **First run (2026-09-26 08:20Z deploy): `sync_clock_found` at the first tick,
+   all eight heaters `sync_clock_trusted` two minutes later, the floor reading
+   (lost to the 120-min flat gate at 08:05Z) back within the tick, idle upload
+   ages 4–29 min.** The eight `skew_min` values of 4–20 min were NOT skews: the
+   first sighting after startup carries however old the stamp already was, and
+   the one upload actually seen live read 0.41 min — so since v1.45.2 the skew is
+   recorded only on an upload observed to happen (null until then).
+   **The first night on the clock measured the idle heartbeat, and both silence
+   thresholds moved above it (v1.45.3, 2026-09-27 07:18Z export).** `hall_sync`
+   cycled 8–29 min all night with one 60-min gap (04:14–04:29Z, 44 then 59) while
+   the hall readings sat flat for an hour at a time — so an idle Rointe uploads
+   about **every 30 min whether or not its reading changed** (the overnight
+   sync-gap question the findings left open, answered), and live skews read
+   0.2–0.8 min on every heater. On a trusted clock the stale tests judge silence,
+   so the 20-min relight and the 10-min nudge trigger — both sized to the flat
+   VALUE, before the clock existed — sat inside that ordinary cadence: a merely
+   quiet heater would have been relit or nudged for nothing (each nudge is a full
+   8-heater refresh). `BOOKING_RELIGHT_STALE_MIN` and `PROBE_NUDGE_FLAT_MIN` are
+   both **35** now, just clear of the heartbeat, so only a heater that has
+   genuinely fallen silent trips either. The physical bound still relights the
+   09-22 case (19.0 stale 35 min at outdoor 12 decays below 19 at the hall's
+   ~11 %/h). The 60-min gap is the one to watch: if a booked morning shows
+   `preheat_stale` on a heater whose next upload lands a minute later, the
+   heartbeat is looser than one night suggested and the line goes to ~65.
+   **The nudge answered its own question and was RETIRED (v1.46.0, 2026-09-27
+   17:14Z export — the first attended afternoon on the clock, 102 nudges, 1.45.1
+   still deployed).** The tally read nudged 38 / refreshed 1 / synced 19 / missed
+   18 with `probe_nudge_escalated` at 13:48Z, which looks like "the number write
+   is inert, the climate write half works". Attributing every `synced` upload
+   against the heater's own stamp history says otherwise: **each heater uploads
+   on an exact 30-min grid of its own** (hall_back :05:34/:35:34 to the second,
+   hall_right :04:24/:34:24, office :09:58/:39:58, hall_left :09:18/:39:18), on a
+   **change in its reading** (hall_right 15:51Z, 19.5 → 19.0), and **within 2–150 s
+   of a real setpoint CHANGE we make** (ice→comfort 2–10 s, comfort→ice 2 s, a
+   coast-ease push 32 s) — and every one of the 20 `synced`/`refreshed` verdicts
+   sits on one of those three (seven on the grid, ten inside ~2 min of a preset
+   or drive write, one on a reading change, two ambiguous), while every clean trial
+   of either method with no coincident write was `missed` (18, hall_front six
+   times running). So no write of a value the heater already holds wakes it — by
+   number or by climate — and the 08:46Z restart on 09-22 woke the probes because
+   its re-apply CHANGED setpoints, not because it was a command. The relight is
+   itself a setpoint change, so it refreshes the reading by itself within seconds
+   (and the hold then releases on that upload); the nudge only ever cost one
+   8-heater refresh per send and, at 205 of the 500 bounded events, had squeezed
+   the audit span to 2.3 days. Removed whole: the step, its three constants, the
+   tally, the escalation and `_zone_attended`; the sync clock, `_probe_silent_minutes`,
+   the relight and its hold are unchanged. **The heartbeat is now characterised:**
+   a fixed per-heater 30-min anchor (re-seeded after some event uploads), so the
+   35-min lines stand and a silence past ~31 min is a genuinely missed beat.
+   **Same export, noted, not changed:** (a) the hall got a **forward breeze
+   15:32–16:20Z (48 min, 202 W) on a 16 °C afternoon** right after the radiators had
+   lifted it 15.5 → 19.75 for one or two people working in it — mix crossed 20 on
+   hall_front reading 20.5 beside a 44 °C panel; the "post-heating coast → breeze"
+   watch from Q25, first seen. If the owner did not want a draught there, widen
+   `cooling_above_comfort` to 2.0 (slider) before any code; (b) the office was
+   driven to 21.5 and read **22–23 on ice** for the rest of the day (single-tick
+   jumps 21 → 22 → 23, surface 45 °C) — the "office genuinely over-heats or
+   frozen-high probe" watch, still unsettled, leaning over-heat; (c) a Sunday of
+   one person moving between rooms produced ~45 preset writes in four hours
+   (office comfort↔eco on `others_present`↔`motion` seven times) — Q22's
+   asymmetric preset dwell is the lever, still not built.
+   **First-run watch (resolved by the above):** `sync_clock_found` then `sync_clock_trusted` for each
+   heater within minutes of the deploy (`skew_min` near 0 once a live upload has
+   been seen — a large steady skew means the device clock is off and the age is
+   being carried by our watch alone);
    `hall_sync` in the trace should show the real overnight gaps; the first booked
    session's `probe_nudge_result` outcomes are now definite — a run of `missed`
    number nudges followed by `probe_nudge_escalated` and `synced` climate nudges
@@ -565,7 +627,7 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    only?").** Bare occupancy heats and ices (`occupied_warm`) on the same coldest
    probe as a booking, so a frozen reading at target holds people in a cooling
    room just the same: `_iced_on_a_stale_reading` relights an `occupied_warm` ice
-   past the same 20 min (`occupied_stale`, the cooling-regime commit still runs
+   past the same stale line (`occupied_stale`, the cooling-regime commit still runs
    after it), and the nudge runs for any ATTENDED zone (`_zone_attended`: booked,
    or motion / override / night arm), not only a booked one.
    **The relight FLAPPED on its first warm-room evening, and it relit a room that
