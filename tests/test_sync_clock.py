@@ -233,6 +233,7 @@ def test_a_held_stale_relight_releases_on_a_same_value_upload():
     # ordinary gate takes over (here still heating — 19.0 is inside the
     # release band — but by the ordinary reason, not the stale one).
     ctrl, hass, devices = _trusted_hall(minutes_old=BOOKING_RELIGHT_STALE_MIN + 5)
+    advance(ctrl, BOOKING_RELIGHT_STALE_MIN + 5)  # hall_front (no clock) flat too
     ctrl._numbers["hall_comfort_temp"].native_value = 19.0
     ctrl.applied[ZA] = PRESET_ICE
     ctrl._preset_reason[ZA] = "booking_warm"
@@ -260,6 +261,7 @@ def test_the_stale_relight_line_sits_above_the_measured_idle_heartbeat():
     assert BOOKING_RELIGHT_STALE_MIN > 30
     for silent, expected in ((30, False), (BOOKING_RELIGHT_STALE_MIN + 1, True)):
         ctrl, hass, devices = _trusted_hall(minutes_old=silent)
+        advance(ctrl, silent)  # hall_front (no clock) goes flat for as long
         ctrl.applied[ZA] = PRESET_ICE
         ctrl._preset_reason[ZA] = "booking_warm"
         assert ctrl._iced_on_a_stale_reading(ZA, "booking_warm", 19.0) is expected

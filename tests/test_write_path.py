@@ -207,6 +207,10 @@ def test_a_failed_heater_write_is_audited_once_and_retried():
 def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     _wire_numbers()
     ctrl, hass = make_controller()
+    # Comfort pinned high: with two probes the sanity rule (> 4 under the
+    # median) can only fire while the zone AVERAGE — what the heat gate reads
+    # since v1.47.0 — is still short of target if the target sits well above.
+    ctrl._numbers["hall_comfort_temp"].native_value = 24.0
     _hall_comfort(ctrl, hass, {HB: 18.0, HF: 18.0})
     run(ctrl.async_reconcile())
     _age_steps(ctrl)
@@ -215,9 +219,9 @@ def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     run(ctrl.async_reconcile())
     held = ctrl._drive_stair[HB]
     assert held >= 1.0
-    # hall_front freeze-jumps +4.5 in one batch: hall_back is now > 4 under the
+    # hall_front freeze-jumps +6.5 in one batch: hall_back is now > 4 under the
     # zone median and the sanity rule fires on a merely LATE probe.
-    hass.states.set(HF, "heat", {"current_temperature": 23.0})
+    hass.states.set(HF, "heat", {"current_temperature": 25.0})
     run(ctrl.async_reconcile())
     target = ctrl.number("hall_comfort_temp")
     assert _pushed(hass, _num(HB)) == target and _landed(hass, HB) == target
@@ -228,7 +232,7 @@ def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     assert withdrawn[-1]["stair"] == held
     # The probe catches up (still short of target, back inside the sanity band):
     # it re-enters with the held overdrive, not from zero.
-    hass.states.set(HB, "heat", {"current_temperature": 19.0})
+    hass.states.set(HB, "heat", {"current_temperature": 21.0})
     run(ctrl.async_reconcile())
     assert HB in ctrl._drive_driven
     assert _pushed(hass, _num(HB)) >= target + held - 1e-9

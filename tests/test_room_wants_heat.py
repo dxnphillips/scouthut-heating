@@ -9,6 +9,7 @@ pierce + summer-setback trio into one rule.
 """
 
 from scout_testkit import (
+    E,
     PRESET_COMFORT,
     PRESET_ECO,
     PRESET_ICE,
@@ -141,3 +142,54 @@ def test_shared_follows_a_hall_booking_regardless_of_season():
     ctrl = _cold_hall_booking()
     assert ctrl._desired_shared() == PRESET_COMFORT
     assert ctrl._preset_reason["shared"] == "booking"
+
+
+# --- The hall is judged on its AVERAGE, not its cold end (v1.47.0) -----------
+def _hall_ends(ctrl, warm, cold):
+    ctrl.hass.states.set(E["hall"][0], "heat", {"current_temperature": warm})
+    ctrl.hass.states.set(E["hall"][1], "heat", {"current_temperature": cold})
+
+
+def _booked_hall_at_19(ctrl):
+    ctrl.hass.states.set(E["weather"], "sunny", {"temperature": 22.0})
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    ctrl._numbers["booking_hold_cap"].native_value = 0  # isolate the base gate
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+
+
+def test_the_gate_releases_on_the_hall_average_not_the_cold_end():
+    # 2026-09-28 Beavers: the average was 19.5 with the cold end at 18.5, and
+    # holding comfort until the cold end reached 19.5 left the warm end at 20+
+    # before the children added their own 0.75. Judged on the average, the room
+    # releases at average >= target + band whatever the cold end reads.
+    ctrl, _ = make_controller()
+    _booked_hall_at_19(ctrl)
+    ctrl.applied[ZA] = PRESET_COMFORT
+    _hall_ends(ctrl, 20.0, 18.5)  # average 19.25: inside the band, still heats
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    _hall_ends(ctrl, 20.5, 18.5)  # average 19.5 = target + band: released
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_warm"
+
+
+def test_the_gate_engages_on_the_hall_average_not_the_cold_end():
+    ctrl, _ = make_controller()
+    _booked_hall_at_19(ctrl)
+    ctrl.applied[ZA] = PRESET_ICE
+    _hall_ends(ctrl, 20.0, 18.0)  # cold end short, average 19.0 at target: no heat
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    _hall_ends(ctrl, 19.5, 18.0)  # average 18.75: the room as a whole is short
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_arrival_shortfall_is_judged_on_the_average_with_the_cold_end_beside_it():
+    ctrl, _ = make_controller()
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    _hall_ends(ctrl, 20.0, 18.0)
+    ctrl._record_booking_edges()  # baseline observed: calendar off
+    booking(ctrl, ZA)
+    ctrl._record_booking_edges()
+    (evt,) = [e for e in ctrl.audit.to_list() if e.get("event") == "booking_start"]
+    assert evt["average"] == 19.0 and evt["coldest"] == 18.0
+    assert evt["shortfall"] == 0.0

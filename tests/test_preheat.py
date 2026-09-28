@@ -571,17 +571,22 @@ def _both_hall_temps(hass, a, b):
     hass.states.set(E["hall"][1], "heat", {"current_temperature": b})
 
 
-def test_preheat_sizes_for_the_coldest_end_of_the_hall():
+def test_preheat_sizes_for_the_hall_average_and_records_the_cold_end():
+    # v1.47.0: the lead brings the AVERAGE to target — the quantity the heat
+    # gate releases on — not the coldest end (which sat the warm end at 20+ on
+    # every heated session). The cold end is still recorded on the window.
     ctrl, hass = make_controller()
     _set_rate(ctrl, "hall_comfort_temp", 22)  # pin: tests the maths, not the default
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "zone_a_heatloss_pct", 0)
     _set_rate(ctrl, "preheat_minutes", 240)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
-    _both_hall_temps(hass, 21, 18)  # warm end must not cut the lead short
-    # Coldest reading 18 -> 4 °C deficit + finish at 3 °C/h -> 130 min (the
-    # average, 19.5, would give 100).
-    assert ctrl._zone_preheat_minutes(ZA) == 130
+    _both_hall_temps(hass, 21, 18)
+    # Average 19.5 -> 2.5 °C deficit + finish at 3 °C/h -> 100 min (the coldest,
+    # 18, would give 130).
+    assert ctrl._zone_preheat_minutes(ZA) == 100
+    calc = ctrl._last_lead_calc[ZA]
+    assert calc["indoor"] == 19.5 and calc["indoor_coldest"] == 18.0
 
 
 def test_hall_temp_spread_diagnostic():
