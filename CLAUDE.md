@@ -2584,6 +2584,34 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   under the 0.5 start gate) while the pierce sizes off *coldest* (18.5), so the
   climb was too shallow by the averaged measure to start a sample. Q3 stays open
   until a booking begins meaningfully cold by the averaged floor.
+  **The hall is now judged on its AVERAGE, not its cold end (v1.47.0, 2026-09-28,
+  owner's call — "option 2 sounds better").** The Monday 17:30Z Beavers booking
+  (comfort 19, outdoor 15) arrived at average 19.5 with the coldest probe 18.5,
+  and the gate held comfort until the cold end reached 19.5 — by which time the
+  warm end was at 20+ — then twenty children added 0.75 on top: peak 20.25,
+  half an hour over 20, the forward breeze, and a 26-min re-heat for the last
+  adults out once the breeze had pulled the cold end to 18.0. Judged on the
+  average the heaters would have cut ~15 min earlier and the peak sat nearer
+  19.75. The trade, stated when the owner chose it: the cold end of the 20 m
+  hall may sit ~0.5 under target on a still, seated session (Q19's operative
+  temperature concern gets no better). Applied as ONE reading, not one rung:
+  `_room_wants_heat` (booking AND occupancy — the two are one behaviour), the
+  pre-heat lead (`_zone_preheat_minutes`, so it brings to target exactly what
+  the gate then judges; `preheat_start.indoor` + `indoor_coldest` beside it),
+  the warm-up sample (`_update_warmup_learning` times the average — a sample
+  must time what the lead predicts), `booking_start.shortfall` (target −
+  average; `coldest` stays for the record) and the coast predictor. Left on the
+  coldest probe on purpose: the cooling-regime override (a genuinely falling
+  far end still breaks the `cooling_hold`), the no-response trigger, the trace
+  `hall_coldest`. The stale relight now needs EVERY probe silent
+  (`_zone_silent_minutes` = the freshest probe's silence) and its hold releases
+  when ANY probe speaks, since one live probe keeps the average honest. Shared
+  stays on its coldest probe (three separate rooms, not one hall); the office
+  has one probe, so nothing changes there. **First cold-booking watch:** a
+  positive `booking_start.shortfall` is now an average-short room, and a seated
+  group reaching for Boost at a satisfied average is the cold-end cost showing
+  — the answer then is a raised comfort setpoint or Q19's seated sensor, not a
+  return to the coldest probe.
 - **The pre-heat window latches open, keyed to the event (2026-08-05, refined
   2026-08-06).** `_async_refresh_calendars` recomputes the lead every ~5 min, but
   once the window has opened for an event it is held open (`window = gap_min <=

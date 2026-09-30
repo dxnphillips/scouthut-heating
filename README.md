@@ -284,8 +284,10 @@ this priority (highest wins):
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
    sleepover), and a legacy binary `on` still counts as away.
 6. **Booking or pre-heat window** (optimum start — see below) → `comfort`,
-   **when the room genuinely wants heat** (its coldest heater probe is below the
-   booking target). A booking already at/above target lands on `ice` instead, so
+   **when the room genuinely wants heat** (the average of its heater probes is
+   below the booking target — the cold end of the 20 m hall may sit ~0.5 under
+   on a seated session; holding until it caught up left the warm end at 20+ on
+   every heated session, v1.47.0). A booking already at/above target lands on `ice` instead, so
    the cooling fans are free to run — heating is **not** gated by the season, only
    by whether the room is actually cold. An unoccupied room drops to `eco` only
    once the event has actually started (the pre-heat window always heats at
@@ -368,9 +370,9 @@ cover the deficit *plus a fixed finish* — the Rointes throttle to half power
 inside the last degree and their oil mass lags, so every climb here pays the
 same ~30-minute tail whether it started 1 °C or 5 °C short. A booking matching
 an ECO keyword pre-heats only to the eco-low setpoint, not comfort. The deficit
-is measured from the **coldest** of the zone's heater readings, not the
-average, so the warm end of a patchy room cannot cut the lead short for the
-cold end. The result is clamped between 15 minutes and the **Pre-heat lead time
+is measured from the **average** of the zone's heater readings — the same
+quantity the heat gate releases on, so the lead brings to target exactly what
+is then judged (the coldest reading is recorded beside it). The result is clamped between 15 minutes and the **Pre-heat lead time
 (max)** slider (the safety cap — a room with no readable temperature, or a
 leak the radiators cannot out-run, also falls back to the cap, so a cold start
 is never missed). When the event's start time is known, the
@@ -406,7 +408,7 @@ are seeded at the slowest plausible value, so an unlearned zone uses
 pull the gain down to the truth over a handful of bookings. Only a genuine
 **pre-heat that reached its target** is timed and folded in — never a boost,
 an occupancy climb or a mid-booking top-up, where people, sun and a hotter
-setpoint do part of the radiators' work — judged on the coldest reading's
+setpoint do part of the radiators' work — judged on the zone average's
 start and finish (exponentially smoothed and step-capped, so one odd morning
 can only nudge the number, never yank it); a temperature *rise* while unheated
 (July roof sun) is never mistaken for good insulation. The hall keeps **two**
@@ -488,8 +490,9 @@ restarts) of everything it decides and learns:
   (frozen probe, stale relight) judge silence, not a flat value. Each
   heater's `sync_at` / `sync_clock` / `sync_age_min` are in the export and the
   trace carries `hall_sync`, the stalest hall heater's upload age.
-- **`booking_start` / `booking_end`** — the ground truth: the coldest reading
-  against the target at the moment each booking begins (a positive
+- **`booking_start` / `booking_end`** — the ground truth: the room average
+  against the target at the moment each booking begins (the coldest reading
+  beside it) (a positive
   `shortfall` means the room arrived under target — lead too short; a
   consistently negative one means heating started earlier than needed), and
   the temperature and preset at the moment the controller saw the calendar

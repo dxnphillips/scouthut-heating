@@ -1382,14 +1382,19 @@ class ScoutController:
     ) -> float | None:
         """Room temperature reported by a zone's own heaters.
 
-        ``coldest=True`` returns the lowest reading instead of the average:
-        the hall units disagree by several degrees along the 20 m room, and
-        for "will the room be warm enough?" questions (pre-heat sizing) the
-        coldest reading is the truer measure of the far end. The average
-        stays right for the fan ΔT reference and the learning, where
-        stability against a single odd sensor matters more. ``stale_min`` (see
-        ``_zone_climate_temps``) rejects a frozen Rointe reading on the
-        warm-enough decision paths.
+        The AVERAGE is what the hall is judged on (v1.47.0): the heat gate,
+        the pre-heat lead, the warm-up sample, the arrival shortfall and the
+        coast predictor all read it. The hall units disagree by up to ~1.5 °C
+        along the 20 m room, and holding comfort until the COLDEST end reached
+        target left the warm end at 20+ on every heated session — on top of the
+        occupants' own heat that took a 19 °C target to 20.25 (2026-09-28,
+        Beavers) and started the cooling breeze. The owner chose the average:
+        the cold end may sit ~0.5 under target on a seated session; the room as
+        a whole lands on target. ``coldest=True`` returns the lowest reading —
+        kept for the record (`booking_start.coldest`, the trace) and for the
+        cooling-regime override, where the far end genuinely falling is the
+        signal. ``stale_min`` (see ``_zone_climate_temps``) rejects a frozen
+        Rointe reading on the warm-enough decision paths.
         """
         vals = self._zone_climate_temps(zone, stale_min=stale_min)
         if coldest and vals:
@@ -1608,9 +1613,14 @@ class ScoutController:
         return stamp.isoformat(timespec="seconds") if stamp is not None else None
 
     def _iced_on_a_stale_reading(self, zone: str, reason: str, target: float) -> bool:
-        """Is this zone sitting on ice for ``reason`` ("warm enough") on a coldest
-        reading that has been stale for ``BOOKING_RELIGHT_STALE_MIN`` — and could
-        the room have fallen below ``target`` in that time?
+        """Is this zone sitting on ice for ``reason`` ("warm enough") with EVERY
+        probe stale for ``BOOKING_RELIGHT_STALE_MIN`` — and could the room have
+        fallen below ``target`` in that time?
+
+        The gate judges the zone AVERAGE (v1.47.0), so the reading is only
+        untrustworthy once no probe in the zone has spoken: one live probe keeps
+        the average honest enough to wait for. The stale minutes are the
+        freshest probe's; the decay is run from the average reading.
 
         A frozen probe at target never falls below it, so the ordinary relight
         never comes; past this window the zone is relit anyway (err warm — the
@@ -1628,12 +1638,11 @@ class ScoutController:
         readings = self._zone_probe_readings(zone)
         if not readings:
             return False
-        coldest = min(readings, key=readings.get)
-        stale = self._probe_silent_minutes(coldest)
+        stale = self._zone_silent_minutes(zone)
         if stale is None or stale < BOOKING_RELIGHT_STALE_MIN:
             return False
         predicted = predicted_room_temp(
-            readings[coldest],
+            sum(readings.values()) / len(readings),
             self._outdoor_temp(),
             stale / 60,
             self.number(f"{zone}_heatloss_pct") / 100,
@@ -1651,8 +1660,8 @@ class ScoutController:
         the same stale value the next tick just ices the zone again, and the
         stale test then relights it — a flap of a heater write pair every tick
         (field 2026-09-22 16:30Z, the hall four times in five minutes and the
-        office five times in two). The relight therefore HOLDS until the coldest
-        reading changes, or (on a trusted sync clock) the heater uploads at all.
+        office five times in two). The relight therefore HOLDS until any probe
+        in the zone changes, or (on a trusted sync clock) uploads at all.
         Unbounded on purpose: the relight's premise is that the reading cannot
         be trusted, and a Rointe fires only against its own live probe, so a
         room that is really warm does not burn while it holds.
@@ -1666,8 +1675,7 @@ class ScoutController:
         readings = self._zone_probe_readings(zone)
         if not readings:
             return False
-        coldest = min(readings, key=readings.get)
-        return not self._reading_fresh_since(coldest, relit_at)
+        return not any(self._reading_fresh_since(c, relit_at) for c in readings)
 
     def _reading_fresh_since(self, climate: str, at: datetime) -> bool:
         """Has this heater's reading changed, or (trusted clock) has it uploaded
@@ -1678,19 +1686,18 @@ class ScoutController:
         seen = self._sync_seen_at.get(climate)
         return self._sync_clock_trusted(climate) and seen is not None and seen > at
 
-    def _zone_coldest_flat_minutes(self, zone: str) -> float | None:
-        """How stale the zone's COLDEST heater reading is (silent minutes on a
-        trusted sync clock, else minutes unchanged — ``_probe_silent_minutes``).
-
-        The coldest probe is the one that gates "does this booked room want
-        heat?", so its staleness is what can hold a relight off. None when the
-        zone has no readable probe or the coldest one is not yet tracked.
+    def _zone_silent_minutes(self, zone: str) -> float | None:
+        """How long the WHOLE zone has been stale: the freshest probe's silent
+        minutes (on a trusted sync clock, else minutes unchanged —
+        ``_probe_silent_minutes``). The gate reads the zone average, so a single
+        probe still speaking keeps the reading trustworthy. None when no probe
+        is readable or tracked.
         """
-        readings = self._zone_probe_readings(zone)
-        if not readings:
-            return None
-        coldest = min(readings, key=readings.get)
-        return self._probe_silent_minutes(coldest)
+        ages = [
+            self._probe_silent_minutes(c) for c in self._zone_probe_readings(zone)
+        ]
+        ages = [a for a in ages if a is not None]
+        return min(ages) if ages else None
 
     @property
     def hall_temp_spread(self) -> float | None:
@@ -1748,11 +1755,12 @@ class ScoutController:
         """
         target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
         rate, rate_key = self._prediction_rate(zone)
-        # Size the pre-heat for the coldest reading, not the average: the
-        # warm end's heater must not cut the lead short for the cold end. Reject
-        # a frozen Rointe reading (stale_min) — a stale-high value would
+        # Size the pre-heat for the AVERAGE reading — the quantity the heat
+        # gate releases on, so the lead brings to target exactly what the gate
+        # then judges (v1.47.0; it sized the coldest end until then). Reject a
+        # frozen Rointe reading (stale_min) — a stale-high value would
         # under-lead a cold start; None falls back to the cap, i.e. fail-warm.
-        indoor = self._zone_room_temp(zone, coldest=True, stale_min=self._rointe_stale_min())
+        indoor = self._zone_room_temp(zone, stale_min=self._rointe_stale_min())
         outdoor = self._outdoor_temp()
         loss_pct = self.number(f"{zone}_heatloss_pct")
         minutes = required_lead_minutes(
@@ -1779,7 +1787,10 @@ class ScoutController:
             # is what a cold-arrival shortfall gets read against.
             "rate_key": rate_key,
             "fan_w_last": self._fan_w_last_seen if zone == ZONE_A else None,
-            "indoor_coldest": indoor,
+            "indoor": indoor,
+            "indoor_coldest": self._zone_room_temp(
+                zone, coldest=True, stale_min=self._rointe_stale_min()
+            ),
             "target": target,
             "outdoor": outdoor,
             "loss_pct": loss_pct,
@@ -1888,13 +1899,12 @@ class ScoutController:
           top-ups — the free-gain sources the old out-of-family gate was
           guessing at. Read at the START: a short pre-heat that runs into its
           booking keeps its sample and folds SLOW (self-correcting).
-        * **Timed on the COLDEST probe**, the quantity the lead sizes
-          (`_zone_preheat_minutes`) and `booking_start.shortfall` judges. The
-          coldest lagged the average by 1.75 °C on 09-16 and by up to 22 min on
-          09-17; an average-timed sample under-states exactly the number that
-          decides a cold arrival. A frozen cold-end probe delays the close (slow,
-          safe); one flat ≥ `fan_sensor_stale_minutes` is dropped by the
-          existing `_probe_frozen`.
+        * **Timed on the zone AVERAGE** (v1.47.0), the quantity the lead sizes
+          (`_zone_preheat_minutes`), the gate releases on and
+          `booking_start.shortfall` judges — the sample must time what the lead
+          predicts. (v1.43.0 timed the coldest probe, when the gate and the lead
+          read it too.) A frozen probe is dropped from the average by the
+          existing `_probe_frozen` once flat ≥ `fan_sensor_stale_minutes`.
         * **Not inside the startup grace** — a restart mid-pre-heat restores the
           latch (PR 8) and re-applies comfort with reason `preheat`, so a fresh
           sample would open on an already-heating room: the one fast-bias route
@@ -1924,7 +1934,7 @@ class ScoutController:
                 and not self.opening_ice[zone]
                 and self.switch_on(f"{zone}_automation_enabled", default=True)
             )
-            temp = self._zone_room_temp(zone, coldest=True, stale_min=stale)
+            temp = self._zone_room_temp(zone, stale_min=stale)
 
             # Cache the zone's real comfort target from its own heater while
             # it is actually in comfort (needed for the office, see _zone_target).
@@ -1968,7 +1978,7 @@ class ScoutController:
             readable = len(self._zone_probe_readings(zone))
             # "Arrived" is judged on the reading alone, NOT on the zone still
             # being in comfort: the presets step runs before this one, and on
-            # this hardware the coldest probe usually lands PAST target in one
+            # this hardware a probe usually lands PAST target in one
             # catch-up jump, so the tick that first reads >= target is the same
             # tick `booking_warm` ices the zone. Requiring comfort here read the
             # first v1.43.0 pre-heat (2026-09-22, 15.5 -> 20.0 in 43 min) as
@@ -3382,8 +3392,9 @@ class ScoutController:
         """True when an occupied / booked zone is genuinely below ``target`` and
         so wants heat — the single, season-independent heating gate.
 
-        "Cold" is read from the room's own coldest heater probe (the far end of
-        the 20 m hall) against ``target``, self-calibrating with no weather
+        "Cold" is read from the room's own heater probes — their AVERAGE, the
+        quantity the whole hall is judged on (see ``_zone_room_temp``) — against
+        ``target``, self-calibrating with no weather
         threshold to guess: a warm room never wants heat whatever the calendar
         says, so the fans are free to cool it, while a genuinely cold present or
         booked room always heats. Release hysteresis keyed off the applied preset
@@ -3408,7 +3419,7 @@ class ScoutController:
         The Rointe still governs the actual firing against its own probe, so a
         room that is really warm will not fire anyway.
         """
-        room = self._zone_room_temp(zone, coldest=True, stale_min=self._rointe_stale_min())
+        room = self._zone_room_temp(zone, stale_min=self._rointe_stale_min())
         now = self._now()
         if room is not None:
             self._last_room_temp[zone] = (now, room)
@@ -3442,8 +3453,8 @@ class ScoutController:
         """Accumulate idle-room readings for the coast predictor.
 
         Runs at the top of every reconcile, before the ladder reads the rate.
-        The sample is the hall's coldest heater reading — the same far-end
-        measure the pre-heat sizes its deficit against. It is recorded ONLY
+        The sample is the hall's average heater reading — the same measure the
+        pre-heat sizes its deficit against (v1.47.0). It is recorded ONLY
         while the heaters are idle (`_heat_demand()` false): a rise measured
         while the radiators drive is their work, not free gain, and feeding
         that back into a heat-suppression decision is the exact trap to avoid.
@@ -3452,7 +3463,7 @@ class ScoutController:
         cannot oscillate (applying heat wipes the evidence for withholding it).
         """
         now = self._now()
-        room = self._zone_room_temp(ZONE_A, coldest=True)
+        room = self._zone_room_temp(ZONE_A)
         if room is None or self._heat_demand():
             self._passive_rise.clear()
             return
@@ -3524,9 +3535,7 @@ class ScoutController:
         if zone != ZONE_A or not self.switch_on("coast_when_free", default=False):
             return False
         return will_coast_to_target(
-            indoor=self._zone_room_temp(
-                ZONE_A, coldest=True, stale_min=self._rointe_stale_min()
-            ),
+            indoor=self._zone_room_temp(ZONE_A, stale_min=self._rointe_stale_min()),
             target=target,
             rise_rate=self._passive_rise_rate(),
             gap_min=gap_min,
@@ -4323,6 +4332,7 @@ class ScoutController:
             eco = self._eco_keyword_active(zone)
             target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
             coldest = self._zone_room_temp(zone, coldest=True)
+            average = self._zone_room_temp(zone)
             self.audit.record(
                 "booking_start",
                 self._now(),
@@ -4331,8 +4341,10 @@ class ScoutController:
                 eco=eco,
                 target=target,
                 coldest=coldest,
-                average=self._zone_room_temp(zone),
-                shortfall=None if coldest is None else target - coldest,
+                average=average,
+                # Judged on the AVERAGE since v1.47.0 — what the lead sized and
+                # the gate released on; `coldest` stays beside it for the record.
+                shortfall=None if average is None else target - average,
                 outdoor=self._outdoor_temp(),
                 preset=self.applied[zone],
                 # The fan tap the pre-heat's fan-assisted rate assumed, so a
