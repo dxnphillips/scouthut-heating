@@ -6249,24 +6249,30 @@ class ScoutController:
             dt = ct - ft
             self.fan_dt = dt
 
-        # Head-height comfort estimate (0.75 x floor + 0.25 x ceiling): the air
-        # a standing/seated occupant actually feels, part-way up the room. The
-        # summer start trigger, the overheat cutoff and the hot-breeze guard all
-        # read THIS single number, so the fans start, stop and hold on the same
-        # basis. Needs both readings; the trigger falls back to the bare floor
-        # when only the ceiling is missing (never the reverse — no floor means
-        # "unknown", as before).
+        # Mixed-air estimate (0.75 x floor + 0.25 x ceiling): the air the fans
+        # would fold down onto people. The overheat cutoff and the hot-breeze
+        # guard read it — they are about the air a breeze DELIVERS, and the
+        # ceiling is part of that. The "warm enough to cool" decision does NOT
+        # (v1.48.0, see below). Exported as the feels-like diagnostic.
         self.fan_mix = None if (ct is None or ft is None) else 0.75 * ft + 0.25 * ct
 
-        # Summer breeze judges warmth at head height, not at the floor sensor.
-        # That sensor sits low on the wall and, on a still hot day under a hot
-        # ceiling, reads cooler than the room a person is standing in — so
-        # anchoring the trigger to it left occupants sweating just below the
-        # line (observed 2026-07-12: floor 22.4 < 23 while head-height was 24.1,
-        # fans stayed off). The overheat cutoff rides the same estimate: once
-        # the air a fan would deliver hits skin temperature a breeze heats
-        # people, whatever the floor lags at.
-        comfort = self.fan_mix if self.fan_mix is not None else ft
+        # The breeze is judged on the hall AVERAGE — the same reading the heat
+        # gate judges (v1.47.0) — not the mix. The mix was introduced (v1.9,
+        # 2026-07-12) against an ABSOLUTE 23 °C line: the floor read 22.4 under
+        # a 29 °C ceiling and people were sweating with the fans off. Since
+        # v1.38.0 the line hangs off comfort (19 + 1 = 20), which that floor
+        # clears on its own, so the ceiling term stopped being what rescued the
+        # hot day and became what tipped a COOL one: 2026-10-02 the floor sat at
+        # 19.5–19.6 all evening under a 22 °C ceiling, the mix read 20.15, and the
+        # breeze ran 111 min at full tap on people at 19.5 until one of them
+        # pressed Pause. Worked across every breeze on record, the floor average
+        # alone gets all five right (Jul 22.4, Wed 21.0, Mon 20.25 → breeze; Fri
+        # 19.6, Sun 19.75 → none); the 0.25 weight gets two wrong, and any weight
+        # that fixes them is under 0.15. The apex sensor sits in the stratified
+        # layer and reads hotter than the air at head height — that is the Q9
+        # finding, not a calibration. One reading for heat and cool.
+        comfort = ft
+        delivered = self.fan_mix if self.fan_mix is not None else ft
         # Warm-enough-to-cool, measured against the SAME reference the heating
         # aims at (`_cooling_reference`) rather than an independent absolute
         # slider: enter cooling `cooling_above_comfort` above it, and once cooling
@@ -6285,7 +6291,7 @@ class ScoutController:
             warm = comfort > release
         else:
             warm = comfort > enter
-        overheated = comfort is not None and comfort >= FAN_COOLING_MAX_TEMP
+        overheated = delivered is not None and delivered >= FAN_COOLING_MAX_TEMP
         self.fan_overheated = overheated
         self._fan_warm = warm
 

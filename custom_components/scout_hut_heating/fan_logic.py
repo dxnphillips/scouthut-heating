@@ -47,11 +47,12 @@ def fan_decision(
             room). Gates the summer breeze, and (when recirc_needs_occupancy)
             the no-demand winter recirc path. Active winter heat demand still
             runs the fans regardless of occupancy.
-        warm: the head-height comfort estimate (a floor/ceiling blend, the air
-            an occupant actually feels) is above the cooling threshold; ``None``
-            when the floor temperature is unavailable — with no floor the room's
-            warmth is unknown and a breeze is not blown on assumption.
-        overheated: that head-height air is at/above the fan-cooling ceiling
+        warm: the hall's average room reading (the same quantity the heat gate
+            judges, v1.48.0) is above the cooling threshold; ``None`` when the
+            floor temperature is unavailable — with no floor the room's warmth
+            is unknown and a breeze is not blown on assumption.
+        overheated: the mixed air a breeze would deliver (a floor/ceiling blend)
+            is at/above the fan-cooling ceiling
             (~35 °C, skin temperature). Above it a breeze blows heat *onto*
             people, so the summer fans are held off (public-health guidance:
             CDC 32 °C for the vulnerable, UK guidance 35 °C).
