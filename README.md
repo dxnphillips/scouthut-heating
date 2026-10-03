@@ -113,9 +113,10 @@ entirely, the button fails soft and points at the YAML files:
   flags, the hall temperature spread (max − min across the hall heaters'
   readings — shows how patchy the room is side-to-side; expect it to collapse
   once the destratification fans mix the room), the ceiling-floor ΔT, and the
-  head-height mix temp (0.75 × floor + 0.25 × ceiling — the air an occupant
-  actually feels, and the single number the cooling start/stop and hot-breeze
-  guard all act on).
+  head-height mix temp (0.75 × floor + 0.25 × ceiling — the air the fans
+  would fold down onto people; the hot-breeze guard and the overheat cutoff
+  act on it, while the cooling start/stop is judged on the hall average, the
+  same reading the heating uses).
 - **Fan numbers:** ceiling-floor ΔT to start / stop, minimum run / off times,
   sensor-stale timeout, the summer warm-enough temperature, the heat-demand
   power threshold, and the winter recirculation floor cap.
