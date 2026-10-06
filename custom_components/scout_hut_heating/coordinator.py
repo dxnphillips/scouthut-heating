@@ -417,7 +417,10 @@ DRIVE_COAST_SETTLE_MIN = 15.0   # no new easing for this long after one
 # 50 °C or hotter, every zero-rise full box on panels at 33 °C or cooler — so this
 # line sits between the two clusters. Judged on the hottest panel (the ease and
 # end events record it as `surface`, the number to set this from). Withholding
-# the easing restores full drive, so this only ever errs warm.
+# the easing restores full drive, so this only ever errs warm. An ENGAGE gate
+# only (v1.48.2): the easing cuts the elements, so the panel reading falls
+# through this line during every episode — judging it every tick ended the
+# 2026-10-05 10:01Z hall episode on 44.5 °C two minutes before the tail landed.
 DRIVE_COAST_MIN_SURFACE_C = 45.0
 
 # --- Drive self-validation (Q20): does the loop know its commands are working?
@@ -2114,11 +2117,6 @@ class ScoutController:
             and not jumped
             and zone_avg >= target - DRIVE_COAST_ALLOWANCE
             and self._zone_panels_hot(zone, zone_avg)
-            # ...and hot ENOUGH to carry the allowance: a panel merely warmer than
-            # the room is residue from an earlier burn, not stored heat this
-            # approach can land on (see DRIVE_COAST_MIN_SURFACE_C).
-            and hottest is not None
-            and hottest >= DRIVE_COAST_MIN_SURFACE_C
         )
         if not ready:
             self._end_drive_coast(zone, now, zone_avg)
@@ -2130,6 +2128,17 @@ class ScoutController:
             return 0.0  # this approach has had its window
         started = self._drive_coast_since.get(zone)
         if started is None:
+            # ENGAGE gate only (v1.48.2): the panels must be hot ENOUGH to carry
+            # the allowance — a panel merely warmer than the room is residue from
+            # an earlier burn, not stored heat this approach can land on (see
+            # DRIVE_COAST_MIN_SURFACE_C). Judged once, when the easing starts:
+            # the easing itself cuts the elements, so the panel reading falls
+            # through the line during every episode, and holding the gate ended
+            # the episode exactly as the tail arrived (2026-10-05 10:13Z: ended on
+            # 44.5 °C with `rise` 0.0, the hall average +0.75 two minutes later).
+            # Once engaged, the band, the time box and `_zone_panels_hot` bound it.
+            if hottest is None or hottest < DRIVE_COAST_MIN_SURFACE_C:
+                return 0.0
             self._drive_coast_since[zone] = now
             self._drive_coast_from[zone] = zone_avg
             self._drive_coast_peak[zone] = zone_avg

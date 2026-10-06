@@ -2223,6 +2223,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   minutes of firing, the stored mass that carries half a degree needs a sustained
   burn), and `drive_coast_ease` / `drive_coast_end` record `surface` so the line is
   set from data next. Withholding the easing restores full drive — arrive-warm.
+  **The line is an ENGAGE gate only (v1.48.2, 2026-10-06 export).** It was being
+  re-judged every tick, and the easing itself cuts the elements, so the panel
+  reading falls through 45 °C during every episode: the first hall easing on
+  the average gate (2026-10-05 10:01Z, panels 56 °C) ended at 10:13Z on a panel
+  reading 44.5 with `rise` 0.0, the full drive came back, and the hall average
+  read 20.0 two minutes later — the tail landed just after the measurement
+  closed, and three shared episodes the same day ended the same way. The line is
+  now judged once, when the easing starts; a running episode is bounded by the
+  band, the 20-min box and `_zone_panels_hot` (panel still > room + 5), as
+  before. Worst case is unchanged (0.5 °C for ≤ 20 min on hot panels); the
+  `rise` measurements become honest.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`

@@ -148,6 +148,29 @@ def test_the_end_event_records_the_panel_it_let_go_on():
     assert evt["surface"] == 41.0
 
 
+def test_the_panel_line_is_an_engage_gate_not_a_hold_gate():
+    # Field 2026-10-05 10:13Z: the easing cut the elements, the hall panel cooled
+    # 56 -> 44.5 and the episode ended on the 45 °C line with `rise` 0.0 — two
+    # minutes before the tail lifted the average +0.75. Once engaged, the easing
+    # rides on the band, the time box and "panels still above the room"; the line
+    # is judged only when it starts.
+    ctrl, hass = _ctrl(panel=56.0)
+    now = ctrl._now()
+    assert _coast(ctrl, 19.25, at=now) == DRIVE_COAST_ALLOWANCE
+    hass.states.set(HB_SURFACE, "44.5")  # below the line, still 25 °C over the room
+    assert _coast(ctrl, 19.25, at=now + timedelta(minutes=11)) == DRIVE_COAST_ALLOWANCE
+    assert _events(ctrl, "drive_coast_end") == []
+    # The tail arrives and the zone goes warm: the episode ends with the rise read.
+    ctrl._drive_coast(ZA, 19.0, 20.0, False, now + timedelta(minutes=13))
+    (evt,) = _events(ctrl, "drive_coast_end")
+    assert evt["rise"] == pytest.approx(0.75)
+    # A panel that has fallen back to the room still ends it (no stored heat left).
+    ctrl2, hass2 = _ctrl(panel=56.0)
+    assert _coast(ctrl2, 19.25, at=now) == DRIVE_COAST_ALLOWANCE
+    hass2.states.set(HB_SURFACE, "22.0")
+    assert _coast(ctrl2, 19.25, at=now + timedelta(minutes=5)) == 0.0
+
+
 def test_an_install_with_no_surface_sensor_never_engages_it():
     ctrl, _ = _ctrl(panel=None)  # nothing mapped -> no evidence of stored heat
     assert _coast(ctrl, 18.75) == 0.0
