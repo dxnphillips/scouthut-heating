@@ -2223,6 +2223,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   minutes of firing, the stored mass that carries half a degree needs a sustained
   burn), and `drive_coast_ease` / `drive_coast_end` record `surface` so the line is
   set from data next. Withholding the easing restores full drive — arrive-warm.
+  **The line is an ENGAGE gate only (v1.48.2, 2026-10-06 export).** It was being
+  re-judged every tick, and the easing itself cuts the elements, so the panel
+  reading falls through 45 °C during every episode: the first hall easing on
+  the average gate (2026-10-05 10:01Z, panels 56 °C) ended at 10:13Z on a panel
+  reading 44.5 with `rise` 0.0, the full drive came back, and the hall average
+  read 20.0 two minutes later — the tail landed just after the measurement
+  closed, and three shared episodes the same day ended the same way. The line is
+  now judged once, when the easing starts; a running episode is bounded by the
+  band, the 20-min box and `_zone_panels_hot` (panel still > room + 5), as
+  before. Worst case is unchanged (0.5 °C for ≤ 20 min on hot panels); the
+  `rise` measurements become honest.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`
@@ -2525,8 +2536,8 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the toilets when someone actually gets up, not all night). Reason strings:
   `booking` / `preheat` / `booking_warm` / `booking_eco` /
   `booking_quiet` / `preheat_coast` / `booking_coast` for bookings; `motion` /
-  `occupied_override` / `sleepover` (heating) and `occupied_warm` (warm → ice) for
-  occupancy; the `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
+  `occupied_override` / `sleepover` / `eco_tail` (heating) and `occupied_warm`
+  (warm → ice) for occupancy; the `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
   comfort too now** (2026-08-07): `_desired_shared` warms the block to
   `shared_comfort_temp` (via `_shared_wants_heat`, the shared analog of the gate —
   coldest shared probe below target, err-warm on unreadable) whenever it is
@@ -2637,6 +2648,41 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   group reaching for Boost at a satisfied average is the cold-end cost showing
   — the answer then is a raised comfort setpoint or Q19's seated sensor, not a
   return to the coldest probe.
+  **The release band belongs to the rung that is heating (v1.48.1, 2026-10-06
+  export).** `COLD_BOOKING_RELEASE_BAND` used to apply whenever the applied
+  preset was comfort OR eco, so the `others_present` eco rest (the hall parked
+  at eco because someone was in the office) armed it: the next hall PIR trip was
+  judged against 19.5 instead of 19.0 and lit four heaters on a room already at
+  comfort — 2026-10-02 14:16Z at 19.2 and 2026-10-05 13:28Z at 19.4, 15–22 min
+  each, ~0.1 kWh a time. `_room_wants_heat` now takes the preset the calling
+  rung would set (comfort; eco for an ECO-keyword booking) and applies the band
+  only while THAT preset is applied; `_shared_wants_heat` likewise only in
+  comfort. An eco rest, a `booking_quiet` park or a coast hold has no heating
+  decision to hold, so the gate judges it bare. Tests in
+  `tests/test_room_wants_heat.py` and `tests/test_shared_zone.py`.
+  **An ECO-keyword booking leaves an eco TAIL (v1.49.0, same export).** On
+  2026-10-02 both sal-vation cleaning bookings (eco-low 14) ended with the
+  cleaner still moving about, and on each end edge the bare-occupancy rung lit
+  all four hall heaters toward comfort 19 on a 15–17 °C hall — 06:02–06:08Z and
+  10:17–10:26Z, until the alarm iced them, ~0.15 kWh plus 35 °C panels that then
+  warmed an empty hall to 18.8. The person still tripping the PIR after a
+  low-key booking IS that booking's visit, so for one `motion_timeout_minutes`
+  after an eco booking ends (`_eco_tail_until`, set on the `booking_end` edge
+  from `_cal_eco_running`, latched at the start edge because the title can be
+  refreshed away by the end) zone occupancy heats toward the eco-low target at
+  eco (reason `eco_tail`) rather than comfort, and every eco-low push site reads
+  `_eco_low_wanted` (keyword active OR tail running) so the eco preset carries
+  14, not 16. A warm hall in the tail lands on `occupied_warm` ice as usual; the
+  manual override is exempt; a new booking start clears the tail; a restart
+  drops it (fail direction: ordinary comfort). Tests in `tests/test_eco_tail.py`.
+  **Two logging gaps closed in the same release (v1.49.1).** `fan_sensor_lost`
+  now carries `ceiling` / `floor` (which input dropped) and `fan_sensor_restored`
+  marks the recovery — the ~06:20–06:30Z losses on 2026-10-01 and 10-03 could not
+  be attributed to the ceiling Shelly or the Rointe floor probes from an empty
+  event. And a held-open door or window is audited as `opening` (zone, the open
+  contacts, `through_path`) with `opening_cleared` on release: a zone already on
+  ice shows no `preset` change when a door is propped, so the 2026-10-01 09:55Z
+  hall motion that only lit comfort at 10:08Z had nothing in the log to say why.
 - **The pre-heat window latches open, keyed to the event (2026-08-05, refined
   2026-08-06).** `_async_refresh_calendars` recomputes the lead every ~5 min, but
   once the window has opened for an event it is held open (`window = gap_min <=

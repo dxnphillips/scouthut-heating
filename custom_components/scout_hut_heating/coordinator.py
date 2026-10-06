@@ -417,7 +417,10 @@ DRIVE_COAST_SETTLE_MIN = 15.0   # no new easing for this long after one
 # 50 °C or hotter, every zero-rise full box on panels at 33 °C or cooler — so this
 # line sits between the two clusters. Judged on the hottest panel (the ease and
 # end events record it as `surface`, the number to set this from). Withholding
-# the easing restores full drive, so this only ever errs warm.
+# the easing restores full drive, so this only ever errs warm. An ENGAGE gate
+# only (v1.48.2): the easing cuts the elements, so the panel reading falls
+# through this line during every episode — judging it every tick ended the
+# 2026-10-05 10:01Z hall episode on 44.5 °C two minutes before the tail landed.
 DRIVE_COAST_MIN_SURFACE_C = 45.0
 
 # --- Drive self-validation (Q20): does the loop know its commands are working?
@@ -647,6 +650,11 @@ class ScoutController:
         self.fan_mix: float | None = None          # estimated mixed-air temp at head height
         self.heat_demand: bool = False             # any radiator drawing power
         self.fan_sensor_stale: bool = False        # ceiling/floor lost
+        # Which of the two inputs was unreadable when `fan_sensor_stale` was
+        # last judged (ceiling, floor), so the `fan_sensor_lost` audit event can
+        # say which — the recurring ~06:20Z losses (2026-10-01, 10-03) could not
+        # be attributed to the ceiling Shelly or the Rointe floor probes without it.
+        self._fan_sensor_bad: tuple[bool, bool] = (False, False)
         self.fan_fault_latched: bool = False       # inferred (unpublished) fault
         self.fan_master_expected: bool | None = None  # what we last told O1 to be
         self.fan_master_off_since: datetime | None = None  # for dwell-safe infer
@@ -782,6 +790,17 @@ class ScoutController:
         # Set on a booking_end edge: refresh the calendar look-ahead on the next
         # tick instead of waiting for the five-minute cadence.
         self._cal_refresh_due = False
+        # Whether the running booking was an ECO-keyword one, latched on its
+        # start edge (the title can be refreshed away by the end edge), and the
+        # eco tail it leaves behind (v1.49.0): until this instant, bare occupancy
+        # in the zone heats toward the eco-low target the booking had, not full
+        # comfort — the person still moving about after a cleaning booking IS the
+        # cleaner (field 2026-10-02: four hall heaters lit at 06:00Z and 10:15Z,
+        # the moment each sal-vation booking ended, on a 15–17 °C hall the booking
+        # had just said should sit at 14). Not persisted: a restart drops the
+        # tail and falls back to the ordinary comfort behaviour.
+        self._cal_eco_running: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
+        self._eco_tail_until: dict[str, datetime | None] = {ZONE_A: None, ZONE_B: None}
         # Overshoot accumulators for the booking_end summary (pure measurement).
         # An episode spans the pre-heat window AND the running slot, because the
         # Rointe oil mass keeps releasing after the element cuts out, so the peak
@@ -2114,11 +2133,6 @@ class ScoutController:
             and not jumped
             and zone_avg >= target - DRIVE_COAST_ALLOWANCE
             and self._zone_panels_hot(zone, zone_avg)
-            # ...and hot ENOUGH to carry the allowance: a panel merely warmer than
-            # the room is residue from an earlier burn, not stored heat this
-            # approach can land on (see DRIVE_COAST_MIN_SURFACE_C).
-            and hottest is not None
-            and hottest >= DRIVE_COAST_MIN_SURFACE_C
         )
         if not ready:
             self._end_drive_coast(zone, now, zone_avg)
@@ -2130,6 +2144,17 @@ class ScoutController:
             return 0.0  # this approach has had its window
         started = self._drive_coast_since.get(zone)
         if started is None:
+            # ENGAGE gate only (v1.48.2): the panels must be hot ENOUGH to carry
+            # the allowance — a panel merely warmer than the room is residue from
+            # an earlier burn, not stored heat this approach can land on (see
+            # DRIVE_COAST_MIN_SURFACE_C). Judged once, when the easing starts:
+            # the easing itself cuts the elements, so the panel reading falls
+            # through the line during every episode, and holding the gate ended
+            # the episode exactly as the tail arrived (2026-10-05 10:13Z: ended on
+            # 44.5 °C with `rise` 0.0, the hall average +0.75 two minutes later).
+            # Once engaged, the band, the time box and `_zone_panels_hot` bound it.
+            if hottest is None or hottest < DRIVE_COAST_MIN_SURFACE_C:
+                return 0.0
             self._drive_coast_since[zone] = now
             self._drive_coast_from[zone] = zone_avg
             self._drive_coast_peak[zone] = zone_avg
@@ -2792,7 +2817,7 @@ class ScoutController:
     async def async_hall_temps_changed(self) -> None:
         """Re-push hall temperatures when a temperature slider changes."""
         if self.applied[ZONE_A] in (PRESET_COMFORT, PRESET_ECO):
-            await self._async_push_hall_temps(eco_low=self._eco_keyword_active(ZONE_A))
+            await self._async_push_hall_temps(eco_low=self._eco_low_wanted(ZONE_A))
             await self._async_set_preset(ZONE_A, self.applied[ZONE_A], force=True)
 
     def _state_snapshot(self) -> dict[str, Any]:
@@ -3331,6 +3356,26 @@ class ScoutController:
     def _cal_active(self, zone: str) -> bool:
         return self._is_on(self.config.get(ZONE_CALENDAR[zone])) or self.cal_window[zone]
 
+    def _eco_tail_active(self, zone: str) -> bool:
+        """Is this zone inside the eco tail an ECO-keyword booking left behind?
+
+        Set on the booking's end edge for one motion timeout (v1.49.0). While it
+        runs, bare occupancy heats toward the eco-low target the booking had
+        rather than full comfort. Cleared by the next booking start.
+        """
+        until = self._eco_tail_until.get(zone)
+        if until is None:
+            return False
+        if self._now() >= until:
+            self._eco_tail_until[zone] = None
+            return False
+        return True
+
+    def _eco_low_wanted(self, zone: str) -> bool:
+        """Should this zone's eco preset carry the eco-LOW setpoint right now —
+        an ECO-keyword booking is active, or its eco tail is still running?"""
+        return self._eco_keyword_active(zone) or self._eco_tail_active(zone)
+
     def _booking_target(self, zone: str) -> float:
         """The setpoint a booking / pre-heat is aiming for.
 
@@ -3388,7 +3433,9 @@ class ScoutController:
             return False  # a genuine cold-drop overrides the commit
         return True
 
-    def _room_wants_heat(self, zone: str, target: float) -> bool:
+    def _room_wants_heat(
+        self, zone: str, target: float, preset: str = PRESET_COMFORT
+    ) -> bool:
         """True when an occupied / booked zone is genuinely below ``target`` and
         so wants heat — the single, season-independent heating gate.
 
@@ -3397,9 +3444,20 @@ class ScoutController:
         ``target``, self-calibrating with no weather
         threshold to guess: a warm room never wants heat whatever the calendar
         says, so the fans are free to cool it, while a genuinely cold present or
-        booked room always heats. Release hysteresis keyed off the applied preset
+        booked room always heats. Release hysteresis
         (``COLD_BOOKING_RELEASE_BAND``) keeps the decision from flapping around
         the setpoint. A frozen Rointe reading is rejected (``stale_min``).
+
+        ``preset`` is the heating preset the calling rung would apply (comfort,
+        or eco for an ECO-keyword booking), and the release band applies ONLY
+        while that preset is the applied one — i.e. while this decision is
+        already heating the room. Until v1.48.1 the band applied on ANY heating
+        preset, so the `others_present` rung (the hall resting at eco because
+        someone was in the office) armed it: the next hall PIR trip was then
+        judged against target + 0.5 instead of target and lit four heaters on a
+        room already at comfort (field 2026-10-02 14:16Z at 19.2 and 2026-10-05
+        13:28Z at 19.4, comfort 19, 15–22 min each). A rung that was not heating
+        has no decision to hold, so it is judged bare.
 
         An UNREADABLE room errs WARM (heat) — the heating fail-safe direction —
         but only after two cheaper answers are exhausted, so a transient Rointe
@@ -3442,11 +3500,7 @@ class ScoutController:
                 ):
                     return False  # confirmed warm inside and out — no heat
                 return True  # err warm — the heating fail-safe
-        margin = (
-            COLD_BOOKING_RELEASE_BAND
-            if self.applied[zone] in (PRESET_COMFORT, PRESET_ECO)
-            else 0.0
-        )
+        margin = COLD_BOOKING_RELEASE_BAND if self.applied[zone] == preset else 0.0
         return room < target + margin
 
     def _update_passive_rise(self) -> None:
@@ -3621,7 +3675,7 @@ class ScoutController:
             stale = self._iced_on_a_stale_reading(
                 zone, "booking_warm", booking_goal
             ) or self._holding_stale_relight(zone)
-            if not stale and not self._room_wants_heat(zone, booking_target):
+            if not stale and not self._room_wants_heat(zone, booking_target, base):
                 # Already warm enough for what this booking asked — no heat, and
                 # ice lets the cooling fans run if the room is genuinely hot.
                 self._note_coasting(zone, False)
@@ -3704,29 +3758,37 @@ class ScoutController:
         motion = self._motion_recent(area, timeout)
         alarm_present = self._alarm_present(self.config.get(ZONE_ALARM[zone]))
         if occupied_override or motion or alarm_present:
+            # Inside the eco tail of an ECO-keyword booking that has just ended,
+            # the occupant is still that booking's low-key visit (the cleaner
+            # finishing up), so the zone heats toward the eco-low target it was
+            # just given rather than full comfort (v1.49.0). The manual override
+            # is an explicit ask for comfort and is exempt.
+            eco_tail = not occupied_override and self._eco_tail_active(zone)
+            target = self.number("hall_eco_low_temp") if eco_tail else self._zone_target(zone)
+            preset = PRESET_ECO if eco_tail else PRESET_COMFORT
             # An occupied zone iced as "warm" relights on the same stale-reading
             # rule as a booking (v1.44.1): a frozen probe at target would
             # otherwise hold people in a cooling room.
             stale = self._iced_on_a_stale_reading(
-                zone, "occupied_warm", self._zone_target(zone)
+                zone, "occupied_warm", target
             ) or self._holding_stale_relight(zone)
-            if stale or self._room_wants_heat(zone, self._zone_target(zone)):
+            if stale or self._room_wants_heat(zone, target, preset):
                 # Just cooled: hold the regime so a rest between games can't flip
                 # the hall straight to heating (a manual override still heats).
-                if not occupied_override and self._cool_regime_holds_heat(
-                    zone, self._zone_target(zone)
-                ):
+                if not occupied_override and self._cool_regime_holds_heat(zone, target):
                     return self._reason(zone, "cooling_hold", PRESET_ICE)
                 reason = (
                     "occupied_override"
                     if occupied_override
                     else "occupied_stale"
                     if stale
+                    else "eco_tail"
+                    if eco_tail
                     else "motion"
                     if motion
                     else "sleepover"
                 )
-                return self._reason(zone, reason, PRESET_COMFORT)
+                return self._reason(zone, reason, preset)
             return self._reason(zone, "occupied_warm", PRESET_ICE)
         if not self._motion_recent_any(timeout):
             return self._reason(zone, "building_empty", PRESET_ICE)
@@ -3829,18 +3891,16 @@ class ScoutController:
 
         Reads the coldest shared heater probe (freshness-gated) against
         `shared_comfort_temp`, with the same `COLD_BOOKING_RELEASE_BAND` release
-        hysteresis keyed off the applied preset. An unreadable shared zone errs
-        WARM (heats), like the zone gate — the Rointe governs real firing against
-        its own probe.
+        hysteresis — applied only while the block is already in COMFORT, the
+        preset this decision sets (v1.48.1; the `motion` / `booking_eco` eco
+        rests used to arm it too, see `_room_wants_heat`). An unreadable shared
+        zone errs WARM (heats), like the zone gate — the Rointe governs real
+        firing against its own probe.
         """
         room = self._shared_room_temp(stale_min=self._rointe_stale_min())
         if room is None:
             return True
-        margin = (
-            COLD_BOOKING_RELEASE_BAND
-            if self.applied["shared"] in (PRESET_COMFORT, PRESET_ECO)
-            else 0.0
-        )
+        margin = COLD_BOOKING_RELEASE_BAND if self.applied["shared"] == PRESET_COMFORT else 0.0
         return room < self.number("shared_comfort_temp") + margin
 
     def _water_actual(self) -> bool | None:
@@ -4322,6 +4382,14 @@ class ScoutController:
                 self.cal_window[zone] = False
                 self._preheat_open_for[zone] = None
                 self._cal_refresh_due = True
+                # An ECO-keyword booking leaves an eco tail as long as the motion
+                # timeout: whoever is still tripping the PIR is the same low-key
+                # visit, not a new session wanting comfort (v1.49.0).
+                if self._cal_eco_running[zone]:
+                    self._eco_tail_until[zone] = self._now() + timedelta(
+                        minutes=self.number("motion_timeout_minutes")
+                    )
+                self._cal_eco_running[zone] = False
                 # A hall booking ending is the deliberate boundary that lifts a
                 # pause carried through the session: an adjacent next booking
                 # then starts fresh (inheriting the still-warm room, so its
@@ -4330,6 +4398,8 @@ class ScoutController:
                     self._clear_hall_pause("booking_end")
                 continue
             eco = self._eco_keyword_active(zone)
+            self._cal_eco_running[zone] = eco
+            self._eco_tail_until[zone] = None  # a new booking owns the zone now
             target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
             coldest = self._zone_room_temp(zone, coldest=True)
             average = self._zone_room_temp(zone)
@@ -4378,6 +4448,17 @@ class ScoutController:
             self.opening_ice[zone] = should_ice
             if should_ice and not was:
                 self.manual_hold[zone] = False
+                # Audit the edge itself (v1.49.1): a zone already on ice shows no
+                # `preset` change when a door is propped, so until now a held-open
+                # door on an empty or alarmed zone left no mark at all (2026-10-01
+                # 09:55Z: hall motion, comfort 13 min later, nothing to say why).
+                self.audit.record(
+                    "opening",
+                    self._now(),
+                    zone=zone,
+                    open=[e for e in doors + windows if self._is_on(e)],
+                    through_path=through_path and not held,
+                )
                 if through_path and not held:
                     persistent_notification.async_create(
                         self.hass,
@@ -4396,6 +4477,7 @@ class ScoutController:
                         notification_id=NOTIFY_ZONE_OPENING[zone],
                     )
             elif was and not should_ice:
+                self.audit.record("opening_cleared", self._now(), zone=zone)
                 persistent_notification.async_dismiss(self.hass, NOTIFY_ZONE_OPENING[zone])
                 persistent_notification.async_dismiss(self.hass, NOTIFY_INTERNAL_DOOR)
 
@@ -4404,6 +4486,13 @@ class ScoutController:
         was_shared = self.opening_ice["shared"]
         self.opening_ice["shared"] = shared_held
         if shared_held and not was_shared:
+            self.audit.record(
+                "opening",
+                self._now(),
+                zone="shared",
+                open=[e for e in shared_windows if self._is_on(e)],
+                through_path=False,
+            )
             persistent_notification.async_create(
                 self.hass,
                 "A toilet or kitchen window has been held open. Shared-zone "
@@ -4412,6 +4501,7 @@ class ScoutController:
                 notification_id=NOTIFY_SHARED_OPENING,
             )
         elif was_shared and not shared_held:
+            self.audit.record("opening_cleared", self._now(), zone="shared")
             persistent_notification.async_dismiss(self.hass, NOTIFY_SHARED_OPENING)
 
     async def _reconcile_zones(self) -> None:
@@ -4450,7 +4540,7 @@ class ScoutController:
             # heat to head height while a Boost is driving the room past comfort.
             return self._drive_comfort_target(ZONE_A)
         if applied == PRESET_ECO:
-            return self._hall_eco_target(self._eco_keyword_active(ZONE_A))
+            return self._hall_eco_target(self._eco_low_wanted(ZONE_A))
         return ROINTE_ANTIFROST
 
     def _hall_eco_target(self, eco_low: bool) -> float:
@@ -4480,7 +4570,7 @@ class ScoutController:
         """
         if self.applied[ZONE_A] not in (PRESET_COMFORT, PRESET_ECO):
             return
-        eco_low = self._eco_keyword_active(ZONE_A)
+        eco_low = self._eco_low_wanted(ZONE_A)
         comfort_temp = self.number("hall_comfort_temp")
         eco_temp = self._hall_eco_target(eco_low)
         if self._hall_temps_pushed != (comfort_temp, eco_temp):
@@ -4699,7 +4789,7 @@ class ScoutController:
                 reason=self._preset_reason.get(zone),
             )
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
-            await self._async_push_hall_temps(eco_low=self._eco_keyword_active(zone))
+            await self._async_push_hall_temps(eco_low=self._eco_low_wanted(zone))
         await self._async_apply_climate(climates, preset)
         # The preset copies a possibly-stale cached number into the live
         # setpoint; land the intended value explicitly (see _async_land_zone).
@@ -6237,6 +6327,7 @@ class ScoutController:
         floor_bad = ft is None or (bool(floor_id) and self._stale(floor_id, stale_min))
         sensors_bad = ceiling_bad or floor_bad
         self.fan_sensor_stale = sensors_bad
+        self._fan_sensor_bad = (ceiling_bad, floor_bad)  # for the audit edge
         if floor_bad:
             # A lost floor reading must not feed warm/overheated/recirc below:
             # fan_decision's contract is warm=None when the floor is unknown.
@@ -6639,9 +6730,13 @@ class ScoutController:
     ) -> None:
         """Raise / dismiss the sensor-lost / overheat / hot-breeze notifications."""
         if self.fan_sensor_stale and not prev_stale:
-            self.audit.record("fan_sensor_lost", self._now())
+            ceiling_bad, floor_bad = self._fan_sensor_bad
+            self.audit.record(
+                "fan_sensor_lost", self._now(), ceiling=ceiling_bad, floor=floor_bad
+            )
             self._notify_sensor_lost()
         elif prev_stale and not self.fan_sensor_stale:
+            self.audit.record("fan_sensor_restored", self._now())
             persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_SENSOR_LOST)
 
         # Overheat: past the fan-cooling ceiling a breeze heats people instead

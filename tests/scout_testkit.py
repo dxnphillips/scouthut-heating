@@ -317,6 +317,9 @@ def advance(ctrl, minutes):
     for zone, ts in ctrl.boost_until.items():
         if ts is not None:
             ctrl.boost_until[zone] = ts - delta
+    for zone, ts in ctrl._eco_tail_until.items():
+        if ts is not None:
+            ctrl._eco_tail_until[zone] = ts - delta
     for zone in list(ctrl._last_apply):
         ctrl._last_apply[zone] = ctrl._last_apply[zone] - delta
     for attr in (

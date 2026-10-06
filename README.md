@@ -514,13 +514,21 @@ restarts) of everything it decides and learns:
   otherwise shows up only indirectly, when it moves a preset or the fans.
 - **`preset` / `fan_change` / `manual_hold` / `seasonal` / `water_hygiene` /
   `water_frost` / `fan_fault` / `overheat_holdoff` / `breeze_holdoff` /
-  `condensation` / `fan_sensor_lost` / `heating_paused` / `heating_resumed`** —
-  the actuation and safety record around those samples. Fan changes carry the
+  `condensation` / `fan_sensor_lost` / `fan_sensor_restored` / `opening` /
+  `opening_cleared` / `heating_paused` / `heating_resumed`** —
+  the actuation and safety record around those samples. `fan_sensor_lost`
+  says which input dropped (`ceiling` / `floor`) and `fan_sensor_restored`
+  marks the recovery, so a recurring loss can be attributed to the ceiling
+  Shelly or the Rointe floor probes; `opening` records the held-open contacts
+  (and whether it was the internal-door through-path) on the edge even when
+  the zone was already on ice and so shows no `preset` change. Fan changes carry the
   decision inputs (`occupied`, `warm`, ΔT, demand, O1 watts), so a stopped
   fan is never ambiguous between "nobody there" and "not warm enough";
   preset changes carry the `reason` (which rung of the priority ladder
   decided them: `booking`, `preheat`, `booking_warm`, `booking_eco`,
-  `booking_quiet`, `preheat_coast`, `booking_coast`, `motion`,
+  `booking_quiet`, `preheat_coast`, `booking_coast`, `motion`, `eco_tail`
+  (occupancy inside the motion timeout after an ECO-keyword booking ended,
+  heating toward that booking's eco-low target rather than comfort),
   `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `opening`,
   `boost`, `heating_paused`, `building_empty`, ...; the `_warm` reasons mark a
   room already at/above target that landed on `ice` so the cooling fans can

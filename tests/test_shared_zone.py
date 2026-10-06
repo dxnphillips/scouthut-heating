@@ -53,6 +53,21 @@ def test_warm_shared_under_a_booking_rests_at_eco():
     assert ctrl._preset_reason["shared"] == "shared_warm"
 
 
+def test_an_eco_rest_does_not_arm_the_shared_release_band():
+    # Resting at eco on hall-only motion is not a heating decision, so a kitchen
+    # PIR trip on a block already at comfort is judged bare (v1.48.1).
+    ctrl, _ = make_controller()
+    ctrl._numbers["shared_comfort_temp"].native_value = 19.0
+    ctrl.applied["shared"] = PRESET_ECO
+    motion(ctrl, "kitchen")
+    shared_temp(ctrl, 19.2)
+    assert ctrl._desired_shared() == PRESET_ECO
+    assert ctrl._preset_reason["shared"] == "shared_warm"
+    # Already heating under this decision: the same reading holds comfort.
+    ctrl.applied["shared"] = PRESET_COMFORT
+    assert ctrl._desired_shared() == PRESET_COMFORT
+
+
 def test_boost_a_makes_shared_comfort():
     ctrl, _ = make_controller()
     boost(ctrl, ZA)

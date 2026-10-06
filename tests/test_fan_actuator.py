@@ -301,6 +301,33 @@ def test_hall_motion_starts_the_breeze():
     assert ctrl._cooling_occupied() is True
 
 
+def test_a_sensor_loss_says_which_input_dropped_and_marks_the_recovery():
+    # v1.49.1: the ~06:20Z losses on 2026-10-01 / 10-03 could not be attributed
+    # to the ceiling Shelly or the Rointe floor probes from an empty event.
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    on(hass, MASTER)
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 19.0})
+    hass.states.set("sensor.ceiling", "21.0")
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_sensor_stale is False
+    hass.states.set("sensor.ceiling", "unavailable")
+    run(ctrl._reconcile_fans())
+    (lost,) = [e for e in ctrl.audit.to_list() if e.get("event") == "fan_sensor_lost"]
+    assert lost["ceiling"] is True and lost["floor"] is False
+    hass.states.set("sensor.ceiling", "21.0")
+    run(ctrl._reconcile_fans())
+    assert [e["event"] for e in ctrl.audit.to_list() if e["event"].startswith("fan_sensor")] == [
+        "fan_sensor_lost",
+        "fan_sensor_restored",
+    ]
+
+
 # --- Fault inference: the latch must be reachable --------------------------------
 
 def test_unexpected_master_off_latches_fault_instead_of_hammering():
