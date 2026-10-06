@@ -1914,6 +1914,31 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   (`fan_change.direction`) and that the 1 °C hysteresis is enough to keep
   reversals rare (widen `COOLING_DIRECTION_HYST` if not); and that a warm hall
   getting a forward breeze is always wanted (if not, raise `cooling_temp_high`).
+  **A breeze was NOT wanted, and the cause was the ceiling term, not the line
+  (v1.48.0, 2026-10-02 field, owner: "the mix is sitting a touch high").** The
+  Friday 16:30Z booking arrived at 19.4 on ice and the forward breeze ran
+  **111 min at full tap while the floor average never passed 19.6** (comfort 19,
+  line 20): the 22 °C ceiling lifted the head-height mix to 20.15. At 17:33Z
+  someone pressed **Pause hall heating with no heating running** — the only thing
+  the hall was doing to them was blowing air — which did not stop the breeze (by
+  design) and then blocked the heating the booking rung would have relit at
+  ~19:03Z, so the group finished at 18.6 average / 18.0 cold end. The mix was
+  introduced (2026-07-12) because the floor read 22.4 against an ABSOLUTE 23 °C
+  line under a 29 °C ceiling; since v1.38.0 the line hangs off comfort (20),
+  which that floor clears alone, so the ceiling term stopped rescuing the hot day
+  and started tipping cool ones. Worked across every breeze on record: the
+  **floor average alone gets all five right** (Jul 22.4, Wed 10-01 21.0, Mon
+  09-28 20.25 → breeze; Fri 10-02 19.6, Sun 09-27 19.75 → none); the 0.25 weight
+  gets two wrong and any weight that fixes them is under 0.15 — the apex sensor
+  reads the stratified layer (Q9), it is not a head-height thermometer. So the
+  breeze now judges the **same hall average the heat gate judges** (one reading
+  for heat and cool, the v1.47.0 principle carried to the fans); `fan_mix` stays
+  for the overheat cutoff, the hot-breeze guard and the feels-like diagnostic,
+  which are about the air a breeze DELIVERS. `cooling_above_comfort` stays 1.0.
+  **Open (owner's call, not built):** a Pause pressed while the hall is on ice
+  with the breeze running can only mean "stop the fans" — making the button hold
+  the breeze off too in that case would do what the person meant, but it widens
+  the button's deliberately-chosen meaning. Tests in `tests/test_fan_actuator.py`.
 - **Heat/cool regime commit — the comfort and cooling-enough thresholds can sit
   close without hunting (`REGIME_DWELL_MIN` = 15, `REGIME_HEAT_OVERRIDE` = 1.5,
   2026-09-08).** For an intermittent-activity children's hall the *active* comfort

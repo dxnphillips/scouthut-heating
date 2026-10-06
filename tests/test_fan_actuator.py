@@ -493,11 +493,10 @@ def test_no_readable_sensors_falls_back_to_presets():
 
 # --- Hot-breeze guard + ceiling freshness (availability, not report age) ---------
 
-def test_summer_breeze_triggers_on_head_height_not_the_floor_sensor():
-    # The floor sensor sits low and lags on a still, hot day: here it reads
-    # 22.4 — just under the 23 cooling line — while the hot ceiling makes the
-    # air a person actually stands in 24.1. The breeze must start on that
-    # head-height estimate, not leave the occupant sweating at "22.4".
+def test_the_july_hot_day_still_gets_its_breeze_on_the_floor_average_alone():
+    # 2026-07-12: floor 22.4 under a 29.2 ceiling, people sweating with the fans
+    # off because the line was an ABSOLUTE 23. Against the comfort-relative line
+    # (comfort + 1) the floor clears it on its own — no ceiling term needed.
     from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
     from scout_testkit import E, make_controller, motion, run
 
@@ -508,12 +507,43 @@ def test_summer_breeze_triggers_on_head_height_not_the_floor_sensor():
     ctrl.seasonal_lockout = True  # summer regime
     motion(ctrl, "hall")  # someone is in the hall
     for eid in E["hall"]:
-        hass.states.set(eid, "heat", {"current_temperature": 22.4})  # floor < 23
-    hass.states.set("sensor.ceiling", "29.2")  # mix = 0.75*22.4 + 0.25*29.2 = 24.1
+        hass.states.set(eid, "heat", {"current_temperature": 22.4})
+    hass.states.set("sensor.ceiling", "29.2")
 
     run(ctrl._reconcile_fans())
-    assert ctrl._fan_warm is True  # judged warm on the head-height mix, not the floor
+    assert ctrl._fan_warm is True
     assert ctrl.fan_on is True  # the occupant gets their breeze
+
+
+def test_a_hot_ceiling_over_a_cool_floor_does_not_start_a_breeze():
+    # 2026-10-02 16:30-18:21Z: floor 19.5-19.6 (comfort 19, line 20) under a
+    # 22 °C ceiling. The head-height mix read 20.15 and ran the fans at full tap
+    # for 111 min on people at 19.5 until one of them pressed Pause. The breeze
+    # is judged on the hall average — the same reading the heat gate judges —
+    # so a stratified-but-not-warm hall is left alone (v1.48.0).
+    from custom_components.scout_hut_heating.const import CONF_CEILING_TEMP
+    from scout_testkit import E, make_controller, motion, run
+
+    ctrl, hass = make_controller(
+        config_overrides={CONF_FAN_MASTER: MASTER, CONF_CEILING_TEMP: "sensor.ceiling"}
+    )
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    ctrl._numbers["cooling_above_comfort"].native_value = 1.0
+    off(hass, MASTER)
+    motion(ctrl, "hall")
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 19.5})
+    hass.states.set("sensor.ceiling", "22.1")  # mix 20.15 would have tipped it
+
+    run(ctrl._reconcile_fans())
+    assert ctrl.fan_mix == 20.15  # the diagnostic still reads the mix...
+    assert ctrl._fan_warm is False  # ...but the decision reads the room
+    assert ctrl.fan_on is False
+    # Genuinely warm at floor level: the breeze still comes.
+    for eid in E["hall"]:
+        hass.states.set(eid, "heat", {"current_temperature": 20.25})
+    run(ctrl._reconcile_fans())
+    assert ctrl._fan_warm is True
 
 
 def test_ceiling_lost_falls_back_to_the_floor_for_the_warm_trigger():

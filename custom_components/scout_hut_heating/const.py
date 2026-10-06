@@ -237,16 +237,17 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # default suits a battery Shelly H&T, which sleeps aggressively and can go
     # well over an hour between reports when the temperature is steady.
     "fan_sensor_stale_minutes": (5, 240, 5, 120, "min"),
-    # Summer: how far ABOVE what the hall is meant to feel like the head-height
-    # comfort estimate (0.75 x floor + 0.25 x ceiling — the air an occupant
-    # actually feels) has to sit before the breeze is wanted. An OFFSET, not an
+    # Summer: how far ABOVE what the hall is meant to feel like the hall's
+    # average room reading (the same reading the heat gate judges — v1.48.0; the
+    # head-height mix until then) has to sit before the breeze is wanted. An OFFSET, not an
     # absolute: the cooling line is derived from the same comfort reference the
     # heating aims at, so the two can never be set into conflict (v1.38.0 —
     # before this the absolute `cooling_temp_high` and `hall_comfort_temp` were
     # independent sliders and the release line landed exactly on the heating
     # line, so a booked hall chased itself breeze->heat->breeze; field
-    # 2026-09-17). Judged at head height, not at the low floor sensor, which
-    # under-reads the occupied room on a still hot day under a hot ceiling. Small
+    # 2026-09-17). Judged on the room average, not a ceiling-weighted mix: the
+    # apex sensor reads the stratified layer, and on 2026-10-02 it tipped a hall
+    # whose floor never passed 19.6 into a 111-min breeze someone paused. Small
     # by default because hall users are active — moving bodies want the airflow
     # earlier than seated ones.
     # Floored at 1.0 so the release line (half the offset above the reference) is
