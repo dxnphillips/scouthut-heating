@@ -650,6 +650,11 @@ class ScoutController:
         self.fan_mix: float | None = None          # estimated mixed-air temp at head height
         self.heat_demand: bool = False             # any radiator drawing power
         self.fan_sensor_stale: bool = False        # ceiling/floor lost
+        # Which of the two inputs was unreadable when `fan_sensor_stale` was
+        # last judged (ceiling, floor), so the `fan_sensor_lost` audit event can
+        # say which — the recurring ~06:20Z losses (2026-10-01, 10-03) could not
+        # be attributed to the ceiling Shelly or the Rointe floor probes without it.
+        self._fan_sensor_bad: tuple[bool, bool] = (False, False)
         self.fan_fault_latched: bool = False       # inferred (unpublished) fault
         self.fan_master_expected: bool | None = None  # what we last told O1 to be
         self.fan_master_off_since: datetime | None = None  # for dwell-safe infer
@@ -4443,6 +4448,17 @@ class ScoutController:
             self.opening_ice[zone] = should_ice
             if should_ice and not was:
                 self.manual_hold[zone] = False
+                # Audit the edge itself (v1.49.1): a zone already on ice shows no
+                # `preset` change when a door is propped, so until now a held-open
+                # door on an empty or alarmed zone left no mark at all (2026-10-01
+                # 09:55Z: hall motion, comfort 13 min later, nothing to say why).
+                self.audit.record(
+                    "opening",
+                    self._now(),
+                    zone=zone,
+                    open=[e for e in doors + windows if self._is_on(e)],
+                    through_path=through_path and not held,
+                )
                 if through_path and not held:
                     persistent_notification.async_create(
                         self.hass,
@@ -4461,6 +4477,7 @@ class ScoutController:
                         notification_id=NOTIFY_ZONE_OPENING[zone],
                     )
             elif was and not should_ice:
+                self.audit.record("opening_cleared", self._now(), zone=zone)
                 persistent_notification.async_dismiss(self.hass, NOTIFY_ZONE_OPENING[zone])
                 persistent_notification.async_dismiss(self.hass, NOTIFY_INTERNAL_DOOR)
 
@@ -4469,6 +4486,13 @@ class ScoutController:
         was_shared = self.opening_ice["shared"]
         self.opening_ice["shared"] = shared_held
         if shared_held and not was_shared:
+            self.audit.record(
+                "opening",
+                self._now(),
+                zone="shared",
+                open=[e for e in shared_windows if self._is_on(e)],
+                through_path=False,
+            )
             persistent_notification.async_create(
                 self.hass,
                 "A toilet or kitchen window has been held open. Shared-zone "
@@ -4477,6 +4501,7 @@ class ScoutController:
                 notification_id=NOTIFY_SHARED_OPENING,
             )
         elif was_shared and not shared_held:
+            self.audit.record("opening_cleared", self._now(), zone="shared")
             persistent_notification.async_dismiss(self.hass, NOTIFY_SHARED_OPENING)
 
     async def _reconcile_zones(self) -> None:
@@ -6302,6 +6327,7 @@ class ScoutController:
         floor_bad = ft is None or (bool(floor_id) and self._stale(floor_id, stale_min))
         sensors_bad = ceiling_bad or floor_bad
         self.fan_sensor_stale = sensors_bad
+        self._fan_sensor_bad = (ceiling_bad, floor_bad)  # for the audit edge
         if floor_bad:
             # A lost floor reading must not feed warm/overheated/recirc below:
             # fan_decision's contract is warm=None when the floor is unknown.
@@ -6704,9 +6730,13 @@ class ScoutController:
     ) -> None:
         """Raise / dismiss the sensor-lost / overheat / hot-breeze notifications."""
         if self.fan_sensor_stale and not prev_stale:
-            self.audit.record("fan_sensor_lost", self._now())
+            ceiling_bad, floor_bad = self._fan_sensor_bad
+            self.audit.record(
+                "fan_sensor_lost", self._now(), ceiling=ceiling_bad, floor=floor_bad
+            )
             self._notify_sensor_lost()
         elif prev_stale and not self.fan_sensor_stale:
+            self.audit.record("fan_sensor_restored", self._now())
             persistent_notification.async_dismiss(self.hass, NOTIFY_FAN_SENSOR_LOST)
 
         # Overheat: past the fan-cooling ceiling a breeze heats people instead

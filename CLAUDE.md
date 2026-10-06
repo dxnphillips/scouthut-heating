@@ -2675,6 +2675,14 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   14, not 16. A warm hall in the tail lands on `occupied_warm` ice as usual; the
   manual override is exempt; a new booking start clears the tail; a restart
   drops it (fail direction: ordinary comfort). Tests in `tests/test_eco_tail.py`.
+  **Two logging gaps closed in the same release (v1.49.1).** `fan_sensor_lost`
+  now carries `ceiling` / `floor` (which input dropped) and `fan_sensor_restored`
+  marks the recovery — the ~06:20–06:30Z losses on 2026-10-01 and 10-03 could not
+  be attributed to the ceiling Shelly or the Rointe floor probes from an empty
+  event. And a held-open door or window is audited as `opening` (zone, the open
+  contacts, `through_path`) with `opening_cleared` on release: a zone already on
+  ice shows no `preset` change when a door is propped, so the 2026-10-01 09:55Z
+  hall motion that only lit comfort at 10:08Z had nothing in the log to say why.
 - **The pre-heat window latches open, keyed to the event (2026-08-05, refined
   2026-08-06).** `_async_refresh_calendars` recomputes the lead every ~5 min, but
   once the window has opened for an event it is held open (`window = gap_min <=
