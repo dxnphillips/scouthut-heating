@@ -3388,7 +3388,9 @@ class ScoutController:
             return False  # a genuine cold-drop overrides the commit
         return True
 
-    def _room_wants_heat(self, zone: str, target: float) -> bool:
+    def _room_wants_heat(
+        self, zone: str, target: float, preset: str = PRESET_COMFORT
+    ) -> bool:
         """True when an occupied / booked zone is genuinely below ``target`` and
         so wants heat — the single, season-independent heating gate.
 
@@ -3397,9 +3399,20 @@ class ScoutController:
         ``target``, self-calibrating with no weather
         threshold to guess: a warm room never wants heat whatever the calendar
         says, so the fans are free to cool it, while a genuinely cold present or
-        booked room always heats. Release hysteresis keyed off the applied preset
+        booked room always heats. Release hysteresis
         (``COLD_BOOKING_RELEASE_BAND``) keeps the decision from flapping around
         the setpoint. A frozen Rointe reading is rejected (``stale_min``).
+
+        ``preset`` is the heating preset the calling rung would apply (comfort,
+        or eco for an ECO-keyword booking), and the release band applies ONLY
+        while that preset is the applied one — i.e. while this decision is
+        already heating the room. Until v1.48.1 the band applied on ANY heating
+        preset, so the `others_present` rung (the hall resting at eco because
+        someone was in the office) armed it: the next hall PIR trip was then
+        judged against target + 0.5 instead of target and lit four heaters on a
+        room already at comfort (field 2026-10-02 14:16Z at 19.2 and 2026-10-05
+        13:28Z at 19.4, comfort 19, 15–22 min each). A rung that was not heating
+        has no decision to hold, so it is judged bare.
 
         An UNREADABLE room errs WARM (heat) — the heating fail-safe direction —
         but only after two cheaper answers are exhausted, so a transient Rointe
@@ -3442,11 +3455,7 @@ class ScoutController:
                 ):
                     return False  # confirmed warm inside and out — no heat
                 return True  # err warm — the heating fail-safe
-        margin = (
-            COLD_BOOKING_RELEASE_BAND
-            if self.applied[zone] in (PRESET_COMFORT, PRESET_ECO)
-            else 0.0
-        )
+        margin = COLD_BOOKING_RELEASE_BAND if self.applied[zone] == preset else 0.0
         return room < target + margin
 
     def _update_passive_rise(self) -> None:
@@ -3621,7 +3630,7 @@ class ScoutController:
             stale = self._iced_on_a_stale_reading(
                 zone, "booking_warm", booking_goal
             ) or self._holding_stale_relight(zone)
-            if not stale and not self._room_wants_heat(zone, booking_target):
+            if not stale and not self._room_wants_heat(zone, booking_target, base):
                 # Already warm enough for what this booking asked — no heat, and
                 # ice lets the cooling fans run if the room is genuinely hot.
                 self._note_coasting(zone, False)
@@ -3829,18 +3838,16 @@ class ScoutController:
 
         Reads the coldest shared heater probe (freshness-gated) against
         `shared_comfort_temp`, with the same `COLD_BOOKING_RELEASE_BAND` release
-        hysteresis keyed off the applied preset. An unreadable shared zone errs
-        WARM (heats), like the zone gate — the Rointe governs real firing against
-        its own probe.
+        hysteresis — applied only while the block is already in COMFORT, the
+        preset this decision sets (v1.48.1; the `motion` / `booking_eco` eco
+        rests used to arm it too, see `_room_wants_heat`). An unreadable shared
+        zone errs WARM (heats), like the zone gate — the Rointe governs real
+        firing against its own probe.
         """
         room = self._shared_room_temp(stale_min=self._rointe_stale_min())
         if room is None:
             return True
-        margin = (
-            COLD_BOOKING_RELEASE_BAND
-            if self.applied["shared"] in (PRESET_COMFORT, PRESET_ECO)
-            else 0.0
-        )
+        margin = COLD_BOOKING_RELEASE_BAND if self.applied["shared"] == PRESET_COMFORT else 0.0
         return room < self.number("shared_comfort_temp") + margin
 
     def _water_actual(self) -> bool | None:

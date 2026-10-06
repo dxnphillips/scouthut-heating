@@ -2637,6 +2637,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   group reaching for Boost at a satisfied average is the cold-end cost showing
   — the answer then is a raised comfort setpoint or Q19's seated sensor, not a
   return to the coldest probe.
+  **The release band belongs to the rung that is heating (v1.48.1, 2026-10-06
+  export).** `COLD_BOOKING_RELEASE_BAND` used to apply whenever the applied
+  preset was comfort OR eco, so the `others_present` eco rest (the hall parked
+  at eco because someone was in the office) armed it: the next hall PIR trip was
+  judged against 19.5 instead of 19.0 and lit four heaters on a room already at
+  comfort — 2026-10-02 14:16Z at 19.2 and 2026-10-05 13:28Z at 19.4, 15–22 min
+  each, ~0.1 kWh a time. `_room_wants_heat` now takes the preset the calling
+  rung would set (comfort; eco for an ECO-keyword booking) and applies the band
+  only while THAT preset is applied; `_shared_wants_heat` likewise only in
+  comfort. An eco rest, a `booking_quiet` park or a coast hold has no heating
+  decision to hold, so the gate judges it bare. Tests in
+  `tests/test_room_wants_heat.py` and `tests/test_shared_zone.py`.
 - **The pre-heat window latches open, keyed to the event (2026-08-05, refined
   2026-08-06).** `_async_refresh_calendars` recomputes the lead every ~5 min, but
   once the window has opened for an event it is held open (`window = gap_min <=

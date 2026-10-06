@@ -125,6 +125,50 @@ def test_heat_releases_above_the_band():
     assert ctrl._desired_zone(ZA) == PRESET_ICE
 
 
+def test_the_band_belongs_to_the_rung_that_is_heating_not_to_any_eco_rest():
+    """2026-10-05 13:28Z: the hall rested at eco on `others_present` (someone in
+    the office), then a hall PIR trip was judged against 19.5 instead of 19.0 and
+    four heaters lit on a room already reading 19.4. The eco rest was not a
+    heating decision, so it has no decision to hold — the gate judges bare."""
+    ctrl, hass = make_controller()
+    hass.states.set(E["weather"], "sunny", {"temperature": 19.0})
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    ctrl.applied[ZA] = PRESET_ECO  # resting on others_present
+    hall_temp(ctrl, 19.4)
+    motion(ctrl, "hall")
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "occupied_warm"
+    # Once this rung IS heating, the same reading holds comfort (release at 19.5).
+    ctrl.applied[ZA] = PRESET_COMFORT
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_an_eco_booking_keeps_its_own_release_band():
+    """The band follows the preset the rung sets: an ECO-keyword booking heating
+    at eco holds until eco-low + band, exactly as before."""
+    ctrl, _ = make_controller()
+    booking(ctrl, ZA, "Test event")  # eco-low target 14
+    ctrl.applied[ZA] = PRESET_ECO
+    hall_temp(ctrl, 14.3)  # above 14, inside the band
+    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    hall_temp(ctrl, 14.6)
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+
+
+def test_a_comfort_booking_resting_at_eco_is_judged_bare_when_people_return():
+    """`booking_quiet` parked the booking at eco; the returning group finds the
+    room above comfort, so it lands on ice rather than relighting on the band."""
+    ctrl, hass = make_controller()
+    hass.states.set(E["weather"], "sunny", {"temperature": 22.0})  # no hold margin
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    booking(ctrl, ZA)
+    ctrl.applied[ZA] = PRESET_ECO
+    hall_temp(ctrl, 19.2)
+    motion(ctrl, "hall")
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_warm"
+
+
 # --- Office -----------------------------------------------------------------
 def test_cold_office_booking_heats():
     ctrl, _ = make_controller()
