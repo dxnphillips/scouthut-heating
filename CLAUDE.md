@@ -2536,8 +2536,8 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the toilets when someone actually gets up, not all night). Reason strings:
   `booking` / `preheat` / `booking_warm` / `booking_eco` /
   `booking_quiet` / `preheat_coast` / `booking_coast` for bookings; `motion` /
-  `occupied_override` / `sleepover` (heating) and `occupied_warm` (warm → ice) for
-  occupancy; the `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
+  `occupied_override` / `sleepover` / `eco_tail` (heating) and `occupied_warm`
+  (warm → ice) for occupancy; the `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
   comfort too now** (2026-08-07): `_desired_shared` warms the block to
   `shared_comfort_temp` (via `_shared_wants_heat`, the shared analog of the gate —
   coldest shared probe below target, err-warm on unreadable) whenever it is
@@ -2660,6 +2660,21 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   comfort. An eco rest, a `booking_quiet` park or a coast hold has no heating
   decision to hold, so the gate judges it bare. Tests in
   `tests/test_room_wants_heat.py` and `tests/test_shared_zone.py`.
+  **An ECO-keyword booking leaves an eco TAIL (v1.49.0, same export).** On
+  2026-10-02 both sal-vation cleaning bookings (eco-low 14) ended with the
+  cleaner still moving about, and on each end edge the bare-occupancy rung lit
+  all four hall heaters toward comfort 19 on a 15–17 °C hall — 06:02–06:08Z and
+  10:17–10:26Z, until the alarm iced them, ~0.15 kWh plus 35 °C panels that then
+  warmed an empty hall to 18.8. The person still tripping the PIR after a
+  low-key booking IS that booking's visit, so for one `motion_timeout_minutes`
+  after an eco booking ends (`_eco_tail_until`, set on the `booking_end` edge
+  from `_cal_eco_running`, latched at the start edge because the title can be
+  refreshed away by the end) zone occupancy heats toward the eco-low target at
+  eco (reason `eco_tail`) rather than comfort, and every eco-low push site reads
+  `_eco_low_wanted` (keyword active OR tail running) so the eco preset carries
+  14, not 16. A warm hall in the tail lands on `occupied_warm` ice as usual; the
+  manual override is exempt; a new booking start clears the tail; a restart
+  drops it (fail direction: ordinary comfort). Tests in `tests/test_eco_tail.py`.
 - **The pre-heat window latches open, keyed to the event (2026-08-05, refined
   2026-08-06).** `_async_refresh_calendars` recomputes the lead every ~5 min, but
   once the window has opened for an event it is held open (`window = gap_min <=
