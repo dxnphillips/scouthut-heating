@@ -402,6 +402,13 @@ DRIVE_COAST_MAX_MINUTES = 20.0
 # only 0.5), and for this long afterwards the approach RATE is unknowable — which
 # is precisely what the easing's premise depends on. Both only ever WITHHOLD the
 # easing, i.e. restore full drive, so this is strictly the arrive-warm direction.
+#
+# Judged per PROBE as well as on the average (v1.49.2, field 2026-10-07 15:50Z):
+# the probes unfreeze one at a time, so three of four stepping +3.3 on successive
+# ticks moved the hall average by under 1.0 each time, the easing engaged on it
+# with 72 °C panels and the room read flat for the whole box. One probe rising a
+# whole degree between two 30-s evaluations is two quanta at once — a catch-up,
+# never the room — whatever the average does.
 DRIVE_COAST_MAX_JUMP = 1.0      # °C rise between evaluations that means "catch-up"
 DRIVE_COAST_SETTLE_MIN = 15.0   # no new easing for this long after one
 # ...and the panels must actually hold enough heat to deliver the allowance
@@ -840,6 +847,10 @@ class ScoutController:
         # DRIVE_COAST_MAX_JUMP). Not persisted: a restart re-arms on the next
         # pair of readings, and the fail direction is more drive, not less.
         self._drive_coast_seen: dict[str, float] = {}
+        # ...and each heater's own probe as last seen, because the probes unfreeze
+        # ONE AT A TIME: three of four stepping +3.3 on successive ticks move the
+        # average by under 1.0 each time and slip the average test (v1.49.2).
+        self._drive_coast_seen_probe: dict[str, dict[str, float]] = {}
         self._drive_coast_jumped: dict[str, datetime] = {}
         self._drive_frozen: set[str] = set()
         # Heaters whose overdrive escalation is being held because the zone average
@@ -2193,12 +2204,45 @@ class ScoutController:
 
         Records ``drive_coast_jump`` on the edge so the artefact is visible in the
         audit rather than only in its consequences.
+
+        Judged on each heater's OWN probe as well as the average (v1.49.2). The
+        probes unfreeze one at a time, not together: on 2026-10-07 15:41–15:50Z
+        three of the four hall probes stepped 16.0 → ~19.3 on successive ticks
+        while the fourth sat at 17.5, so the average climbed 16.4 → 18.88 in
+        steps of under 1.0 each, the easing engaged on it with 72 °C panels, and
+        the room then read dead flat for the whole 20-min box. A single probe
+        rising a whole degree between two 30-s evaluations is two quanta at once
+        — the reading catching up, never the room — whatever the average does.
         """
+        jumped = False
+        seen = self._drive_coast_seen_probe.setdefault(zone, {})
+        for climate in self._as_list(self.config.get(DRIVE_ZONE_CLIMATES.get(zone))):
+            probe = self._heater_probe(climate)
+            if probe is None:
+                seen.pop(climate, None)
+                continue
+            before = seen.get(climate)
+            seen[climate] = probe
+            if not jumped and before is not None and probe - before >= DRIVE_COAST_MAX_JUMP:
+                jumped = True
+                self._drive_coast_jumped[zone] = now
+                self.audit.record(
+                    "drive_coast_jump",
+                    now,
+                    zone=zone,
+                    heater=climate,
+                    previous=before,
+                    probe=probe,
+                    zone_avg=zone_avg,
+                    rise=round(probe - before, 2),
+                )
         if zone_avg is None:
             self._drive_coast_seen.pop(zone, None)
-            return self._coast_settling(zone, now)
+            return jumped or self._coast_settling(zone, now)
         previous = self._drive_coast_seen.get(zone)
         self._drive_coast_seen[zone] = zone_avg
+        if jumped:
+            return True
         if previous is not None and zone_avg - previous >= DRIVE_COAST_MAX_JUMP:
             self._drive_coast_jumped[zone] = now
             self.audit.record(
