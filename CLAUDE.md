@@ -2234,6 +2234,27 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   band, the 20-min box and `_zone_panels_hot` (panel still > room + 5), as
   before. Worst case is unchanged (0.5 °C for ≤ 20 min on hot panels); the
   `rise` measurements become honest.
+  **The jump guard is per PROBE as well as per average (v1.49.2, 2026-10-07 — the
+  first cold pre-heat on the whole current stack).** The 15:10Z pre-heat (hall
+  15.9, outdoor 12, lead 83 min for a 68-min climb, arrived −0.5, `warmup_sample`
+  accepted at gross 11.4 — the model's first clean validation) had the
+  freeze-guard holding all four heaters at 16.0–17.5 at 15:41Z; by 15:50Z three
+  of the four probes had stepped to ~19.3 **one at a time** while hall_front sat
+  at 17.5, so the zone average climbed 16.4 → 18.88 in steps of under 1.0 each,
+  the average jump test never fired, and the easing engaged on 72 °C panels into
+  a 20-min box that read dead flat (`rise` 0.0) — the serial form of the 09-21
+  catch-up, exactly the per-probe blind spot Q25 (d)/(e) noted for the warm-up
+  guard. `_note_coast_jump` now tracks each heater's own probe and treats a
+  single probe rising ≥ `DRIVE_COAST_MAX_JUMP` (1.0, two quanta at once) between
+  evaluations as a jump whatever the average does; the event carries `heater` /
+  `probe`. Fail direction unchanged (withholding the easing is more drive). The
+  same climb's second easing, in the booking at 17:16Z on 47.5 °C panels, ended
+  on `occupied_warm` with `rise` **+0.62** — the first honest hall tail on the
+  engage-only gate, right at the 0.5 seed. `peak_over` 0.62 / `minutes_over` 6.1
+  for the session is the smallest heated-booking overshoot on record (1.6–2.25 in
+  September). **Watch:** `drive_coast_jump` with `heater` should now appear on
+  cold climbs; the easing will engage less often while probes catch up serially,
+  which is the intent.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`
