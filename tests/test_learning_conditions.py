@@ -184,6 +184,25 @@ def test_panel_shed_after_a_hard_drive_does_not_raise_the_opening_alarm():
     assert ctrl._cooloff_start[ZA][1] == pytest.approx(20.0)
 
 
+def test_the_sample_carries_how_settled_the_fabric_was_at_its_anchor():
+    # Anchor on the time floor alone (no surface sensor), then shed a degree in
+    # half an hour at a wide gap: the 2026-10-07 hall signature. The event says the
+    # anchor sat ~21 min after icing, so the alarm treats it as a transient.
+    ctrl, hass = make_controller()
+    _set(ctrl, "zone_a_heatloss_pct", 5.55)
+    _start_ice(ctrl, hass, 17.8)
+    advance(ctrl, COOL_SETTLE_MINUTES + 1)
+    ctrl._update_cooloff_learning()  # anchors at 17.8
+    assert ctrl._cooloff_start[ZA] is not None
+    advance(ctrl, 31)
+    _probes(hass, 16.8)
+    ctrl._update_cooloff_learning()
+    (evt,) = _events(ctrl, "cooloff_sample")
+    assert evt["outlier"] is True and evt["transient"] is True
+    assert 20 <= evt["settled_min"] <= 22
+    assert ctrl._opening_inferred[ZA] is False
+
+
 def test_zone_panels_hot_threshold():
     ctrl, hass = make_controller()
     assert ctrl._zone_panels_hot(ZA, 20.0) is False  # no surface sensor mapped

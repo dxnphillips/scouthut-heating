@@ -2464,6 +2464,34 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the anchor, never corrupts k. **First-winter watch:** a post-boost or post-booking
   cool-off must no longer push `opening_inferred`; if one still does with the panels
   cold, it is a real opening or the freeze signature (PR 5), not the transient.
+  **It did, four times in 24 h, with the panels cold and nothing open — the
+  fabric transient outlasts the panel release (v1.49.4, `COOL_ALARM_SETTLE_MIN`
+  = 120, 2026-10-08 export).** Hall 21:21Z and 13:15Z, office 21:18Z and 20:22Z:
+  every sample anchored 48–64 min after the zone went to ice (20-min floor +
+  the panels cooling to within 5 °C), and every one read 15–22 %/h at a gap of
+  6–11 — 3–5× the baselines (hall 5.55, office 3.78). The overnight trace shows
+  what it is: the hall shed 1.8 °C/h in the first hour after the 19:46Z ice,
+  1.0 in the second, 0.6–0.8 in the third and 0.3–0.5 after — gap-normalised
+  18 → 11 → 8 → 5 %/h. On a cold-soaked building (hall at 11.4 °C that dawn,
+  outdoor 3–7) a short burst of heating lifts the AIR well above the timber,
+  and the air then re-equilibrates with the cold fabric for an hour or more
+  after the radiators themselves have cooled; the single-lump k describes the
+  slow phase, the baseline is learned from it (every accepted sample is an
+  overnight slow-phase one), and so every post-session cool-off in winter
+  would read as an "opening". The alarm now needs the sample anchored ≥ 120 min
+  after the heating→ice edge: an earlier out-of-family sample is `transient`
+  (rejected, k untouched, latch left as it was, `settled_min` recorded). 120
+  because the second office sample, anchored at 92 min, was still 4.8×.
+  Learning is unchanged on purpose — the fast-phase samples that DO pass the 3×
+  test still fold under the 25 % cap and keep k from sinking to the pure slow
+  phase (22:07Z: 15.5 %/h folded 5.55 → 6.93), which is the err-warm side for
+  the lead. **Watch:** `transient` samples should appear after every winter
+  session; an `opening_inferred` with `settled_min` ≥ 120 is then real. If one
+  still fires at 2–3 h with nothing open, the office baseline (3.8–4.2) is too
+  low for a cold fabric, not the line. The deeper question — a two-lump model,
+  or k learned by gap band — stays open; the leak term and the idle-gap
+  prediction both run on the slow-phase k and have over-led, not under-led, so
+  far.
   **OUTSTANDING — the settle-delay does NOT catch the office's recurring 3am false
   alarm; a DIFFERENT mechanism (probe freeze-then-unfreeze) is now firing ~nightly
   (2026-09-14 AND 09-15 03:17, post-deploy).** The office probe holds one value flat

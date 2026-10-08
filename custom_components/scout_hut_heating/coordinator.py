@@ -551,6 +551,23 @@ COOL_SETTLE_MINUTES = 20.0
 # out-of-family, so the flat test only ever bites on a sample that would
 # otherwise have cried wolf. Sized above the longest legitimate dwell seen.
 COOL_FREEZE_FLAT_MINUTES = 90.0
+# The "window/door open?" push needs a SETTLED fabric (v1.49.4, 2026-10-07/08:
+# four false pushes in 24 h, nothing open). The settle delay and the panel gate
+# above hold the anchor until the radiator itself has cooled (~45–60 min after a
+# hard drive), but on a cold-soaked building the AIR then re-equilibrates with
+# the cold timber for another hour or more: the first hour after a burst heating
+# read 15–20 %/h at a gap of 9–10 (hall 17.8 → 15.6 in 75 min on a 7 °C night,
+# then 11, 8 and 5 %/h over the following hours), the office 18 %/h — 3–5× the
+# baselines the slow phase had taught (hall 5.55, office 3.78). The single-lump
+# k cannot describe that, and every post-session cool-off would cry wolf all
+# winter. So an out-of-family sample whose anchor sits inside this many minutes
+# of the heating→ice edge is classified `transient`: still rejected (k untouched)
+# but it neither raises nor clears the opening latch. All four false alarms
+# anchored 48–64 min after icing; the second office sample (92 min) was still
+# out-of-family, so 120 is the line. Trade accepted: an unsensored opening in the
+# two hours after a session is audited, not pushed — the hall has contacts, and
+# the office's standing fix is a contact (Q19).
+COOL_ALARM_SETTLE_MIN = 120.0
 # Cold-conditions gate on warm-up learning (2026-09-11, field). A warm-up timed
 # in mild weather reads implausibly fast because solar gain on the big uninsulated
 # roof (plus occupancy) does much of the work the radiators are credited with.
@@ -2430,6 +2447,13 @@ class ScoutController:
                 else:
                     flat_since = now
                 prev_temp = temp
+            # Minutes from the heating→ice edge to this sample's anchor: how
+            # settled the fabric was when the measurement began (the opening
+            # alarm needs COOL_ALARM_SETTLE_MIN of it).
+            since = self._cooloff_cooling_since[zone]
+            settled_min = (
+                (started - since).total_seconds() / 60 if since is not None else None
+            )
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
                 # drop there was and stop sampling.
@@ -2450,6 +2474,7 @@ class ScoutController:
                         watt_n,
                         max_tick_drop,
                         max_flat_min,
+                        settled_min,
                     )
                 continue
 
@@ -2470,6 +2495,7 @@ class ScoutController:
                 self._fold_cooloff(
                     zone, hours, drop, start_temp, temp, out_sum, out_n,
                     fan_ticks, ticks, watt_sum, watt_n, max_tick_drop, max_flat_min,
+                    settled_min,
                 )
                 self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
@@ -2488,6 +2514,7 @@ class ScoutController:
         watt_n: int,
         max_tick_drop: float = 0.0,
         max_flat_min: float = 0.0,
+        settled_min: float | None = None,
     ) -> None:
         key = f"{zone}_heatloss_pct"
         current = self.number(key)
@@ -2543,7 +2570,16 @@ class ScoutController:
         # rejected (k untouched) but says nothing about an opening, so the latch
         # is left as it was rather than raised.
         frozen = outlier and max_flat_min >= COOL_FREEZE_FLAT_MINUTES
-        if quality_ok and not frozen:
+        # An out-of-family sample anchored inside COOL_ALARM_SETTLE_MIN of the
+        # heating→ice edge is the air re-equilibrating with a cold fabric, not an
+        # opening (four false pushes in 24 h, 2026-10-07/08): rejected, but it
+        # says nothing about an opening either way, so the latch is left alone.
+        transient = (
+            outlier
+            and settled_min is not None
+            and settled_min < COOL_ALARM_SETTLE_MIN
+        )
+        if quality_ok and not frozen and not transient:
             self._opening_inferred[zone] = outlier
         self.audit.record(
             "cooloff_sample",
@@ -2555,6 +2591,8 @@ class ScoutController:
             accepted=quality_ok and not outlier,
             outlier=outlier,
             frozen=frozen,
+            transient=transient,
+            settled_min=None if settled_min is None else round(settled_min, 1),
             over_warm=over_warm,
             old_pct=current,
             new_pct=new,
