@@ -2255,6 +2255,28 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   September). **Watch:** `drive_coast_jump` with `heater` should now appear on
   cold climbs; the easing will engage less often while probes catch up serially,
   which is the intent.
+  **REVERTED after one day (v1.49.3, 2026-10-08 export).** The per-probe refusal
+  fired 25 times in the day's three hall climbs and the easing engaged only once
+  (11:26Z, after the settle window, cut 6 min later by `building_empty`); every
+  heater then ran to its overdriven local setpoint (pushed 20.0 at 16:23Z on
+  readings of 17.0–17.5 that were ~1 °C stale, the probes catching up to
+  20.0–20.5 in +3.0 leaps at 16:34–16:46Z) and the two bookings came in at
+  `peak_over` **1.38** and **1.12** with a forward breeze on the arriving
+  children — against 0.62 the day before, when the easing had engaged on just
+  such a serial catch-up and cut the elements at 18.5 for 20 min. The premise
+  was wrong in effect: a Rointe fires to its OWN live probe, so a reading that
+  has just caught up is the freshest there is and says where the room is now;
+  refusing to ease on it only lets the elements run on to target + stair. The
+  whole-zone average jump test (v1.42.0, the 09-21 case) stays. **The deeper
+  lever is the staircase itself, NOT built, owner's call:** every cold climb on
+  record reaches +1.0 while the probes are 1.5–3 °C short and frozen, and an
+  overdrive adds nothing while a heater is already at full output — it only
+  moves where the element cuts (20.0 instead of 19.0), which is the overshoot
+  seen on every heated session. Escalating the stair only once the probe is
+  inside the Rointe's throttling band (~1.0 of target) would hold the climb at
+  +0.5 and still let a stalled room (the Q17 capacity question) walk to the cap.
+  A feedforward step on a cold night would still add +0.5; judge that from a
+  cold-night `drive_off` trace before touching it.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`

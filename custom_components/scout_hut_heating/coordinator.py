@@ -403,12 +403,13 @@ DRIVE_COAST_MAX_MINUTES = 20.0
 # is precisely what the easing's premise depends on. Both only ever WITHHOLD the
 # easing, i.e. restore full drive, so this is strictly the arrive-warm direction.
 #
-# Judged per PROBE as well as on the average (v1.49.2, field 2026-10-07 15:50Z):
-# the probes unfreeze one at a time, so three of four stepping +3.3 on successive
-# ticks moved the hall average by under 1.0 each time, the easing engaged on it
-# with 72 °C panels and the room read flat for the whole box. One probe rising a
-# whole degree between two 30-s evaluations is two quanta at once — a catch-up,
-# never the room — whatever the average does.
+# Judged on the AVERAGE only. A per-probe form (v1.49.2: any single probe stepping
+# a whole degree, because the probes unfreeze one at a time) lasted one day: on
+# 2026-10-08 it refused the easing in all three hall climbs and every heater ran
+# to its overdriven local setpoint before the readings caught up — sessions over
+# by 1.1–1.4 against 0.62 the day before, when the easing had engaged on just such
+# a serial catch-up. A reading that has just caught up is the freshest there is;
+# refusing to ease on it only lets the elements run on (v1.49.3).
 DRIVE_COAST_MAX_JUMP = 1.0      # °C rise between evaluations that means "catch-up"
 DRIVE_COAST_SETTLE_MIN = 15.0   # no new easing for this long after one
 # ...and the panels must actually hold enough heat to deliver the allowance
@@ -847,10 +848,6 @@ class ScoutController:
         # DRIVE_COAST_MAX_JUMP). Not persisted: a restart re-arms on the next
         # pair of readings, and the fail direction is more drive, not less.
         self._drive_coast_seen: dict[str, float] = {}
-        # ...and each heater's own probe as last seen, because the probes unfreeze
-        # ONE AT A TIME: three of four stepping +3.3 on successive ticks move the
-        # average by under 1.0 each time and slip the average test (v1.49.2).
-        self._drive_coast_seen_probe: dict[str, dict[str, float]] = {}
         self._drive_coast_jumped: dict[str, datetime] = {}
         self._drive_frozen: set[str] = set()
         # Heaters whose overdrive escalation is being held because the zone average
@@ -2205,44 +2202,25 @@ class ScoutController:
         Records ``drive_coast_jump`` on the edge so the artefact is visible in the
         audit rather than only in its consequences.
 
-        Judged on each heater's OWN probe as well as the average (v1.49.2). The
-        probes unfreeze one at a time, not together: on 2026-10-07 15:41–15:50Z
-        three of the four hall probes stepped 16.0 → ~19.3 on successive ticks
-        while the fourth sat at 17.5, so the average climbed 16.4 → 18.88 in
-        steps of under 1.0 each, the easing engaged on it with 72 °C panels, and
-        the room then read dead flat for the whole 20-min box. A single probe
-        rising a whole degree between two 30-s evaluations is two quanta at once
-        — the reading catching up, never the room — whatever the average does.
+        Judged on the AVERAGE only. v1.49.2 also refused the easing when any
+        single probe stepped a whole degree (the probes unfreeze one at a time,
+        so three stepping +3.3 on successive ticks move the average under 1.0
+        each), and v1.49.3 reverted it after one day: on 2026-10-08 it refused
+        the easing in all three hall climbs, every heater then ran to its
+        overdriven local setpoint (target + 1.0) before the readings caught up,
+        and the sessions overshot by 1.1–1.4 — against 0.62 the day before,
+        when the easing had engaged on exactly such a serial catch-up and cut
+        the elements at target − 0.5. A Rointe fires to its OWN live probe, so a
+        reading that has just caught up says where the room is NOW; a catch-up
+        is the freshest reading there is, and refusing to ease on it only lets
+        the elements run on. The whole-zone jump test stays for the 09-21 case
+        (every probe leaping together, the room not yet arrived).
         """
-        jumped = False
-        seen = self._drive_coast_seen_probe.setdefault(zone, {})
-        for climate in self._as_list(self.config.get(DRIVE_ZONE_CLIMATES.get(zone))):
-            probe = self._heater_probe(climate)
-            if probe is None:
-                seen.pop(climate, None)
-                continue
-            before = seen.get(climate)
-            seen[climate] = probe
-            if not jumped and before is not None and probe - before >= DRIVE_COAST_MAX_JUMP:
-                jumped = True
-                self._drive_coast_jumped[zone] = now
-                self.audit.record(
-                    "drive_coast_jump",
-                    now,
-                    zone=zone,
-                    heater=climate,
-                    previous=before,
-                    probe=probe,
-                    zone_avg=zone_avg,
-                    rise=round(probe - before, 2),
-                )
         if zone_avg is None:
             self._drive_coast_seen.pop(zone, None)
-            return jumped or self._coast_settling(zone, now)
+            return self._coast_settling(zone, now)
         previous = self._drive_coast_seen.get(zone)
         self._drive_coast_seen[zone] = zone_avg
-        if jumped:
-            return True
         if previous is not None and zone_avg - previous >= DRIVE_COAST_MAX_JUMP:
             self._drive_coast_jumped[zone] = now
             self.audit.record(
