@@ -2255,6 +2255,28 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   September). **Watch:** `drive_coast_jump` with `heater` should now appear on
   cold climbs; the easing will engage less often while probes catch up serially,
   which is the intent.
+  **REVERTED after one day (v1.49.3, 2026-10-08 export).** The per-probe refusal
+  fired 25 times in the day's three hall climbs and the easing engaged only once
+  (11:26Z, after the settle window, cut 6 min later by `building_empty`); every
+  heater then ran to its overdriven local setpoint (pushed 20.0 at 16:23Z on
+  readings of 17.0–17.5 that were ~1 °C stale, the probes catching up to
+  20.0–20.5 in +3.0 leaps at 16:34–16:46Z) and the two bookings came in at
+  `peak_over` **1.38** and **1.12** with a forward breeze on the arriving
+  children — against 0.62 the day before, when the easing had engaged on just
+  such a serial catch-up and cut the elements at 18.5 for 20 min. The premise
+  was wrong in effect: a Rointe fires to its OWN live probe, so a reading that
+  has just caught up is the freshest there is and says where the room is now;
+  refusing to ease on it only lets the elements run on to target + stair. The
+  whole-zone average jump test (v1.42.0, the 09-21 case) stays. **The deeper
+  lever is the staircase itself, NOT built, owner's call:** every cold climb on
+  record reaches +1.0 while the probes are 1.5–3 °C short and frozen, and an
+  overdrive adds nothing while a heater is already at full output — it only
+  moves where the element cuts (20.0 instead of 19.0), which is the overshoot
+  seen on every heated session. Escalating the stair only once the probe is
+  inside the Rointe's throttling band (~1.0 of target) would hold the climb at
+  +0.5 and still let a stalled room (the Q17 capacity question) walk to the cap.
+  A feedforward step on a cold night would still add +0.5; judge that from a
+  cold-night `drive_off` trace before touching it.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`
@@ -2442,6 +2464,34 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the anchor, never corrupts k. **First-winter watch:** a post-boost or post-booking
   cool-off must no longer push `opening_inferred`; if one still does with the panels
   cold, it is a real opening or the freeze signature (PR 5), not the transient.
+  **It did, four times in 24 h, with the panels cold and nothing open — the
+  fabric transient outlasts the panel release (v1.49.4, `COOL_ALARM_SETTLE_MIN`
+  = 120, 2026-10-08 export).** Hall 21:21Z and 13:15Z, office 21:18Z and 20:22Z:
+  every sample anchored 48–64 min after the zone went to ice (20-min floor +
+  the panels cooling to within 5 °C), and every one read 15–22 %/h at a gap of
+  6–11 — 3–5× the baselines (hall 5.55, office 3.78). The overnight trace shows
+  what it is: the hall shed 1.8 °C/h in the first hour after the 19:46Z ice,
+  1.0 in the second, 0.6–0.8 in the third and 0.3–0.5 after — gap-normalised
+  18 → 11 → 8 → 5 %/h. On a cold-soaked building (hall at 11.4 °C that dawn,
+  outdoor 3–7) a short burst of heating lifts the AIR well above the timber,
+  and the air then re-equilibrates with the cold fabric for an hour or more
+  after the radiators themselves have cooled; the single-lump k describes the
+  slow phase, the baseline is learned from it (every accepted sample is an
+  overnight slow-phase one), and so every post-session cool-off in winter
+  would read as an "opening". The alarm now needs the sample anchored ≥ 120 min
+  after the heating→ice edge: an earlier out-of-family sample is `transient`
+  (rejected, k untouched, latch left as it was, `settled_min` recorded). 120
+  because the second office sample, anchored at 92 min, was still 4.8×.
+  Learning is unchanged on purpose — the fast-phase samples that DO pass the 3×
+  test still fold under the 25 % cap and keep k from sinking to the pure slow
+  phase (22:07Z: 15.5 %/h folded 5.55 → 6.93), which is the err-warm side for
+  the lead. **Watch:** `transient` samples should appear after every winter
+  session; an `opening_inferred` with `settled_min` ≥ 120 is then real. If one
+  still fires at 2–3 h with nothing open, the office baseline (3.8–4.2) is too
+  low for a cold fabric, not the line. The deeper question — a two-lump model,
+  or k learned by gap band — stays open; the leak term and the idle-gap
+  prediction both run on the slow-phase k and have over-led, not under-led, so
+  far.
   **OUTSTANDING — the settle-delay does NOT catch the office's recurring 3am false
   alarm; a DIFFERENT mechanism (probe freeze-then-unfreeze) is now firing ~nightly
   (2026-09-14 AND 09-15 03:17, post-deploy).** The office probe holds one value flat

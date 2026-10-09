@@ -103,11 +103,15 @@ def test_a_steady_climb_on_every_probe_still_teaches():
 
 # --- Cool-off: a long flat spell before an out-of-family drop is a freeze ----
 def _begin_cooloff(ctrl, hass, temp):
+    from custom_components.scout_hut_heating.coordinator import COOL_ALARM_SETTLE_MIN
+
     hass.states.set(E["weather"], "cloudy", {"temperature": 10})
     _probes(hass, temp, temp)
     ctrl.applied[ZA] = PRESET_ICE
     ctrl._update_cooloff_learning()  # settle clock starts
-    advance(ctrl, COOL_SETTLE_MINUTES + 1)
+    # Past both the anchor floor and the alarm's fabric-settle line (v1.49.4), so
+    # these tests judge the freeze signature alone, not the post-heating transient.
+    advance(ctrl, max(COOL_SETTLE_MINUTES, COOL_ALARM_SETTLE_MIN) + 1)
     ctrl._update_cooloff_learning()  # anchored
     assert ctrl._cooloff_start[ZA] is not None
 

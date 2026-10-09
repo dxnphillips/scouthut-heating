@@ -403,12 +403,13 @@ DRIVE_COAST_MAX_MINUTES = 20.0
 # is precisely what the easing's premise depends on. Both only ever WITHHOLD the
 # easing, i.e. restore full drive, so this is strictly the arrive-warm direction.
 #
-# Judged per PROBE as well as on the average (v1.49.2, field 2026-10-07 15:50Z):
-# the probes unfreeze one at a time, so three of four stepping +3.3 on successive
-# ticks moved the hall average by under 1.0 each time, the easing engaged on it
-# with 72 °C panels and the room read flat for the whole box. One probe rising a
-# whole degree between two 30-s evaluations is two quanta at once — a catch-up,
-# never the room — whatever the average does.
+# Judged on the AVERAGE only. A per-probe form (v1.49.2: any single probe stepping
+# a whole degree, because the probes unfreeze one at a time) lasted one day: on
+# 2026-10-08 it refused the easing in all three hall climbs and every heater ran
+# to its overdriven local setpoint before the readings caught up — sessions over
+# by 1.1–1.4 against 0.62 the day before, when the easing had engaged on just such
+# a serial catch-up. A reading that has just caught up is the freshest there is;
+# refusing to ease on it only lets the elements run on (v1.49.3).
 DRIVE_COAST_MAX_JUMP = 1.0      # °C rise between evaluations that means "catch-up"
 DRIVE_COAST_SETTLE_MIN = 15.0   # no new easing for this long after one
 # ...and the panels must actually hold enough heat to deliver the allowance
@@ -550,6 +551,23 @@ COOL_SETTLE_MINUTES = 20.0
 # out-of-family, so the flat test only ever bites on a sample that would
 # otherwise have cried wolf. Sized above the longest legitimate dwell seen.
 COOL_FREEZE_FLAT_MINUTES = 90.0
+# The "window/door open?" push needs a SETTLED fabric (v1.49.4, 2026-10-07/08:
+# four false pushes in 24 h, nothing open). The settle delay and the panel gate
+# above hold the anchor until the radiator itself has cooled (~45–60 min after a
+# hard drive), but on a cold-soaked building the AIR then re-equilibrates with
+# the cold timber for another hour or more: the first hour after a burst heating
+# read 15–20 %/h at a gap of 9–10 (hall 17.8 → 15.6 in 75 min on a 7 °C night,
+# then 11, 8 and 5 %/h over the following hours), the office 18 %/h — 3–5× the
+# baselines the slow phase had taught (hall 5.55, office 3.78). The single-lump
+# k cannot describe that, and every post-session cool-off would cry wolf all
+# winter. So an out-of-family sample whose anchor sits inside this many minutes
+# of the heating→ice edge is classified `transient`: still rejected (k untouched)
+# but it neither raises nor clears the opening latch. All four false alarms
+# anchored 48–64 min after icing; the second office sample (92 min) was still
+# out-of-family, so 120 is the line. Trade accepted: an unsensored opening in the
+# two hours after a session is audited, not pushed — the hall has contacts, and
+# the office's standing fix is a contact (Q19).
+COOL_ALARM_SETTLE_MIN = 120.0
 # Cold-conditions gate on warm-up learning (2026-09-11, field). A warm-up timed
 # in mild weather reads implausibly fast because solar gain on the big uninsulated
 # roof (plus occupancy) does much of the work the radiators are credited with.
@@ -847,10 +865,6 @@ class ScoutController:
         # DRIVE_COAST_MAX_JUMP). Not persisted: a restart re-arms on the next
         # pair of readings, and the fail direction is more drive, not less.
         self._drive_coast_seen: dict[str, float] = {}
-        # ...and each heater's own probe as last seen, because the probes unfreeze
-        # ONE AT A TIME: three of four stepping +3.3 on successive ticks move the
-        # average by under 1.0 each time and slip the average test (v1.49.2).
-        self._drive_coast_seen_probe: dict[str, dict[str, float]] = {}
         self._drive_coast_jumped: dict[str, datetime] = {}
         self._drive_frozen: set[str] = set()
         # Heaters whose overdrive escalation is being held because the zone average
@@ -2205,44 +2219,25 @@ class ScoutController:
         Records ``drive_coast_jump`` on the edge so the artefact is visible in the
         audit rather than only in its consequences.
 
-        Judged on each heater's OWN probe as well as the average (v1.49.2). The
-        probes unfreeze one at a time, not together: on 2026-10-07 15:41–15:50Z
-        three of the four hall probes stepped 16.0 → ~19.3 on successive ticks
-        while the fourth sat at 17.5, so the average climbed 16.4 → 18.88 in
-        steps of under 1.0 each, the easing engaged on it with 72 °C panels, and
-        the room then read dead flat for the whole 20-min box. A single probe
-        rising a whole degree between two 30-s evaluations is two quanta at once
-        — the reading catching up, never the room — whatever the average does.
+        Judged on the AVERAGE only. v1.49.2 also refused the easing when any
+        single probe stepped a whole degree (the probes unfreeze one at a time,
+        so three stepping +3.3 on successive ticks move the average under 1.0
+        each), and v1.49.3 reverted it after one day: on 2026-10-08 it refused
+        the easing in all three hall climbs, every heater then ran to its
+        overdriven local setpoint (target + 1.0) before the readings caught up,
+        and the sessions overshot by 1.1–1.4 — against 0.62 the day before,
+        when the easing had engaged on exactly such a serial catch-up and cut
+        the elements at target − 0.5. A Rointe fires to its OWN live probe, so a
+        reading that has just caught up says where the room is NOW; a catch-up
+        is the freshest reading there is, and refusing to ease on it only lets
+        the elements run on. The whole-zone jump test stays for the 09-21 case
+        (every probe leaping together, the room not yet arrived).
         """
-        jumped = False
-        seen = self._drive_coast_seen_probe.setdefault(zone, {})
-        for climate in self._as_list(self.config.get(DRIVE_ZONE_CLIMATES.get(zone))):
-            probe = self._heater_probe(climate)
-            if probe is None:
-                seen.pop(climate, None)
-                continue
-            before = seen.get(climate)
-            seen[climate] = probe
-            if not jumped and before is not None and probe - before >= DRIVE_COAST_MAX_JUMP:
-                jumped = True
-                self._drive_coast_jumped[zone] = now
-                self.audit.record(
-                    "drive_coast_jump",
-                    now,
-                    zone=zone,
-                    heater=climate,
-                    previous=before,
-                    probe=probe,
-                    zone_avg=zone_avg,
-                    rise=round(probe - before, 2),
-                )
         if zone_avg is None:
             self._drive_coast_seen.pop(zone, None)
-            return jumped or self._coast_settling(zone, now)
+            return self._coast_settling(zone, now)
         previous = self._drive_coast_seen.get(zone)
         self._drive_coast_seen[zone] = zone_avg
-        if jumped:
-            return True
         if previous is not None and zone_avg - previous >= DRIVE_COAST_MAX_JUMP:
             self._drive_coast_jumped[zone] = now
             self.audit.record(
@@ -2452,6 +2447,13 @@ class ScoutController:
                 else:
                     flat_since = now
                 prev_temp = temp
+            # Minutes from the heating→ice edge to this sample's anchor: how
+            # settled the fabric was when the measurement began (the opening
+            # alarm needs COOL_ALARM_SETTLE_MIN of it).
+            since = self._cooloff_cooling_since[zone]
+            settled_min = (
+                (started - since).total_seconds() / 60 if since is not None else None
+            )
             if not cooling or temp is None:
                 # Heating resumed (or reading lost): fold in whatever partial
                 # drop there was and stop sampling.
@@ -2472,6 +2474,7 @@ class ScoutController:
                         watt_n,
                         max_tick_drop,
                         max_flat_min,
+                        settled_min,
                     )
                 continue
 
@@ -2492,6 +2495,7 @@ class ScoutController:
                 self._fold_cooloff(
                     zone, hours, drop, start_temp, temp, out_sum, out_n,
                     fan_ticks, ticks, watt_sum, watt_n, max_tick_drop, max_flat_min,
+                    settled_min,
                 )
                 self._cooloff_start[zone] = _anchor(temp)  # rolling window
 
@@ -2510,6 +2514,7 @@ class ScoutController:
         watt_n: int,
         max_tick_drop: float = 0.0,
         max_flat_min: float = 0.0,
+        settled_min: float | None = None,
     ) -> None:
         key = f"{zone}_heatloss_pct"
         current = self.number(key)
@@ -2565,7 +2570,16 @@ class ScoutController:
         # rejected (k untouched) but says nothing about an opening, so the latch
         # is left as it was rather than raised.
         frozen = outlier and max_flat_min >= COOL_FREEZE_FLAT_MINUTES
-        if quality_ok and not frozen:
+        # An out-of-family sample anchored inside COOL_ALARM_SETTLE_MIN of the
+        # heating→ice edge is the air re-equilibrating with a cold fabric, not an
+        # opening (four false pushes in 24 h, 2026-10-07/08): rejected, but it
+        # says nothing about an opening either way, so the latch is left alone.
+        transient = (
+            outlier
+            and settled_min is not None
+            and settled_min < COOL_ALARM_SETTLE_MIN
+        )
+        if quality_ok and not frozen and not transient:
             self._opening_inferred[zone] = outlier
         self.audit.record(
             "cooloff_sample",
@@ -2577,6 +2591,8 @@ class ScoutController:
             accepted=quality_ok and not outlier,
             outlier=outlier,
             frozen=frozen,
+            transient=transient,
+            settled_min=None if settled_min is None else round(settled_min, 1),
             over_warm=over_warm,
             old_pct=current,
             new_pct=new,

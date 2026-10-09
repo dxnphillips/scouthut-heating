@@ -396,36 +396,23 @@ def _hall_probes(ctrl, *temps):
     return sum(temps) / len(temps)
 
 
-def test_probes_catching_up_one_at_a_time_are_a_jump_too():
-    # Field 2026-10-07 15:41-15:50Z: the freeze-guard held all four hall heaters at
-    # 16.0-17.5; then three of them stepped to ~19.3 on successive ticks while
-    # hall_front sat at 17.5. The average climbed 16.4 -> 18.88 in steps under 1.0,
-    # the easing engaged on it with 72 degC panels, and the room read dead flat for
-    # the whole 20-min box. A single probe rising a whole degree between two
-    # evaluations is the reading catching up, whatever the average does.
+def test_probes_catching_up_one_at_a_time_still_allow_the_easing():
+    # v1.49.2 refused the easing whenever a single probe stepped a whole degree;
+    # v1.49.3 reverted it. 2026-10-08: with the per-probe refusal in place every
+    # hall climb ran its heaters to the overdriven local setpoint before the
+    # readings caught up (sessions over by 1.1-1.4); the day before, the easing
+    # had engaged on exactly such a serial catch-up and the session came in at
+    # 0.62. A probe that has just caught up is the freshest reading there is.
     ctrl, _ = _ctrl(panel=72.0)
     now = ctrl._now()
     avg = _hall_probes(ctrl, 17.5, 16.0, 16.0, 16.0)
     assert _coast(ctrl, avg, at=now) == 0.0  # well short, climbing
     avg = _hall_probes(ctrl, 17.5, 19.5, 16.0, 16.0)  # one probe catches up: avg +0.875
-    assert _coast(ctrl, avg, at=now + timedelta(minutes=3)) == 0.0
-    (evt,) = _events(ctrl, "drive_coast_jump")
-    assert evt["heater"] == E["hall"][1]
-    assert evt["previous"] == 16.0 and evt["probe"] == 19.5
+    assert _coast(ctrl, avg, at=now + timedelta(minutes=3)) == 0.0  # not yet in band
     avg = _hall_probes(ctrl, 17.5, 19.5, 19.5, 16.0)
     assert _coast(ctrl, avg, at=now + timedelta(minutes=6)) == 0.0
     avg = _hall_probes(ctrl, 17.5, 19.5, 19.5, 19.0)  # 18.88, in the band
-    assert _coast(ctrl, avg, at=now + timedelta(minutes=9)) == 0.0  # still distrusted
-    assert _events(ctrl, "drive_coast_ease") == []
-
-
-def test_a_single_probe_stepping_one_quantum_is_not_a_jump():
-    ctrl, _ = _ctrl(panel=72.0)
-    now = ctrl._now()
-    avg = _hall_probes(ctrl, 18.5, 18.5, 18.5, 18.5)
-    assert _coast(ctrl, avg, at=now) == DRIVE_COAST_ALLOWANCE
-    avg = _hall_probes(ctrl, 19.0, 18.5, 18.5, 18.5)  # one honest 0.5 step
-    assert _coast(ctrl, avg, at=now + timedelta(seconds=30)) == DRIVE_COAST_ALLOWANCE
+    assert _coast(ctrl, avg, at=now + timedelta(minutes=9)) == DRIVE_COAST_ALLOWANCE
     assert _events(ctrl, "drive_coast_jump") == []
 
 

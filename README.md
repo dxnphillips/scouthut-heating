@@ -453,7 +453,12 @@ restarts) of everything it decides and learns:
   samples add `observed_gain` — the gross radiator gain the climb implied —
   and `reached_target`; cool-off samples add `max_tick_drop` — the largest
   single-tick fall, on which a discontinuity (an unmonitored opening or a
-  probe unfreezing) is rejected rather than learned as fabric loss), so the
+  probe unfreezing) is rejected rather than learned as fabric loss, and
+  `settled_min` — how long after the heating→ice edge the sample anchored; an
+  out-of-family sample anchored inside the first two hours is flagged
+  `transient` and rejected without raising the "window/door open?" alarm,
+  because a cold-soaked building sheds air heat into its fabric at 3–5× the
+  slow-phase baseline for that long), so the
   EWMA behaviour can be re-derived. Cool-off samples carry the fan-running
   tally and average wattage too: the 2026-07-11 sealed test showed a fan-mixed
   hut sheds heat at roughly **half** the gap-normalised rate of a stratified
