@@ -322,7 +322,11 @@ temperature** switch (default on) closes a loop on each heater's *own*
 temperature: while a zone is in comfort it nudges that heater's setpoint up (0.5
 at a time, waiting for the slow building to respond between nudges) until the
 probe actually reaches target, then holds — never overshooting, never hovering
-under. It runs **per heater** (so the cold end of the long hall reaches target
+under. The nudges start only once the probe is within about a degree of target
+(v1.50.0): below that a Rointe runs flat out whatever its setpoint, so an earlier
+nudge could only move where it later cuts off — which is how every heated
+session of early October landed 1.1–1.4 °C over and then put the cooling breeze
+on the people in the room. It runs **per heater** (so the cold end of the long hall reaches target
 without the warm end overshooting) across **all three zones** — which is why the
 office and shared rooms now have their own **comfort temperature** sliders
 (previously the office setpoint was only settable on the device). It only ever

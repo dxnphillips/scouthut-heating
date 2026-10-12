@@ -2268,15 +2268,46 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   has just caught up is the freshest there is and says where the room is now;
   refusing to ease on it only lets the elements run on to target + stair. The
   whole-zone average jump test (v1.42.0, the 09-21 case) stays. **The deeper
-  lever is the staircase itself, NOT built, owner's call:** every cold climb on
+  lever is the staircase itself:** every cold climb on
   record reaches +1.0 while the probes are 1.5–3 °C short and frozen, and an
   overdrive adds nothing while a heater is already at full output — it only
   moves where the element cuts (20.0 instead of 19.0), which is the overshoot
   seen on every heated session. Escalating the stair only once the probe is
-  inside the Rointe's throttling band (~1.0 of target) would hold the climb at
-  +0.5 and still let a stalled room (the Q17 capacity question) walk to the cap.
-  A feedforward step on a cold night would still add +0.5; judge that from a
+  inside the Rointe's throttling band (~1.0 of target) holds the climb at
+  +0.5. A feedforward step on a cold night would still add +0.5; judge that from a
   cold-night `drive_off` trace before touching it.
+  **BUILT (v1.50.0, `ESCALATION_BAND` = 1.0, after the first session on
+  1.49.4 — 2026-10-12, the fifth heated session in a row at `peak_over`
+  1.1–1.4).** That Monday the easing ran its full 20-min box (engaged 17:04Z
+  on 71 °C panels, `rise` 0.25) and the room still landed 20.12: the stair had
+  reached +1.0 by 16:25Z on probes frozen at 15.5 (3.5 °C short), so when the
+  box expired at 17:24Z the full 20.0 came back on a room already at 19.0 and
+  the elements ran 26 more minutes to the 19.5 release. The office did the
+  same in miniature (probe frozen at 17.0 under pushed 20.0, leapt to 21.0 —
+  +2.0 on comfort 19), the shared trio reached +1.5 (kitchen panel 83.5 °C),
+  the forward breeze then ran 54 min on the Beavers at 19.6–20.1, and someone
+  pressed Boost and then Pause four minutes apart while it blew. So
+  `update_drive` now steps UP only while the probe is within the band (errors
+  of 0.5 and 1.0 on the half-degree grid; 1.5 or more is a saturated element).
+  Outside the band it holds whatever stair it has — a door opening does not
+  unwind a landed droop step — and does **not** consume the interval
+  (`evaluated` False), so the first in-band tick steps at once; inside the
+  band the sacred first step, the freeze guard and the approach hold are
+  unchanged. Fail direction: it only withholds overdrive where the overdrive
+  was doing nothing, and the droop compensation still lands within one tick of
+  the probe arriving, so the comfort cost is at most the Rointe's own
+  half-power finish on the last half degree (the pre-heat model already charges
+  that finish, and the gross gain re-learns it). Trade accepted: `drive_capped`
+  can now only be reached from an in-band stall (a probe a step short, moving,
+  for hours); a room that cannot get within a degree of target shows as
+  `drive_no_response` or a positive shortfall with the stair at 0. Tests in
+  `tests/test_drive.py` (the 10-12 replay, the band edge, the cold-start
+  plant) and `tests/test_drive_integration.py`. **Watch:** `drive_off` in the
+  trace should sit at 0 through the bulk of every climb and reach 0.5 only in
+  the last degree; `peak_over` on the next heated bookings should fall toward
+  the 0.62 of 10-07; a positive `booking_start.shortfall` on a cold morning
+  with `drive_off` 0 would mean the half-power finish is costing more than the
+  lead allows, and the answer is the lead's `APPROACH_TAIL_C`, not the band.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`

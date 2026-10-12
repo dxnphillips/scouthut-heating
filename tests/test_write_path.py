@@ -211,17 +211,20 @@ def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     # median) can only fire while the zone AVERAGE — what the heat gate reads
     # since v1.47.0 — is still short of target if the target sits well above.
     ctrl._numbers["hall_comfort_temp"].native_value = 24.0
-    _hall_comfort(ctrl, hass, {HB: 18.0, HF: 18.0})
+    # hall_back inside the escalation band (v1.50.0) so it can wind two steps;
+    # hall_front far short, so the zone average stays clear of the approach hold.
+    _hall_comfort(ctrl, hass, {HB: 23.0, HF: 22.0})
     run(ctrl.async_reconcile())
     _age_steps(ctrl)
-    for c in (HB, HF):
-        hass.states.set(c, "heat", {"current_temperature": 18.5})  # both responded
+    hass.states.set(HB, "heat", {"current_temperature": 23.5})  # responded
     run(ctrl.async_reconcile())
     held = ctrl._drive_stair[HB]
     assert held >= 1.0
-    # hall_front freeze-jumps +6.5 in one batch: hall_back is now > 4 under the
-    # zone median and the sanity rule fires on a merely LATE probe.
-    hass.states.set(HF, "heat", {"current_temperature": 25.0})
+    # One batch: hall_front catches up to target while hall_back's reading drops
+    # to 19.0 — now > 4 under the zone median, so the sanity rule fires on a
+    # reading that is merely glitched, with the zone still in comfort.
+    hass.states.set(HF, "heat", {"current_temperature": 24.0})
+    hass.states.set(HB, "heat", {"current_temperature": 19.0})
     run(ctrl.async_reconcile())
     target = ctrl.number("hall_comfort_temp")
     assert _pushed(hass, _num(HB)) == target and _landed(hass, HB) == target
@@ -230,7 +233,7 @@ def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     withdrawn = _events(ctrl, "drive_withdrawn")
     assert withdrawn and withdrawn[-1]["heater"] == HB and withdrawn[-1]["reason"] == "insane"
     assert withdrawn[-1]["stair"] == held
-    # The probe catches up (still short of target, back inside the sanity band):
+    # The reading recovers (back inside the sanity band, still short of target):
     # it re-enters with the held overdrive, not from zero.
     hass.states.set(HB, "heat", {"current_temperature": 21.0})
     run(ctrl.async_reconcile())
@@ -264,12 +267,15 @@ def test_leaving_comfort_withdraws_the_number_only_and_is_not_audited():
 def test_a_target_drop_resets_the_staircase():
     _wire_numbers()
     ctrl, hass = make_controller()
-    _hall_comfort(ctrl, hass, {HB: 18.0, HF: 18.0})
+    # Boost target = comfort + boost_offset = 21.5. hall_back a degree short of it
+    # (inside the escalation band, v1.50.0) winds two steps; hall_front is left
+    # far short so the zone average stays clear of the approach hold now and of
+    # the warm line once the boost expires.
+    _hall_comfort(ctrl, hass, {HB: 20.5, HF: 18.5})
     run(ctrl.async_boost(ZA))  # target = comfort + boost_offset
     run(ctrl.async_reconcile())
     _age_steps(ctrl)
-    for c in (HB, HF):
-        hass.states.set(c, "heat", {"current_temperature": 18.5})
+    hass.states.set(HB, "heat", {"current_temperature": 21.0})
     run(ctrl.async_reconcile())
     assert ctrl._drive_stair[HB] >= 1.0
     boosted = _pushed(hass, _num(HB))
@@ -289,8 +295,11 @@ def test_zone_average_for_the_approach_guard_excludes_an_insane_probe():
     _wire_numbers()
     ctrl, hass = make_controller()
     target = ctrl.number("hall_comfort_temp")
-    _hall_comfort(ctrl, hass, {HB: 14.5, HF: 15.5})
-    run(ctrl.async_reconcile())  # first step on both
+    # hall_front a degree short (inside the escalation band, v1.50.0) takes its
+    # first step; hall_back far short takes none (a saturated element).
+    _hall_comfort(ctrl, hass, {HB: 14.5, HF: target - 1.0})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_stair[HF] == 0.5 and ctrl._drive_stair[HB] == 0.0
     _age_steps(ctrl)
     # hall_front catches up to within a step of target; hall_back's probe stays
     # frozen at 14.5, now > 4 under the median -> insane. With it excluded the
