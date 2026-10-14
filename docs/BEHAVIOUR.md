@@ -183,6 +183,21 @@ reconciler, and they change how several entries above should be read:
   reload the Rointe integration); recovery records `heaters_online` and
   dismisses. Single-poll blips never qualify; a zone never yet seen online is
   not judged inside the startup grace. Diagnostics: `state.heaters_offline`.
+- **One dark heater is surfaced by its sync clock (v1.50.1)** —
+  `_update_heater_silence`: a heater whose trusted-clock upload age
+  (`_sync_age_minutes`, v1.45.0) reaches `HEATER_SILENT_MINUTES` (180, six idle
+  heartbeats) records `heater_silent` (zone, heater, minutes, its frozen
+  `reading` and `surface`, `sync_at`), raises one persistent notification
+  listing every silent heater (re-issued as the set changes, dismissed when
+  empty) and a companion push for each new one; `heater_heard` (minutes) when
+  it uploads again. Needed because a single dark device never looks
+  unreachable: the cloud keeps serving its last record, so HA shows it online,
+  its readings freeze at plausible values, and a setpoint we write is stored by
+  the cloud and read straight back as "adopted" — the drive read-back cannot
+  see it. Field 2026-10-13: hall_left silent from 18:02Z for 25 h, reading 18.0
+  against a hall at 12, the next booking on three heaters, nothing in the log
+  but `hall_sync` counting. No sync clock → never alerts. Diagnostics:
+  `state.heaters_silent`.
 
 Reachability comes from each heater's Rointe **Connected** binary_sensor
 (auto-detected from the device, like the Effective Power sensors), falling back

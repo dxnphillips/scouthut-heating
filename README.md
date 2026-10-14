@@ -335,8 +335,12 @@ setpoint boost** (default 4.5 °C, so the hall can be driven to at most 24). Saf
 net: a lost or glitchy sensor drops that heater back to the plain target, the
 setpoints are reset to target on restart/shutdown so nothing is ever left
 overdriven, and you get a notification if a heater is stuck at its cap and still
-can't reach target (a real capacity limit, or a stuck sensor). Turn the switch
-off to go back to "set the target and trust the heater".
+can't reach target (a real capacity limit, or a stuck sensor). You also get one
+if a single radiator stops reporting to the Rointe cloud for three hours
+(v1.50.1): the app still shows it online and its temperature looks plausible,
+but it is neither reporting nor receiving setpoints, so it is probably off at
+the wall, off the WiFi or stuck, and the rest of the room is heating without
+it. Turn the switch off to go back to "set the target and trust the heater".
 
 **Pause hall heating** (occupant cutout). The hall radiators are locked, so if
 someone finds it too warm mid-session they have no way to turn them down. The

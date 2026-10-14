@@ -1156,6 +1156,44 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     renews the token. Note also the `last_reported` checks referenced above are
     inert (they never detect a freeze), so this alert is the *only* heater-health
     signal we will have. **BUILT v1.37.0 — see Q25 PR 4.**
+    **The single-heater case is a different blind spot, and the sync clock is
+    the only thing that sees it (v1.50.1, `HEATER_SILENT_MINUTES` = 180, field
+    2026-10-13/14).** hall_left's last upload was **18:02Z on Tuesday**, during
+    a sal-vation cleaning booking with the front door propped open 16:55–18:56Z;
+    the 10-14 19:09Z export found it 1,507 min silent, `preset None` (the
+    device never re-set itself after the 22:40Z restart's ice re-apply), its
+    reading frozen at 18.0 while the other three fell to 12.0–13.5 overnight,
+    and its panel frozen at 19.0. HA showed it `online` throughout (the cloud
+    keeps serving a dark device's last record), the 120-min frozen gate
+    correctly dropped it from the heat gate's average (`preheat_start.indoor`
+    16.5 against a trace `floor` of 16.88), the trace's `hall_sync` column
+    counted up 15 per row from 39.7 to 1,494.8 — and NOTHING alerted. Worse,
+    the drive's read-back (Q20a) cannot see it even in principle: the
+    "reported setpoint" it compares is the climate entity's `temperature`
+    attribute, which is the **cloud's copy of the value we just wrote**, so a
+    device that is not listening passes the first gate and the surface witness
+    is never consulted. Wednesday's 16:30Z booking therefore ran on three
+    heaters (pushed 19.5 to hall_left at 15:25Z, freeze-held at 15:40Z, no
+    `drive_setpoint_rejected`). So `_update_heater_silence` (its own reconcile
+    step, after the outage watch) alerts any heater whose trusted-clock upload
+    age reaches 180 min: `heater_silent` (zone, heater, minutes, the frozen
+    `reading` and `surface`, `sync_at`), one persistent notification listing
+    every silent heater (re-issued as the set changes, dismissed when empty) and
+    a companion push on each new one; `heater_heard` (minutes) when it uploads
+    again; `state.heaters_silent` in diagnostics. 180 is six idle beats (the
+    heartbeat is ~30 min, the widest gap seen 60); an install with no sync
+    clock never alerts. **Decision rule:** once a fortnight of `hall_sync`
+    shows nothing idle past 60, drop the line toward 90 so an afternoon
+    silence is caught before an evening booking; if a `heater_silent` is ever
+    followed by `heater_heard` within minutes, the heartbeat is looser than one
+    night suggested and the line stays. Owner-side: find out why hall_left
+    went dark (the wall switch during the clean, the −78 dBm heater from the
+    Rointe findings, or a hung device) — its probe is also the warmest in the
+    hall, so the frozen 18.0 is pulling the trace `floor` up by ~1 °C until it
+    speaks. Not changed: `_heater_probe` keeps driving a silent heater (the
+    cloud takes the write and the device will pick it up when it returns —
+    harmless), and the fan ΔT reference still averages the frozen probe in
+    (`fan_dt_on` is 0.5, so a 1 °C error does not change a decision).
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
