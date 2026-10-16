@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 from custom_components.scout_hut_heating.coordinator import (
     BOOKING_RELIGHT_STALE_MIN,
+    HEATER_SILENT_MINUTES,
     PRESET_ICE,
     SYNC_CLOCK_TRUST_MIN,
 )
@@ -294,3 +295,57 @@ def test_diagnostics_and_the_trace_carry_the_clock():
     assert data["state"]["sync_clock"] == {"available": True, "trusted": [HB]}
     ctrl._sample_trace()
     assert ctrl.trace.to_list()[-1]["hall_sync"] >= 40
+
+
+# --- one dark heater (v1.50.1) -------------------------------------------------
+
+
+def test_a_heater_inside_the_line_is_quiet_not_silent():
+    ctrl, hass, devices = _trusted_hall(minutes_old=HEATER_SILENT_MINUTES - 30)
+    hass.services.register("notify", "mobile_app_phone")
+    run(ctrl.async_reconcile())
+    assert not _events(ctrl, "heater_silent")
+    assert not [c for c in hass.services.calls if c["service"] == "mobile_app_phone"]
+
+
+def test_a_heater_silent_past_the_line_is_alerted_once_and_heard_again():
+    # 2026-10-13: hall_left stopped uploading at 18:02Z and stayed dark for 25 h.
+    # HA showed it online, its reading froze at 18.0 and the cloud echoed every
+    # setpoint we wrote, so nothing but the sync clock could tell. (The age is
+    # floored by the device's own reckoning, which the testkit's clock rewind
+    # does not move, so the dark heater is built past the line.)
+    ctrl, hass, devices = _trusted_hall(minutes_old=HEATER_SILENT_MINUTES + 1)
+    hass.services.register("notify", "mobile_app_phone")
+    run(ctrl.async_reconcile())
+    (evt,) = _events(ctrl, "heater_silent")
+    assert evt["heater"] == HB and evt["zone"] == ZA
+    assert evt["minutes"] >= HEATER_SILENT_MINUTES
+    assert evt["reading"] == 19.0 and evt["sync_at"] is not None
+    assert HB in ctrl.diagnostics_data()["state"]["heaters_silent"]
+    pushes = [c for c in hass.services.calls if c["service"] == "mobile_app_phone"]
+    assert len(pushes) == 1 and "not reporting" in pushes[0]["data"]["message"]
+    run(ctrl.async_reconcile())
+    assert len(_events(ctrl, "heater_silent")) == 1  # once per episode
+    assert len([c for c in hass.services.calls if c["service"] == "mobile_app_phone"]) == 1
+    # It uploads again (the same value): heard, cleared.
+    devices[HB].last_sync_datetime_device = naive_now(ctrl)
+    run(ctrl.async_reconcile())
+    (back,) = _events(ctrl, "heater_heard")
+    assert back["heater"] == HB and back["minutes"] >= HEATER_SILENT_MINUTES
+    assert ctrl.diagnostics_data()["state"]["heaters_silent"] == {}
+
+
+def test_a_heater_without_a_clock_is_never_called_silent():
+    # hall_front has no Rointe device behind it: its age is unknowable, and an
+    # unknowable age is not an alarm.
+    ctrl, hass, devices = _trusted_hall(minutes_old=1)
+    advance(ctrl, HEATER_SILENT_MINUTES * 3)
+    ctrl._track_probe_changes()
+    run(ctrl.async_reconcile())
+    assert [e["heater"] for e in _events(ctrl, "heater_silent")] == [HB]
+
+
+def test_the_silence_line_sits_well_clear_of_the_idle_heartbeat():
+    # An idle Rointe uploads about every 30 min with one 60-min gap seen
+    # (2026-09-27); the line is several missed beats, never a quiet one.
+    assert HEATER_SILENT_MINUTES >= 120

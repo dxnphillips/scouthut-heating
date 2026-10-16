@@ -1,6 +1,7 @@
 """Pure 'drive to target' controller (drive.py) — staircase integral + feedforward."""
 
 from custom_components.scout_hut_heating.drive import (
+    ESCALATION_BAND,
     STEP,
     STEP_INTERVAL_MIN,
     feedforward,
@@ -154,13 +155,79 @@ def test_moved_probe_still_escalates_normally():
 
 
 def test_freeze_guard_never_blocks_the_initial_climb_to_comfort():
-    # No overdrive committed yet (stair 0): the first climb toward comfort is
-    # sacred even if the probe reads flat, so it steps up regardless.
+    # No overdrive committed yet (stair 0): the first step toward comfort is
+    # sacred even if the probe reads flat, so it steps up regardless — judged
+    # inside the escalation band (v1.50.0), where a step can act.
     _, stair, _, frozen, _ = update_drive(
-        19.0, 17.0, 8.0, 0.09, 24.0, 0.0, READY, probe_moved=False
+        19.0, 18.0, 8.0, 0.09, 24.0, 0.0, READY, probe_moved=False
     )
     assert frozen is False
     assert stair == STEP
+
+
+# --- Escalation band: a step is only taken where it can act (v1.50.0) ----------
+def test_no_step_while_the_element_is_saturated():
+    # Probe 3.5 short: the element is flat out whatever we push, so a step could
+    # only move where it later cuts. Nothing is decided — the interval is NOT
+    # consumed (evaluated False) and nothing is reported as held.
+    pushed, stair, evaluated, frozen, approach = update_drive(
+        19.0, 15.5, None, 0.0, 24.0, 0.0, READY
+    )
+    assert evaluated is False
+    assert stair == 0.0
+    assert frozen is False and approach is False
+    assert pushed == 19.0
+
+
+def test_the_band_edge_admits_a_step():
+    # The probes move in 0.5 quanta: errors of 0.5 and 1.0 are inside the band,
+    # 1.5 is outside it.
+    assert ESCALATION_BAND == 1.0
+    _, stair, evaluated = _drive(18.5, target=19.5)  # 1.0 short
+    assert evaluated is True and stair == STEP
+    _, stair, evaluated = _drive(18.0, target=19.5)  # 1.5 short
+    assert evaluated is False and stair == 0.0
+
+
+def test_a_committed_overdrive_is_kept_through_a_cold_spell():
+    # A door opening drops the probe well below the band after the droop
+    # compensation has landed: the stair is held as it is, not unwound (the
+    # room is short, pushing less would be wrong) and not escalated either.
+    pushed, stair, evaluated, *_ = update_drive(
+        19.0, 17.0, None, 0.0, 24.0, 0.5, READY, probe_moved=True
+    )
+    assert evaluated is False
+    assert stair == 0.5
+    assert pushed == 19.5
+
+
+def test_the_2026_10_12_climb_lands_at_most_one_step_over():
+    # Replay of the first session on v1.49.4: probes 15.0, flat at 15.5 for two
+    # intervals, then a one-reading leap to 18.5. The old staircase had +1.0
+    # committed before the leap (pushed 20.0); now the stair is 0 through the
+    # saturated phase and the single droop step lands when the probe arrives.
+    stair, since = 0.0, READY
+    pushed_max = 0.0
+    for probe in (15.0, 15.5, 15.5, 15.5):
+        pushed, stair, evaluated, *_ = update_drive(
+            19.0, probe, 16.5, 0.08, 23.5, stair, since, probe_moved=(probe == 15.0)
+        )
+        pushed_max = max(pushed_max, pushed)
+        since = 0.0 if evaluated else since + STEP_INTERVAL_MIN
+    assert stair == 0.0 and pushed_max == 19.0
+    pushed, stair, evaluated, *_ = update_drive(
+        19.0, 18.5, 16.5, 0.08, 23.5, stair, since, probe_moved=True
+    )
+    assert evaluated is True and stair == STEP and pushed == 19.5
+
+
+def test_reaches_target_from_a_cold_start_on_a_drooping_plant():
+    # The band gate must not keep a cold room from comfort: from 4.5 °C short
+    # the plant climbs on the plain setpoint, the droop step lands once the probe
+    # is in band, and the room still arrives — with no more than a step over.
+    final, peak = _simulate(droop=0.7, plant_gain=0.08, start=15.0)
+    assert final >= 19.5
+    assert peak <= 20.0
 
 
 def test_freeze_guard_still_allows_step_down_when_over():

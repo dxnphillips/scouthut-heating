@@ -212,7 +212,9 @@ def test_frozen_probe_stops_the_overdrive_winding_up():
     # to the cap.
     _wire_numbers()
     ctrl, hass = make_controller()
-    _hall_comfort(ctrl, hass, {"climate.hall_back": 18.0, "climate.hall_front": 18.0})
+    # A step short — inside the escalation band (v1.50.0), where a frozen probe
+    # still looks "short and not responding" to the staircase.
+    _hall_comfort(ctrl, hass, {"climate.hall_back": 18.5, "climate.hall_front": 18.5})
     hb = "climate.hall_back"
     for _ in range(6):  # six step intervals, probe never moving
         for climate in ("climate.hall_back", "climate.hall_front"):
@@ -222,6 +224,31 @@ def test_frozen_probe_stops_the_overdrive_winding_up():
     assert ctrl._drive_stair[hb] <= 0.5 + 1e-9
     assert hb in ctrl._drive_frozen
     assert any(e.get("event") == "drive_freeze_hold" for e in ctrl.audit._events)
+
+
+def test_a_probe_far_below_target_winds_nothing_up():
+    # The 2026-10-12 pre-heat: every hall probe read 15.0–15.5 (frozen) for the
+    # first 40 min of a climb to 19, the stair reached +1.0 inside 15 min, and
+    # when the readings caught up the elements ran on to 20. A probe further short
+    # than ESCALATION_BAND is a saturated element — no step, no interval consumed.
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _hall_comfort(ctrl, hass, {"climate.hall_back": 15.5, "climate.hall_front": 15.5})
+    hb = "climate.hall_back"
+    target = ctrl.number("hall_comfort_temp")
+    for _ in range(4):
+        for climate in ("climate.hall_back", "climate.hall_front"):
+            ctrl._drive_step_at[climate] = dt_util.utcnow() - timedelta(hours=1)
+        run(ctrl.async_reconcile())
+    assert ctrl._drive_stair[hb] == 0.0
+    assert hb not in ctrl._drive_frozen  # nothing was held: nothing was decided
+    # Only the one-step cold-night head-start is pushed, never a wound-up stair.
+    assert _pushed(hass, _comfort_number(hb)) <= target + 0.5
+    # The readings catch up to a step short: the droop compensation lands at once,
+    # without waiting out an interval the band hold never started.
+    hass.states.set(hb, "heat", {"current_temperature": target - 0.5})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_stair[hb] == 0.5
 
 
 def test_a_responding_probe_is_not_freeze_held():

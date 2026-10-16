@@ -117,6 +117,7 @@ from .const import (
     NOTIFY_FAN_TOO_HOT,
     NOTIFY_INTERNAL_DOOR,
     NOTIFY_FIRE,
+    NOTIFY_HEATER_SILENT,
     NOTIFY_HEATERS_OFFLINE,
     NOTIFY_OPENING_INFERRED,
     NOTIFY_RECONCILE_ERROR,
@@ -487,6 +488,16 @@ HEATER_WRITE_SPACING_S = 1.0
 # audit trail. Routine cloud blips are single polls (seconds), so a zone whose
 # EVERY heater has been offline this long is a real outage, not a hiccup.
 HEATERS_OFFLINE_MINUTES = 10.0
+# ONE heater that has stopped talking to the Rointe cloud (v1.50.1). The cloud
+# keeps serving a dark device's last record, so HA still shows it online, its
+# probe and panel readings freeze, and every write we make is echoed back by the
+# cloud as if adopted — nothing but the device's own sync clock can see it. An
+# idle Rointe uploads about every 30 min (v1.45.3), the widest idle gap seen is
+# 60; six beats is a heater that is off, off the WiFi or stuck, not a quiet one.
+# Field 2026-10-13 18:02Z: hall_left fell silent during a cleaning booking and
+# stayed so for 25 h; its reading sat at 18.0 while the hall fell to 12, the next
+# day's session ran on three heaters, and no alert existed to say so.
+HEATER_SILENT_MINUTES = 180.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -840,6 +851,12 @@ class ScoutController:
         # priority ladder that decided it), stashed by _desired_zone/_shared
         # so preset audit events can say WHY, not just what.
         self._preset_reason: dict[str, str] = {}
+        # The reason a zone ENTERED its current preset, stamped once at the
+        # application edge and left alone while the ladder's live reason moves
+        # underneath it: a pre-heat window opening on a hall that occupancy
+        # already lit flips the live reason to `preheat` with no preset change.
+        # The warm-up learning keys on this, not the live reason (v1.50.2).
+        self._preset_entry_reason: dict[str, str] = {}
 
         # Drive-to-target (outer per-heater trim loop). Keyed by climate
         # entity_id. The staircase term is deliberately NOT persisted across a
@@ -923,6 +940,10 @@ class ScoutController:
         self._heaters_offline_since: dict[str, datetime | None] = {}
         self._heaters_seen_online: set[str] = set()
         self._heaters_offline_notified: set[str] = set()
+        # Single-heater silence watch (v1.50.1): heaters alerted as not having
+        # uploaded to the Rointe cloud for HEATER_SILENT_MINUTES, and since when
+        # (their last upload, by the trusted sync clock).
+        self._heaters_silent_since: dict[str, datetime] = {}
         # Freeze detector: each heater's last room reading and when it last
         # CHANGED (the Rointe entity's own timestamps are always fresh).
         self._probe_last_value: dict[str, float] = {}
@@ -1942,7 +1963,15 @@ class ScoutController:
           occupancy climbs (~100 W per child of free gain) and mid-booking
           top-ups — the free-gain sources the old out-of-family gate was
           guessing at. Read at the START: a short pre-heat that runs into its
-          booking keeps its sample and folds SLOW (self-correcting).
+          booking keeps its sample and folds SLOW (self-correcting). Judged on
+          the reason the zone ENTERED comfort (`_preset_entry_reason`, stamped
+          at the application edge), not the ladder's live reason (v1.50.2):
+          a window opening on a hall that occupancy lit half an hour earlier
+          flips the live reason to ``preheat`` with no preset change, and a
+          sample opened there times the tail of a climb whose start it never
+          saw — 2026-10-15 16:10Z timed 11 min of a 41-min climb (2.8 gross
+          against the learned 12.8, the cold-arrival direction), saved only by
+          the mild gate and the rise floor.
         * **Timed on the zone AVERAGE** (v1.47.0), the quantity the lead sizes
           (`_zone_preheat_minutes`), the gate releases on and
           `booking_start.shortfall` judges — the sample must time what the lead
@@ -2000,7 +2029,7 @@ class ScoutController:
                     comfort
                     and temp is not None
                     and temp < target - 0.5
-                    and self._preset_reason.get(zone) == "preheat"
+                    and self._preset_entry_reason.get(zone) == "preheat"
                     and not self._within_startup_grace(now)
                 ):
                     fans = 1 if self._fans_running() else 0
@@ -3138,6 +3167,13 @@ class ScoutController:
                 "heaters_offline": {
                     z: _iso(t) for z, t in self._heaters_offline_since.items() if t
                 },
+                # Heaters that have not uploaded to the Rointe cloud for
+                # HEATER_SILENT_MINUTES (v1.50.1), and their last upload: HA still
+                # shows them online and their readings look alive, but they are
+                # not listening and not reporting.
+                "heaters_silent": {
+                    c: _iso(t) for c, t in self._heaters_silent_since.items()
+                },
                 # Reconcile steps currently raising: every step AFTER one of these
                 # is being skipped each tick, so anything it owns (fans, the trace,
                 # the drive) is stale. Non-empty is a fault, not a curiosity.
@@ -4092,6 +4128,7 @@ class ScoutController:
                 ("probe_changes", self._track_probe_changes),
                 ("openings", self._evaluate_openings),
                 ("heaters_offline", self._update_heaters_offline),
+                ("heater_silence", self._update_heater_silence),
                 ("booking_edges", self._record_booking_edges),
                 ("passive_rise", self._update_passive_rise),
                 ("zones", self._reconcile_zones),
@@ -4848,6 +4885,7 @@ class ScoutController:
                 to=preset,
                 reason=self._preset_reason.get(zone),
             )
+            self._preset_entry_reason[zone] = self._preset_reason.get(zone) or ""
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
             await self._async_push_hall_temps(eco_low=self._eco_low_wanted(zone))
         await self._async_apply_climate(climates, preset)
@@ -6210,6 +6248,92 @@ class ScoutController:
                 title=title,
                 notification_id=NOTIFY_HEATERS_OFFLINE[zone],
             )
+            await self._push_companion(
+                title, message, icon="mdi:radiator-off", channel="Scout Hut alerts"
+            )
+
+    def _heater_label(self, climate: str) -> str:
+        st = self.hass.states.get(climate)
+        name = st.attributes.get("friendly_name") if st is not None else None
+        return str(name) if name else climate.split(".", 1)[-1].replace("_", " ")
+
+    async def _update_heater_silence(self) -> None:
+        """Surface ONE heater that has stopped talking to the Rointe cloud (v1.50.1).
+
+        The outage watch above needs a whole zone unreachable. A single dark
+        heater never looks unreachable: the cloud keeps serving its last record,
+        so HA shows it online, its probe and panel surface freeze at plausible
+        values, and a setpoint we write is stored by the cloud and read straight
+        back as the heater's "reported" setpoint — which is why the drive's
+        read-back (Q20a) cannot see it either. Only the device's own sync clock
+        (v1.45.0) can: a heater whose last upload is older than
+        ``HEATER_SILENT_MINUTES`` on a TRUSTED clock is alerted once
+        (``heater_silent`` with the heater, zone, minutes, its frozen reading and
+        panel; a persistent notification listing every silent heater; a
+        companion push), and ``heater_heard`` is audited when it uploads again.
+        An install with no sync clock never alerts (the age is None), so this
+        cannot cry wolf where it cannot see.
+
+        Field 2026-10-13: hall_left's last upload was 18:02Z, during a cleaning
+        booking with the front door propped open; 25 h later its reading still
+        said 18.0 while the other three had fallen to 12, the trace's ``hall_sync``
+        column had counted to 1,494 and the next day's booking ran on three
+        heaters with nothing in the log but that number.
+        """
+        now = self._now()
+        silent_now: set[str] = set()
+        new: list[tuple[str, str, float]] = []
+        for zone, key in self._OFFLINE_ZONE_CLIMATES.items():
+            for climate in self._as_list(self.config.get(key)):
+                age = self._sync_age_minutes(climate)
+                if age is None or age < HEATER_SILENT_MINUTES:
+                    continue
+                silent_now.add(climate)
+                if climate in self._heaters_silent_since:
+                    continue
+                self._heaters_silent_since[climate] = now - timedelta(minutes=age)
+                new.append((zone, climate, age))
+                surface_id = self._heater_sensor(climate, "surface")
+                self.audit.record(
+                    "heater_silent",
+                    now,
+                    zone=zone,
+                    heater=climate,
+                    minutes=round(age, 1),
+                    reading=self._heater_probe(climate),
+                    surface=self._num_state(surface_id) if surface_id else None,
+                    sync_at=self._iso_naive(self._sync_stamp.get(climate)),
+                )
+        heard = [c for c in self._heaters_silent_since if c not in silent_now]
+        for climate in heard:
+            since = self._heaters_silent_since.pop(climate)
+            self.audit.record(
+                "heater_heard",
+                now,
+                heater=climate,
+                minutes=round((now - since).total_seconds() / 60, 1),
+            )
+        if not new and not heard:
+            return
+        if not self._heaters_silent_since:
+            persistent_notification.async_dismiss(self.hass, NOTIFY_HEATER_SILENT)
+            return
+        title = "🏕 Scout Hut – Radiator not reporting"
+        names = ", ".join(
+            f"{self._heater_label(c)} ({(now - t).total_seconds() / 3600:.0f} h)"
+            for c, t in sorted(self._heaters_silent_since.items())
+        )
+        message = (
+            f"Not heard from by the Rointe cloud for hours: {names}. The app still "
+            "shows it online, but it is not reporting its temperature and is not "
+            "receiving setpoints, so it is probably switched off at the wall, off "
+            "the WiFi or stuck. The rest of the zone is heating without it. Check "
+            "the radiator; if it is on and lit, power it off and on."
+        )
+        persistent_notification.async_create(
+            self.hass, message, title=title, notification_id=NOTIFY_HEATER_SILENT
+        )
+        if new:
             await self._push_companion(
                 title, message, icon="mdi:radiator-off", channel="Scout Hut alerts"
             )

@@ -322,7 +322,11 @@ temperature** switch (default on) closes a loop on each heater's *own*
 temperature: while a zone is in comfort it nudges that heater's setpoint up (0.5
 at a time, waiting for the slow building to respond between nudges) until the
 probe actually reaches target, then holds — never overshooting, never hovering
-under. It runs **per heater** (so the cold end of the long hall reaches target
+under. The nudges start only once the probe is within about a degree of target
+(v1.50.0): below that a Rointe runs flat out whatever its setpoint, so an earlier
+nudge could only move where it later cuts off — which is how every heated
+session of early October landed 1.1–1.4 °C over and then put the cooling breeze
+on the people in the room. It runs **per heater** (so the cold end of the long hall reaches target
 without the warm end overshooting) across **all three zones** — which is why the
 office and shared rooms now have their own **comfort temperature** sliders
 (previously the office setpoint was only settable on the device). It only ever
@@ -331,8 +335,12 @@ setpoint boost** (default 4.5 °C, so the hall can be driven to at most 24). Saf
 net: a lost or glitchy sensor drops that heater back to the plain target, the
 setpoints are reset to target on restart/shutdown so nothing is ever left
 overdriven, and you get a notification if a heater is stuck at its cap and still
-can't reach target (a real capacity limit, or a stuck sensor). Turn the switch
-off to go back to "set the target and trust the heater".
+can't reach target (a real capacity limit, or a stuck sensor). You also get one
+if a single radiator stops reporting to the Rointe cloud for three hours
+(v1.50.1): the app still shows it online and its temperature looks plausible,
+but it is neither reporting nor receiving setpoints, so it is probably off at
+the wall, off the WiFi or stuck, and the rest of the room is heating without
+it. Turn the switch off to go back to "set the target and trust the heater".
 
 **Pause hall heating** (occupant cutout). The hall radiators are locked, so if
 someone finds it too warm mid-session they have no way to turn them down. The
@@ -409,7 +417,9 @@ are seeded at the slowest plausible value, so an unlearned zone uses
 pull the gain down to the truth over a handful of bookings. Only a genuine
 **pre-heat that reached its target** is timed and folded in — never a boost,
 an occupancy climb or a mid-booking top-up, where people, sun and a hotter
-setpoint do part of the radiators' work — judged on the zone average's
+setpoint do part of the radiators' work, nor a pre-heat window that opens on a
+hall someone's arrival has already lit (an occupancy climb whose start the
+pre-heat never saw) — judged on the zone average's
 start and finish (exponentially smoothed and step-capped, so one odd morning
 can only nudge the number, never yank it); a temperature *rise* while unheated
 (July roof sun) is never mistaken for good insulation. The hall keeps **two**

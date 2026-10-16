@@ -72,9 +72,10 @@ def test_easing_does_not_escalate_an_existing_overdrive():
 
 def test_easing_never_blocks_the_initial_climb():
     # prev_stair <= 0 is the sacred first climb: it steps even while a coast is
-    # notionally active, so a cold room can never be starved by this.
+    # notionally active, so a cold room can never be starved by this. (Judged
+    # inside the escalation band, v1.50.0 — a probe 1.0 short is at its edge.)
     _pushed, stair, *_ = _drive(
-        probe=17.0, prev_stair=0.0, minutes_since_step=20.0, coast=0.5
+        probe=18.0, prev_stair=0.0, minutes_since_step=20.0, coast=0.5
     )
     assert stair == STEP
 

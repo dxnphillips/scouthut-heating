@@ -25,7 +25,12 @@ from scout_testkit import (
     PRESET_ICE,
     ZA,
     advance,
+    booking,
+    hall_temp,
     make_controller,
+    motion,
+    preheat_window,
+    run,
     set_registry,
 )
 
@@ -67,7 +72,7 @@ def _climb(outdoor_by_tick):
     _probes(hass, 18)
     _outdoor(hass, outdoor_by_tick[0])
     ctrl.applied[ZA] = PRESET_COMFORT
-    ctrl._preset_reason[ZA] = "preheat"  # only real pre-heats are sampled
+    ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"  # only real pre-heats are sampled
     ctrl._update_warmup_learning()
     for t, out in zip((19, 20, 21, 22), outdoor_by_tick[1:]):
         advance(ctrl, 30)
@@ -112,7 +117,7 @@ def test_outdoor_lost_mid_climb_averages_the_readings_it_had():
     _probes(hass, 18)
     _outdoor(hass, 10.0)
     ctrl.applied[ZA] = PRESET_COMFORT
-    ctrl._preset_reason[ZA] = "preheat"
+    ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
     ctrl._update_warmup_learning()
     for i, t in enumerate((19, 20, 21, 22)):
         advance(ctrl, 30)
@@ -123,6 +128,77 @@ def test_outdoor_lost_mid_climb_averages_the_readings_it_had():
     (evt,) = _events(ctrl, "warmup_sample")
     assert evt["outdoor"] == pytest.approx(10.0)
     assert evt["mild"] is False
+
+
+# --- Warm-up: the sample opens on the comfort ENTRY edge, not the live reason --
+def _no_step_failed(ctrl):
+    assert ctrl.diagnostics_data()["state"]["reconcile_failing"] == []
+
+
+def test_a_window_opening_on_an_occupancy_climb_opens_no_sample():
+    # 2026-10-15: the hall PIR lit comfort at 15:40Z from 17.0; the pre-heat
+    # window opened at 16:10Z on that same comfort — the live reason flipped
+    # `motion` -> `preheat` with no preset change — and the sample opened there,
+    # timing 11 min of a 41-min climb (2.8 gross against the learned 12.8).
+    ctrl, hass = make_controller()
+    _outdoor(hass, 8.0)
+    hall_temp(ctrl, 15.0)
+    motion(ctrl, "hall")
+    run(ctrl.async_reconcile())
+    _no_step_failed(ctrl)
+    assert ctrl.applied[ZA] == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "motion"
+    assert ctrl._preset_entry_reason[ZA] == "motion"
+    assert ctrl._warmup_start[ZA] is None
+
+    advance(ctrl, 30)
+    hall_temp(ctrl, 16.5)
+    preheat_window(ctrl, ZA)
+    run(ctrl.async_reconcile())
+    _no_step_failed(ctrl)
+    assert ctrl.applied[ZA] == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "preheat"  # the live reason moved...
+    assert ctrl._preset_entry_reason[ZA] == "motion"  # ...the entry did not
+    assert ctrl._warmup_start[ZA] is None
+
+    advance(ctrl, 25)
+    hall_temp(ctrl, 19.5)
+    run(ctrl.async_reconcile())
+    assert _events(ctrl, "warmup_sample") == []
+
+
+def test_a_window_opening_on_an_iced_hall_opens_the_sample():
+    ctrl, hass = make_controller()
+    _outdoor(hass, 8.0)
+    hall_temp(ctrl, 15.0)
+    preheat_window(ctrl, ZA)
+    run(ctrl.async_reconcile())
+    _no_step_failed(ctrl)
+    assert ctrl.applied[ZA] == PRESET_COMFORT
+    assert ctrl._preset_entry_reason[ZA] == "preheat"
+    assert ctrl._warmup_start[ZA] is not None
+
+
+def test_a_pre_heat_that_runs_into_its_booking_keeps_its_sample():
+    # "Read at the START": the booking start moves the live reason to `booking`
+    # but the zone entered comfort for the pre-heat, so the sample runs on.
+    ctrl, hass = make_controller()
+    _outdoor(hass, 8.0)
+    hall_temp(ctrl, 15.0)
+    preheat_window(ctrl, ZA)
+    run(ctrl.async_reconcile())
+    assert ctrl._warmup_start[ZA] is not None
+
+    advance(ctrl, 20)
+    hall_temp(ctrl, 16.0)
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")  # an attended booking (an empty one parks at eco)
+    run(ctrl.async_reconcile())
+    _no_step_failed(ctrl)
+    assert ctrl.applied[ZA] == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "booking"
+    assert ctrl._preset_entry_reason[ZA] == "preheat"
+    assert ctrl._warmup_start[ZA] is not None
 
 
 # --- Cool-off: the anchor waits for the panels, not just the clock ------------

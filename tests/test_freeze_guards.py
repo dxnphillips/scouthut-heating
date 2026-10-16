@@ -44,7 +44,7 @@ def _preheat(ctrl, hass, rate=30, target=21, outdoor=5.0):
     _set(ctrl, "hall_comfort_temp", target)
     hass.states.set(E["weather"], "cloudy", {"temperature": outdoor})  # cold: admitted
     ctrl.applied[ZA] = PRESET_COMFORT
-    ctrl._preset_reason[ZA] = "preheat"
+    ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
 
 
 def test_a_mid_climb_freeze_with_honest_endpoints_folds_at_its_end_to_end_pace():
