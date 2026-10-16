@@ -851,6 +851,12 @@ class ScoutController:
         # priority ladder that decided it), stashed by _desired_zone/_shared
         # so preset audit events can say WHY, not just what.
         self._preset_reason: dict[str, str] = {}
+        # The reason a zone ENTERED its current preset, stamped once at the
+        # application edge and left alone while the ladder's live reason moves
+        # underneath it: a pre-heat window opening on a hall that occupancy
+        # already lit flips the live reason to `preheat` with no preset change.
+        # The warm-up learning keys on this, not the live reason (v1.50.2).
+        self._preset_entry_reason: dict[str, str] = {}
 
         # Drive-to-target (outer per-heater trim loop). Keyed by climate
         # entity_id. The staircase term is deliberately NOT persisted across a
@@ -1957,7 +1963,15 @@ class ScoutController:
           occupancy climbs (~100 W per child of free gain) and mid-booking
           top-ups — the free-gain sources the old out-of-family gate was
           guessing at. Read at the START: a short pre-heat that runs into its
-          booking keeps its sample and folds SLOW (self-correcting).
+          booking keeps its sample and folds SLOW (self-correcting). Judged on
+          the reason the zone ENTERED comfort (`_preset_entry_reason`, stamped
+          at the application edge), not the ladder's live reason (v1.50.2):
+          a window opening on a hall that occupancy lit half an hour earlier
+          flips the live reason to ``preheat`` with no preset change, and a
+          sample opened there times the tail of a climb whose start it never
+          saw — 2026-10-15 16:10Z timed 11 min of a 41-min climb (2.8 gross
+          against the learned 12.8, the cold-arrival direction), saved only by
+          the mild gate and the rise floor.
         * **Timed on the zone AVERAGE** (v1.47.0), the quantity the lead sizes
           (`_zone_preheat_minutes`), the gate releases on and
           `booking_start.shortfall` judges — the sample must time what the lead
@@ -2015,7 +2029,7 @@ class ScoutController:
                     comfort
                     and temp is not None
                     and temp < target - 0.5
-                    and self._preset_reason.get(zone) == "preheat"
+                    and self._preset_entry_reason.get(zone) == "preheat"
                     and not self._within_startup_grace(now)
                 ):
                     fans = 1 if self._fans_running() else 0
@@ -4871,6 +4885,7 @@ class ScoutController:
                 to=preset,
                 reason=self._preset_reason.get(zone),
             )
+            self._preset_entry_reason[zone] = self._preset_reason.get(zone) or ""
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
             await self._async_push_hall_temps(eco_low=self._eco_low_wanted(zone))
         await self._async_apply_climate(climates, preset)

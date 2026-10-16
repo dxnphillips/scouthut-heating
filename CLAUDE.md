@@ -233,7 +233,16 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   top-up read as ONE family (10–14 gross) and there is no fast family left to police.
   **Sample selection replaces the guards** (`_update_warmup_learning`): only a climb
   whose preset reason is `preheat` (never a Boost — 7.2 gross, elements never
-  throttle; never occupancy or a mid-booking top-up — free gain), timed on the
+  throttle; never occupancy or a mid-booking top-up — free gain) — **judged on the
+  reason the zone ENTERED comfort, not the ladder's live reason (v1.50.2):** on
+  2026-10-15 the hall PIR lit comfort at 15:40Z from 17.0 and the pre-heat window
+  opened at 16:10Z on that same comfort, flipping the live reason to `preheat` with
+  no preset change; the sample opened there and timed **11 min of a 41-min climb**
+  (2.8 gross against the learned 12.8 — the cold-arrival direction), saved only by
+  the mild gate (outdoor 17) and the 2 °C rise floor. `_preset_entry_reason` is
+  stamped once at the application edge, so a window opening on an occupancy climb
+  opens no sample and a pre-heat that runs into its booking keeps its sample
+  (tests in `tests/test_learning_conditions.py`) — timed on the
   **coldest** probe (the quantity the lead sizes and `shortfall` judges), not inside
   the 25-min startup grace (a restart mid-pre-heat re-applies comfort on an already
   heating room), folded only if it **reached target** — judged on the reading alone,

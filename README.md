@@ -417,7 +417,9 @@ are seeded at the slowest plausible value, so an unlearned zone uses
 pull the gain down to the truth over a handful of bookings. Only a genuine
 **pre-heat that reached its target** is timed and folded in — never a boost,
 an occupancy climb or a mid-booking top-up, where people, sun and a hotter
-setpoint do part of the radiators' work — judged on the zone average's
+setpoint do part of the radiators' work, nor a pre-heat window that opens on a
+hall someone's arrival has already lit (an occupancy climb whose start the
+pre-heat never saw) — judged on the zone average's
 start and finish (exponentially smoothed and step-capped, so one odd morning
 can only nudge the number, never yank it); a temperature *rise* while unheated
 (July roof sun) is never mistaken for good insulation. The hall keeps **two**
