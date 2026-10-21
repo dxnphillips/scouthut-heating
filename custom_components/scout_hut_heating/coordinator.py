@@ -6279,6 +6279,16 @@ class ScoutController:
         said 18.0 while the other three had fallen to 12, the trace's ``hall_sync``
         column had counted to 1,494 and the next day's booking ran on three
         heaters with nothing in the log but that number.
+
+        Only a REACHABLE heater is judged (v1.50.3). An unreachable one is the
+        outage watch's business, and its cure is a reload, not a power cycle:
+        on 2026-10-19 the Rointe token expired at 22:40Z, every heater went
+        unavailable for six hours with its stamp standing, and every trusted
+        clock passed this line at about 01:40Z — this would have pushed eight
+        "radiator not reporting" alerts on top of the three ``heaters_offline``
+        ones. A heater already alerted is held, not called heard, while it is
+        unreachable or its clock cannot be read (a Rointe reload drops trust
+        for two minutes); it is re-judged as soon as both are back.
         """
         now = self._now()
         silent_now: set[str] = set()
@@ -6286,7 +6296,11 @@ class ScoutController:
         for zone, key in self._OFFLINE_ZONE_CLIMATES.items():
             for climate in self._as_list(self.config.get(key)):
                 age = self._sync_age_minutes(climate)
-                if age is None or age < HEATER_SILENT_MINUTES:
+                if age is None or not self._climate_online(climate):
+                    if climate in self._heaters_silent_since:
+                        silent_now.add(climate)
+                    continue
+                if age < HEATER_SILENT_MINUTES:
                     continue
                 silent_now.add(climate)
                 if climate in self._heaters_silent_since:

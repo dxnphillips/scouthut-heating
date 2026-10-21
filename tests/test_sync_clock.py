@@ -345,6 +345,47 @@ def test_a_heater_without_a_clock_is_never_called_silent():
     assert [e["heater"] for e in _events(ctrl, "heater_silent")] == [HB]
 
 
+def test_an_unreachable_heater_is_the_outage_watchs_not_a_silent_one():
+    # 2026-10-19 22:40Z: the Rointe token expired and every heater went
+    # unavailable for six hours with its sync stamp standing. Every trusted clock
+    # passed the line at about 01:40Z; the outage watch had already alerted, and
+    # "power it off and on" is the wrong advice for a token.
+    ctrl, hass, devices = _trusted_hall(minutes_old=HEATER_SILENT_MINUTES + 60)
+    hass.services.register("notify", "mobile_app_phone")
+    hass.states.set(HB, "unavailable")
+    run(ctrl.async_reconcile())
+    assert not _events(ctrl, "heater_silent")
+    assert ctrl.diagnostics_data()["state"]["heaters_silent"] == {}
+    assert not [
+        c for c in hass.services.calls
+        if c["service"] == "mobile_app_phone" and "not reporting" in c["data"]["message"]
+    ]
+    # Reachable again with the same old stamp: now it is a dark heater.
+    _probes(hass, 19.0, 19.0)
+    run(ctrl.async_reconcile())
+    assert [e["heater"] for e in _events(ctrl, "heater_silent")] == [HB]
+
+
+def test_an_alerted_heater_is_held_not_heard_while_it_cannot_be_judged():
+    ctrl, hass, devices = _trusted_hall(minutes_old=HEATER_SILENT_MINUTES + 1)
+    run(ctrl.async_reconcile())
+    assert [e["heater"] for e in _events(ctrl, "heater_silent")] == [HB]
+    # It drops off the cloud altogether: no evidence it has spoken.
+    hass.states.set(HB, "unavailable")
+    run(ctrl.async_reconcile())
+    # Back, through a Rointe reload: the stamp is seen afresh, so its clock is
+    # not trusted again for two minutes.
+    _probes(hass, 19.0, 19.0)
+    ctrl._sync_stamp.pop(HB)
+    ctrl._sync_seen_at.pop(HB)
+    ctrl._sync_trusted.discard(HB)
+    run(ctrl.async_reconcile())
+    assert not ctrl._sync_clock_trusted(HB)
+    assert not _events(ctrl, "heater_heard")
+    assert HB in ctrl.diagnostics_data()["state"]["heaters_silent"]
+    assert len(_events(ctrl, "heater_silent")) == 1
+
+
 def test_the_silence_line_sits_well_clear_of_the_idle_heartbeat():
     # An idle Rointe uploads about every 30 min with one 60-min gap seen
     # (2026-09-27); the line is several missed beats, never a quiet one.

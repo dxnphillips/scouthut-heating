@@ -1199,7 +1199,27 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     went dark (the wall switch during the clean, the −78 dBm heater from the
     Rointe findings, or a hung device) — its probe is also the warmest in the
     hall, so the frozen 18.0 is pulling the trace `floor` up by ~1 °C until it
-    speaks. Not changed: `_heater_probe` keeps driving a silent heater (the
+    speaks. **It spoke on its own** at ~18:00Z on 10-15, 48 h after it went
+    quiet (trace `hall_sync` 2,876 at 17:58Z, 9.5 at 18:13Z), nobody known to
+    have touched it — a device that hangs and recovers, not one switched off.
+    **The token expiry is now measured to the minute, and it exposed an
+    overlap fixed in v1.50.3.** The v1.49.4 deploy restart at 2026-10-12
+    22:40Z logged the Rointe integration in; at **22:40:27Z on 10-19, exactly
+    168 h later**, every heater went unavailable (`fan_sensor_lost` floor,
+    then `heaters_offline` ×3 with `all_zones` at 22:50Z) until a Rointe
+    reload at 04:45Z (`sync_clock_lost` → `sync_clock_found` 13 s apart, no
+    preset re-apply, so our integration did not restart) — 6 h 5 min dark,
+    harmlessly overnight. Every trusted clock stood through it and passed
+    180 at ~01:40Z, so v1.50.1 as first written would have pushed eight
+    "radiator not reporting … power it off and on" alerts on top of the
+    outage alert. `_update_heater_silence` now judges only a REACHABLE heater
+    (`_climate_online`) — an unreachable one is the outage watch's, whose
+    cure is a reload — and holds an already-alerted heater (no
+    `heater_heard`) while it is unreachable or its clock is briefly
+    untrusted after a reload. Tests in `tests/test_sync_clock.py`. The
+    six-day reload automation (Q25) remains the owner-side cure: the next
+    expiry is 168 h after whatever last logged the Rointe integration in (a
+    deploy restart resets it). Not changed: `_heater_probe` keeps driving a silent heater (the
     cloud takes the write and the device will pick it up when it returns —
     harmless), and the fan ΔT reference still averages the frozen probe in
     (`fan_dt_on` is 0.5, so a 1 °C error does not change a decision).
@@ -1872,6 +1892,22 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   (owner-confirmed as the wanted behaviour). Frost protection means a forgotten
   pause can't freeze the hut, only leave a later group cool until a button /
   the next-session clear wakes it.
+  **Field pattern (2026-10-19, owner to ask the leaders): Pause is being
+  pressed when the FANS start, on rooms that are not warm.** The Monday 17:30Z
+  booking: the pre-heat relit comfort at 17:26:25Z, the reverse fans started
+  at 17:27:44Z, Pause at 17:29:06Z on coldest 17.0 / average ~18.1 — so the
+  booking arrived +0.88 short and sat at 18.0 for its whole 90 min. At the
+  19:00Z booking end the pause cleared, the next PIR trip relit comfort, the
+  fans started at 19:01:44Z and Pause came again at 19:15:14Z (coldest 17.0).
+  With 10-02 (Pause, forward breeze, no heating) and 10-12 (Boost and Pause
+  four minutes apart under a forward breeze) that is four presses in three
+  weeks, every one with fans running and only one on a warm room. Two
+  readings: active Beavers are comfortable at 17–18 (CIBSE's activity
+  figure) and the leaders want no heat at all, or the fans are the complaint
+  and Pause is the only button that stops them — the second fits the 82-s
+  timing best. Not built: a separate occupant **Fans off** hold beside Pause
+  would let them stop the fans without stopping the heat; the owner's answer
+  from the leaders decides it.
 - **A breeze-guard stop respects the minimum-run timer.** A 2-second door
   blip grants the vent pass, starts the fans, and its closure leaves up to
   10 minutes of running fans under an active hold (observed in the field,

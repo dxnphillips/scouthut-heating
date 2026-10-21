@@ -340,7 +340,10 @@ if a single radiator stops reporting to the Rointe cloud for three hours
 (v1.50.1): the app still shows it online and its temperature looks plausible,
 but it is neither reporting nor receiving setpoints, so it is probably off at
 the wall, off the WiFi or stuck, and the rest of the room is heating without
-it. Turn the switch off to go back to "set the target and trust the heater".
+it. A radiator the app shows as unavailable is left to the whole-zone outage
+notification instead (v1.50.3), since that one needs the Rointe integration
+reloaded rather than the radiator power-cycled. Turn the switch off to go back
+to "set the target and trust the heater".
 
 **Pause hall heating** (occupant cutout). The hall radiators are locked, so if
 someone finds it too warm mid-session they have no way to turn them down. The

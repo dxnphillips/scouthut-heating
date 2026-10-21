@@ -196,8 +196,13 @@ reconciler, and they change how several entries above should be read:
   the cloud and read straight back as "adopted" — the drive read-back cannot
   see it. Field 2026-10-13: hall_left silent from 18:02Z for 25 h, reading 18.0
   against a hall at 12, the next booking on three heaters, nothing in the log
-  but `hall_sync` counting. No sync clock → never alerts. Diagnostics:
-  `state.heaters_silent`.
+  but `hall_sync` counting. No sync clock → never alerts. Only a reachable
+  heater is judged (v1.50.3): an unavailable one is the outage watch's, whose
+  cure is a Rointe reload, not a power cycle (the 2026-10-19 token expiry took
+  every heater unavailable for six hours and would have raised eight of these
+  on top of `heaters_offline`), and an alerted heater is held — not called
+  heard — while it is unreachable or its clock is briefly untrusted after a
+  reload. Diagnostics: `state.heaters_silent`.
 
 Reachability comes from each heater's Rointe **Connected** binary_sensor
 (auto-detected from the device, like the Effective Power sensors), falling back
