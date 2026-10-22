@@ -346,7 +346,10 @@ BOOST_DEFAULT = "60 min"
 # 2026-09-17: release 19.0 with comfort 19.0), the breeze cooled a booked hall onto
 # its own heating trigger and the radiators relit, two reversals and a re-heat in
 # 80 min. Deriving both from one reference makes that unreachable by construction,
-# whatever the sliders are set to.
+# whatever the sliders are set to — EXCEPT while the booking hold lifts the heating
+# line above comfort: the reference stays bare comfort, so a hold margin of 0.5
+# (outdoor ~3 °C at the October 2026 constants) puts the two lines back together
+# (field 2026-10-22, two breezes and a relight in one evening at a 0.36 margin).
 COOLING_RELEASE_FLOOR = 0.5  # °C above the reference, minimum
 
 # User-facing switches: key -> default state (True = on)

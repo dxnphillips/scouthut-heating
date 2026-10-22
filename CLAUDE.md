@@ -2755,6 +2755,29 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   to 0 (the documented off switch) for a week of cold heated bookings; keep it
   off if `peak_over` falls by ~0.5 and no booking's average falls below ~18.5
   mid-slot; if one does with the relight late, restore it.
+  **The same hold drove that evening's fan cycling, and it breaks the v1.38.0
+  one-reference guarantee (owner: "I'm sure the fans kept flapping, though the
+  temperature seemed pretty good throughout").** Six fan changes in 2 h 23 min,
+  with no Pause or Boost pressed: reverse → forward at 17:48:58Z (15 min after
+  the `booking_warm` ice, the direction debounce), off at 18:32:58Z (average
+  19.5, the breeze's release line), reverse at 18:48:48Z (the second booking
+  relit comfort at 18:47:28Z on average 19.25), off at 19:33:30Z
+  (`booking_warm`), forward at 19:46:28Z (the panel tail lifted the average to
+  20.12, coast `rise` 0.62), off at 20:11:28Z. The breeze releases at comfort +
+  0.5 (19.5), but the held heating line sat at comfort + margin (19.36), 0.14
+  below it; the `cooling_hold` covered exactly its 15 min after the last
+  cooling tick (18:32:28Z → 18:47:28Z) and the booking rung relit on the tick
+  it lapsed. The v1.38.0 claim that the release "can never land on the heating
+  line, whatever the sliders" holds only with the hold at 0: `_cooling_reference`
+  is bare comfort while the heating line is comfort + margin, and at k 9.65 /
+  gain 11.67 the margin (0.031 × (19 − outdoor)) reaches the 0.5 release floor
+  at outdoor ~3 °C, below which a booked hall's breeze stops inside its own
+  heating band. Owner-side: `booking_hold_cap` 0 (above) restores the
+  guarantee; `cooling_above_comfort` 1.0 → 2.0 (the regime-commit bullet's
+  documented lever) moves the breeze to average ≥ 21, releasing at 20, and
+  neither evening peak (20.62, 20.12) would have started one. **If the hold is
+  restored after the trial, `_cooling_reference` must carry the booking hold
+  margin** so the two lines move together; not built while the cap is at 0.
 - **Heating is decoupled from the season — one gate, occupancy == booking
   (2026-08-07).** The seasonal lockout no longer blocks heat. Both a booking and
   bare occupancy heat on the **same** self-calibrating test, `_room_wants_heat(zone,
