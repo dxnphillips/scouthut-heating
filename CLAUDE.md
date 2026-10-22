@@ -2751,9 +2751,10 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   probes caught up, then 20.62. The second was relit at average 19.25 — above
   comfort, below the hold's 19.36 engage line — heated to its 19.86 release,
   and peaked 20.12. Neither booking dipped below 18.62, so the dip the hold
-  exists for was never close. (A first suggestion to set `booking_hold_cap` to
-  0 was withdrawn the same evening — see the revision at the end of the next
-  paragraph.)
+  exists for was never close. **Decision rule:** owner sets `booking_hold_cap`
+  to 0 (the documented off switch) for a week of cold heated bookings; keep it
+  off if `peak_over` falls by ~0.5 and no booking's average falls below ~18.5
+  mid-slot; if one does with the relight late, restore it.
   **The same hold drove that evening's fan cycling, and it breaks the v1.38.0
   one-reference guarantee (owner: "I'm sure the fans kept flapping, though the
   temperature seemed pretty good throughout").** Six fan changes in 2 h 23 min,
@@ -2771,32 +2772,26 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   is bare comfort while the heating line is comfort + margin, and at k 9.65 /
   gain 11.67 the margin (0.031 × (19 − outdoor)) reaches the 0.5 release floor
   at outdoor ~3 °C, below which a booked hall's breeze stops inside its own
-  heating band. **The event-by-event read changed the recommendation: the
-  occupants found the temperature fine, so the fan changes are the complaint,
-  not the overshoot, and the hold helped the second session.** The first
+  heating band. **The event-by-event read, and the owner's goal.** The first
   booking (Beavers, 17:00–18:15Z) arrived at 19.12 and rose to 20.62 by 17:49Z
   under the 20.0 setpoints. Its breeze then ran into the changeover and, with
   the door traffic, took the room from 20.62 to 19.5. The second booking
   (Scouts, 18:30Z) arrived at 19.75 / cold end 18.5. Its relight at 18:47:28Z
-  (helped by the hold; on bare comfort it would have come ~10 min later) took
-  ~45 min to bite: panels averaged 27 → 34 °C, a 5-min coast easing ran on
-  leftover 48 °C panel heat at 18:47:52Z, and the room dipped to 18.62 / 17.5
-  at 19:04–19:19Z. The probes then caught up (19.38 at 19:30:58Z, release at
-  19:32:58Z) and the stored heat carried the room to 20.12 under the second
-  breeze. So the swing is about ±1 °C around 19.4, and each half of it flips
-  the fans. Owner-side: change ONE slider, `cooling_above_comfort` 1.0 → 2.0
-  (the regime-commit bullet's documented lever). That moves the breeze to an
-  average of ≥ 21, releasing at 20, and neither peak (20.62, 20.12) would have
-  started one. Without the changeover breeze the second session would likely
-  have started warmer, with a shallower dip. It also restores the gap: the
-  release (20.0) stays clear of the held heating line until a margin of 1.0,
-  outdoor ~−13 °C. `booking_hold_cap` stays at 1.5. **Decision rule:** read
-  the next week's heated bookings for fan changes per session (target ≤ 2:
-  reverse on, reverse off), the changeover dip and `peak_over`. If a peak
-  passes 21 and the breeze returns mid-session, the hold is the next lever.
-  If the hold is ever wanted with the offset back at 1.0,
-  `_cooling_reference` must carry the hold margin so the two lines move
-  together.
+  (on bare comfort it would have come ~10 min later) took ~45 min to bite:
+  panels averaged 27 → 34 °C, a 5-min coast easing ran on leftover 48 °C panel
+  heat at 18:47:52Z, and the room dipped to 18.62 / 17.5 at 19:04–19:19Z. The
+  probes then caught up (release at 19:32:58Z) and the stored heat carried the
+  room to 20.12 under the second breeze. The owner's verdict: the fan changes
+  helped, and the target is the overshoot. So the owner-side change is the
+  decision rule above: `booking_hold_cap` 0, with `cooling_above_comfort` left
+  at 1.0 so the breeze still mops up whatever overshoot remains. Expect it to
+  take ~0.3–0.5 off each peak (setpoints 19.5 not 20.0; heating off at 19.5
+  not 19.78/19.86). The cost is a relight ~10 min later and a slightly deeper
+  changeover dip. With the cap at 0 the one-reference guarantee holds again.
+  **If the hold is ever restored with the offset at 1.0, `_cooling_reference`
+  must carry the hold margin** so the two lines move together. (An interim
+  suggestion that evening, `cooling_above_comfort` 2.0 alone, was aimed at the
+  fan changes, which the owner then said were not the problem.)
 - **Heating is decoupled from the season — one gate, occupancy == booking
   (2026-08-07).** The seasonal lockout no longer blocks heat. Both a booking and
   bare occupancy heat on the **same** self-calibrating test, `_room_wants_heat(zone,
