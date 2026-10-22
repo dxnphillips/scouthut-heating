@@ -2132,7 +2132,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   is off, for an in-comfort withdrawal and for the last-will reset; ice needs
   none (its cached 7 is a constant). Every heater write now blocks, a raise is
   audited (`write_failed` once per failing write, `write_recovered` on success)
-  and the value is retried next tick rather than believed; consecutive pushes
+  and the value is retried next tick rather than believed — **for drive pushes
+  from v1.37.0, but for PRESET writes only from v1.50.5.** Until then
+  `_async_set_preset` and `_reconcile_shared` recorded `applied` whatever the
+  call returned, so a failed preset was believed and never re-sent. Field
+  2026-10-22 (the first day on 1.50.4): the hall's ice write failed at the
+  06:37Z deploy restart (harmless, already on ice) and the office's ice write
+  failed at 11:46Z as the alarm was set — the office then heated an armed,
+  empty building 18.5 → 20.0 until the next preset change at 14:53Z. Now a
+  write that raised sets the existing re-send flag (`_zone_offline_apply` /
+  `_shared_offline_apply`), so the next tick re-sends it with no new `preset`
+  event and one `write_failed`. Tests in `tests/test_write_path.py`. Consecutive pushes
   are spaced `HEATER_WRITE_SPACING_S` (1 s) apart because each command makes the
   Rointe integration refresh all 8 heaters. It only ever drives *harder* than the
   owner's setpoint; clamped to `[target, target + drive_max_offset]` (default
@@ -2726,6 +2736,25 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   (hold working) or still dip (raise the cap / `HOLD_LEAD_BASE_MIN`)? And confirm it
   self-zeros on mild evenings. Pairs with Q17 (a capacity-limited hall may not
   *reach* the held target — the `drive_capped` alarm surfaces that).
+  **First read on the escalation band (2026-10-22, the first day on 1.50.4): the
+  hold is now the largest controllable part of the overshoot, and it no longer
+  self-zeros.** The band did its job — `drive_off` 0 through the 10.6 → 16.5
+  morning climb and never above 0.5 all day — yet the two evening bookings came
+  in at `peak_over` **1.62** (48 min over) and **1.12** (44 min over), each
+  followed by a forward breeze on the children (17:49–18:33Z, 19:46–20:11Z). With
+  `zone_a_heatloss_pct` up to 9.65 the margin is 0.031 × (19 − outdoor): 0.28 at
+  outdoor 10 and 0.36 at 7.4, both of which round the drive target to **19.5**
+  (it stays there at any outdoor ≤ ~10.9). Target 19.5 + a 0.5 stair = **20.0 on
+  every hall setpoint** (`drive_approach_hold` pushed 20.0 at 17:10Z and
+  17:28Z), and a Rointe fires to its own probe until it reads 20. The first
+  booking went 19.25 → 20.38 in one 15-min row as twenty children arrived and the
+  probes caught up, then 20.62. The second was relit at average 19.25 — above
+  comfort, below the hold's 19.36 engage line — heated to its 19.86 release,
+  and peaked 20.12. Neither booking dipped below 18.62, so the dip the hold
+  exists for was never close. **Decision rule:** owner sets `booking_hold_cap`
+  to 0 (the documented off switch) for a week of cold heated bookings; keep it
+  off if `peak_over` falls by ~0.5 and no booking's average falls below ~18.5
+  mid-slot; if one does with the relight late, restore it.
 - **Heating is decoupled from the season — one gate, occupancy == booking
   (2026-08-07).** The seasonal lockout no longer blocks heat. Both a booking and
   bare occupancy heat on the **same** self-calibrating test, `_room_wants_heat(zone,

@@ -146,8 +146,12 @@ reconciler, and they change how several entries above should be read:
   applies and eco-low re-pushes, undriven comfort, in-comfort withdrawals, the
   last-will reset); `set_preset_mode` still selects the preset (ice needs
   nothing more — its cached 7 is constant). All heater writes block; a raise is
-  audited (`write_failed` / `write_recovered`) and retried next tick; pushes are
-  spaced 1 s apart. An insane-probe withdrawal holds the staircase
+  audited (`write_failed` / `write_recovered`) and retried next tick — drive
+  pushes always were; zone and shared PRESET writes are since v1.50.5, through
+  the same re-send flag that re-sends a preset sent while a heater was offline
+  (before, a failed preset was recorded as applied and never re-sent: on
+  2026-10-22 the office's ice failed at the alarm arm and it heated an empty
+  building for three hours); pushes are spaced 1 s apart. An insane-probe withdrawal holds the staircase
   (`drive_withdrawn` audited — fault withdrawals only since v1.40.0; the routine
   `not_comfort` one is not, it fires per heater on every exit from comfort and the
   `preset` event beside it already records it); a target drop resets it

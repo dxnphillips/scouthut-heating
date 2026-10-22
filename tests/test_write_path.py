@@ -203,6 +203,68 @@ def test_a_failed_heater_write_is_audited_once_and_retried():
     assert _events(ctrl, "write_recovered")
 
 
+def _preset_calls(hass, climate, preset):
+    return [
+        c for c in service_calls(hass, "climate", "set_preset_mode")
+        if climate in _ids(c) and c["data"].get("preset_mode") == preset
+    ]
+
+
+def test_a_failed_preset_write_is_re_sent_on_the_next_tick():
+    # 2026-10-22 11:46Z: the office's ice write failed as the alarm was set,
+    # `applied` recorded ice anyway, and nothing re-sent it, so the office kept
+    # heating an armed, empty building for three hours.
+    ctrl, hass = make_controller()
+    office = E["office"][0]
+    hass.states.set(office, "heat", {"current_temperature": 17.0})
+    motion(ctrl, "office")
+    run(ctrl.async_reconcile())
+    assert ctrl.applied["zone_b"] == PRESET_COMFORT
+    hass.states.set(E["alarm_office"], "on")  # armed away: the office goes to ice
+    hass.services.fail_when = (
+        lambda d, s, data: d == "climate" and s == "set_preset_mode" and office in _ids({"data": data})
+    )
+    run(ctrl.async_reconcile())
+    assert ctrl.applied["zone_b"] == PRESET_ICE
+    assert len(_preset_calls(hass, office, PRESET_ICE)) == 1
+    assert [e["heater"] for e in _events(ctrl, "write_failed")] == [office]
+    run(ctrl.async_reconcile())  # still failing: re-sent, audited once
+    assert len(_preset_calls(hass, office, PRESET_ICE)) == 2
+    assert len(_events(ctrl, "write_failed")) == 1
+    hass.services.fail_when = None
+    run(ctrl.async_reconcile())  # lands
+    assert len(_preset_calls(hass, office, PRESET_ICE)) == 3
+    assert _events(ctrl, "write_recovered")
+    run(ctrl.async_reconcile())  # and is not re-sent again
+    assert len(_preset_calls(hass, office, PRESET_ICE)) == 3
+    # One `preset` event for the change, none for the re-sends.
+    assert len([e for e in _events(ctrl, "preset") if e["zone"] == "zone_b" and e["to"] == PRESET_ICE]) == 1
+
+
+def test_a_failed_shared_preset_write_is_re_sent_on_the_next_tick():
+    ctrl, hass = make_controller()
+    kitchen = E["shared"][0]
+    for climate in E["shared"]:
+        hass.states.set(climate, "heat", {"current_temperature": 15.0})
+    motion(ctrl, "kitchen")
+    run(ctrl.async_reconcile())
+    shared_now = ctrl.applied["shared"]
+    assert shared_now is not None and shared_now != PRESET_ICE
+    hass.states.set(E["alarm_main"], "on")
+    hass.states.set(E["alarm_office"], "on")
+    hass.services.fail_when = (
+        lambda d, s, data: d == "climate" and s == "set_preset_mode" and kitchen in _ids({"data": data})
+    )
+    run(ctrl.async_reconcile())
+    assert ctrl.applied["shared"] == PRESET_ICE
+    sent = len(_preset_calls(hass, kitchen, PRESET_ICE))
+    hass.services.fail_when = None
+    run(ctrl.async_reconcile())
+    assert len(_preset_calls(hass, kitchen, PRESET_ICE)) == sent + 1
+    run(ctrl.async_reconcile())
+    assert len(_preset_calls(hass, kitchen, PRESET_ICE)) == sent + 1
+
+
 # --- Withdrawal: audited; an insane probe HOLDS the staircase ---------------
 def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     _wire_numbers()

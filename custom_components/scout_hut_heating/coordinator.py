@@ -719,8 +719,8 @@ class ScoutController:
         # / effective power), auto-found from the device once the registry has it.
         self._heater_sensors: dict[str, dict[str, str]] | None = None
         self._connected_map: dict[str, str] | None = None  # climate -> connected sensor
-        # A zone whose last preset was sent while a heater was offline: re-send it
-        # once every heater is back online.
+        # A zone whose last preset was sent while a heater was offline, or whose
+        # preset write raised: re-send it once every heater is online.
         self._zone_offline_apply: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self._shared_offline_apply = False
 
@@ -4606,9 +4606,9 @@ class ScoutController:
             desired = self._desired_zone(zone)
             if desired is None:
                 continue
-            # If the last apply went out while a heater was offline, re-send once
-            # every heater in the zone is back online, even if the target is
-            # unchanged (the offline heater may never have received it).
+            # If the last apply went out while a heater was offline, or the write
+            # raised (v1.50.5), re-send once every heater in the zone is online,
+            # even if the target is unchanged (it may never have landed).
             if self._zone_offline_apply.get(zone) and self._all_zone_online(zone):
                 await self._async_set_preset(zone, desired)
                 continue
@@ -4699,9 +4699,11 @@ class ScoutController:
                 to=desired,
                 reason=self._preset_reason.get("shared"),
             )
-        await self._async_apply_climate(climates, desired)
+        ok = await self._async_apply_climate(climates, desired)
         self.applied["shared"] = desired
-        self._shared_offline_apply = not all_online
+        # A write that raised did not land either: re-send it on the next tick,
+        # through the same path (v1.50.5, see _async_set_preset).
+        self._shared_offline_apply = not ok or not all_online
 
     async def _reconcile_water(self) -> None:
         desired = self._desired_water()
@@ -4888,16 +4890,21 @@ class ScoutController:
             self._preset_entry_reason[zone] = self._preset_reason.get(zone) or ""
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
             await self._async_push_hall_temps(eco_low=self._eco_low_wanted(zone))
-        await self._async_apply_climate(climates, preset)
+        ok = await self._async_apply_climate(climates, preset)
         # The preset copies a possibly-stale cached number into the live
         # setpoint; land the intended value explicitly (see _async_land_zone).
-        await self._async_land_zone(zone, preset)
+        ok = await self._async_land_zone(zone, preset) and ok
         self.applied[zone] = preset
         self.expected_preset[zone] = preset
         self._last_apply[zone] = self._now()
-        # Remember if any heater was offline: the command cannot have reached it,
-        # so mark the zone for a re-send once it reconnects.
-        self._zone_offline_apply[zone] = not self._all_zone_online(zone)
+        # Mark the zone for a re-send if the command cannot have landed: a
+        # heater was offline (re-sent once it reconnects), or the write itself
+        # raised (v1.50.5, re-sent on the next tick). Field 2026-10-22 11:46Z:
+        # the office's ice write failed as the alarm was set, `applied` said ice
+        # anyway, nothing re-sent it, and the office heated an armed, empty
+        # building 18.5 -> 20.0 until the next preset change three hours later.
+        # The failure is audited once (`write_failed`); the retries are not.
+        self._zone_offline_apply[zone] = not ok or not self._all_zone_online(zone)
 
     def _hall_number_entities(self) -> tuple[list[str], list[str]]:
         """Resolve the hall comfort / eco temperature number entities.
@@ -4978,18 +4985,19 @@ class ScoutController:
                 climate=",".join(eco_numbers),
             )
 
-    async def _async_apply_climate(self, entities: Any, preset: str) -> None:
+    async def _async_apply_climate(self, entities: Any, preset: str) -> bool:
+        """Apply a preset to these heaters; False if the write raised."""
         climates = self._as_list(entities)
         if not climates:
-            return
-        await self._async_heater_call(
+            return True
+        return await self._async_heater_call(
             "climate",
             "set_preset_mode",
             {"entity_id": climates, "preset_mode": preset},
             climate=",".join(climates),
         )
 
-    async def _async_land_zone(self, zone: str, preset: str) -> None:
+    async def _async_land_zone(self, zone: str, preset: str) -> bool:
         """Set the hall heaters' LIVE setpoint to the value the preset is meant
         to carry (Rointe/Nexa findings, 2026-09-16).
 
@@ -5004,10 +5012,10 @@ class ScoutController:
         (target + trim) value in the same reconcile. Ice needs nothing: the
         cached anti-frost value is a constant 7. The office eco and the shared
         eco live on the devices and are never pushed, so there is nothing to
-        land for them.
+        land for them. False if any landing write raised.
         """
         if zone != ZONE_A:
-            return
+            return True
         if preset == PRESET_ECO:
             value = self._hall_eco_target(self._eco_keyword_active(zone))
         elif preset == PRESET_COMFORT and not self.switch_on(
@@ -5015,9 +5023,11 @@ class ScoutController:
         ):
             value = self.number("hall_comfort_temp")
         else:
-            return
+            return True
+        ok = True
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
-            await self._async_set_live_setpoint(climate, value)
+            ok = await self._async_set_live_setpoint(climate, value) and ok
+        return ok
 
     async def _async_set_live_setpoint(self, climate: str, value: float) -> bool:
         """Write a heater's live target temperature (``climate.set_temperature``)."""
