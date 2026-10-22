@@ -211,17 +211,20 @@ def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     # median) can only fire while the zone AVERAGE — what the heat gate reads
     # since v1.47.0 — is still short of target if the target sits well above.
     ctrl._numbers["hall_comfort_temp"].native_value = 24.0
-    _hall_comfort(ctrl, hass, {HB: 18.0, HF: 18.0})
+    # hall_back inside the escalation band (v1.50.0) so it can wind two steps;
+    # hall_front far short, so the zone average stays clear of the approach hold.
+    _hall_comfort(ctrl, hass, {HB: 23.0, HF: 22.0})
     run(ctrl.async_reconcile())
     _age_steps(ctrl)
-    for c in (HB, HF):
-        hass.states.set(c, "heat", {"current_temperature": 18.5})  # both responded
+    hass.states.set(HB, "heat", {"current_temperature": 23.5})  # responded
     run(ctrl.async_reconcile())
     held = ctrl._drive_stair[HB]
     assert held >= 1.0
-    # hall_front freeze-jumps +6.5 in one batch: hall_back is now > 4 under the
-    # zone median and the sanity rule fires on a merely LATE probe.
-    hass.states.set(HF, "heat", {"current_temperature": 25.0})
+    # One batch: hall_front catches up to target while hall_back's reading drops
+    # to 19.0 — now > 4 under the zone median, so the sanity rule fires on a
+    # reading that is merely glitched, with the zone still in comfort.
+    hass.states.set(HF, "heat", {"current_temperature": 24.0})
+    hass.states.set(HB, "heat", {"current_temperature": 19.0})
     run(ctrl.async_reconcile())
     target = ctrl.number("hall_comfort_temp")
     assert _pushed(hass, _num(HB)) == target and _landed(hass, HB) == target
@@ -230,7 +233,7 @@ def test_insane_probe_withdrawal_holds_the_staircase_and_is_audited():
     withdrawn = _events(ctrl, "drive_withdrawn")
     assert withdrawn and withdrawn[-1]["heater"] == HB and withdrawn[-1]["reason"] == "insane"
     assert withdrawn[-1]["stair"] == held
-    # The probe catches up (still short of target, back inside the sanity band):
+    # The reading recovers (back inside the sanity band, still short of target):
     # it re-enters with the held overdrive, not from zero.
     hass.states.set(HB, "heat", {"current_temperature": 21.0})
     run(ctrl.async_reconcile())
@@ -264,12 +267,15 @@ def test_leaving_comfort_withdraws_the_number_only_and_is_not_audited():
 def test_a_target_drop_resets_the_staircase():
     _wire_numbers()
     ctrl, hass = make_controller()
-    _hall_comfort(ctrl, hass, {HB: 18.0, HF: 18.0})
+    # Boost target = comfort + boost_offset = 21.5. hall_back a degree short of it
+    # (inside the escalation band, v1.50.0) winds two steps; hall_front is left
+    # far short so the zone average stays clear of the approach hold now and of
+    # the warm line once the boost expires.
+    _hall_comfort(ctrl, hass, {HB: 20.5, HF: 18.5})
     run(ctrl.async_boost(ZA))  # target = comfort + boost_offset
     run(ctrl.async_reconcile())
     _age_steps(ctrl)
-    for c in (HB, HF):
-        hass.states.set(c, "heat", {"current_temperature": 18.5})
+    hass.states.set(HB, "heat", {"current_temperature": 21.0})
     run(ctrl.async_reconcile())
     assert ctrl._drive_stair[HB] >= 1.0
     boosted = _pushed(hass, _num(HB))
@@ -284,13 +290,77 @@ def test_a_target_drop_resets_the_staircase():
     assert drops and drops[-1]["target"] == comfort and drops[-1]["stair"] >= 1.0
 
 
+def test_a_hold_that_rounds_down_mid_session_keeps_a_short_heaters_stair():
+    # 2026-10-21 16:50Z, a Wednesday booking in a hall that started the
+    # afternoon at 11.9: the booking hold sat on the 0.5 rounding line (margin
+    # 0.255 at outdoor 8.0, 0.232 at 9.0 with k 7.15 and gain 11.67), the
+    # weather ticked up a degree, the target rounded 19.5 -> 19.0, and the old
+    # rule reset +2.5-3.0 of overdrive on all four heaters while their probes
+    # sat at 17.5-18.0. The room fell 18.9 -> 17.8 over the next hour.
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    for key, value in (
+        ("hall_comfort_temp", 19.0),
+        ("zone_a_heatloss_pct", 7.15),
+        ("zone_a_warmup_rate", 11.67),
+        ("zone_a_warmup_rate_fans", 11.67),
+        ("booking_hold_cap", 1.5),
+    ):
+        ctrl._numbers[key].native_value = value
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    hass.states.set(E["weather"], "cloudy", {"temperature": 8.0})
+    hass.states.set(HB, "heat", {"current_temperature": 18.0})
+    hass.states.set(HF, "heat", {"current_temperature": 17.5})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_target[HB] == 19.5  # 19.0 + a hold that rounds up
+    # The overdrive the afternoon's climb had committed by then, its last step
+    # just taken (so this tick isolates the drop from the next step).
+    for climate in (HB, HF):
+        ctrl._drive_stair[climate] = 2.5
+        ctrl._drive_step_at[climate] = dt_util.utcnow()
+    hass.states.set(E["weather"], "cloudy", {"temperature": 9.0})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_target[HB] == 19.0  # the hold rounded down
+    assert ctrl._drive_stair[HB] == 2.5 and ctrl._drive_stair[HF] == 2.5
+    assert _pushed(hass, _num(HB)) == 21.5  # the drop lowers it; nothing more
+    drops = _events(ctrl, "drive_target_drop")
+    assert {e["heater"] for e in drops} == {HB, HF}
+    assert all(e["reset"] is False for e in drops)
+    assert next(e for e in drops if e["heater"] == HB)["probe"] == 18.0
+
+
+def test_a_target_drop_resets_only_the_heater_that_has_reached_it():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _hall_comfort(ctrl, hass, {HB: 18.0, HF: 18.0})
+    run(ctrl.async_reconcile())
+    target = ctrl.number("hall_comfort_temp")
+    # A higher target was in force a moment ago (a boost or a hold) and both
+    # heaters carry overdrive; hall_back's probe has reached the lower target,
+    # hall_front's has not.
+    for climate in (HB, HF):
+        ctrl._drive_target[climate] = target + 0.5
+        ctrl._drive_stair[climate] = 1.5
+    hass.states.set(HB, "heat", {"current_temperature": target})
+    hass.states.set(HF, "heat", {"current_temperature": target - 1.5})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_stair[HB] == 0.0
+    assert ctrl._drive_stair[HF] == 1.5
+    by_heater = {e["heater"]: e for e in _events(ctrl, "drive_target_drop")}
+    assert by_heater[HB]["reset"] is True and by_heater[HF]["reset"] is False
+
+
 # --- Approach guard: an insane probe is left out of the zone average --------
 def test_zone_average_for_the_approach_guard_excludes_an_insane_probe():
     _wire_numbers()
     ctrl, hass = make_controller()
     target = ctrl.number("hall_comfort_temp")
-    _hall_comfort(ctrl, hass, {HB: 14.5, HF: 15.5})
-    run(ctrl.async_reconcile())  # first step on both
+    # hall_front a degree short (inside the escalation band, v1.50.0) takes its
+    # first step; hall_back far short takes none (a saturated element).
+    _hall_comfort(ctrl, hass, {HB: 14.5, HF: target - 1.0})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_stair[HF] == 0.5 and ctrl._drive_stair[HB] == 0.0
     _age_steps(ctrl)
     # hall_front catches up to within a step of target; hall_back's probe stays
     # frozen at 14.5, now > 4 under the median -> insane. With it excluded the

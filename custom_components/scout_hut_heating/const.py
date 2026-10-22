@@ -465,3 +465,4 @@ NOTIFY_HEATERS_OFFLINE = {
     ZONE_B: "scout_zone_b_heaters_offline",
     "shared": "scout_shared_heaters_offline",
 }
+NOTIFY_HEATER_SILENT = "scout_heater_silent"

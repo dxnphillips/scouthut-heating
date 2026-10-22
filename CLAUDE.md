@@ -233,7 +233,16 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   top-up read as ONE family (10–14 gross) and there is no fast family left to police.
   **Sample selection replaces the guards** (`_update_warmup_learning`): only a climb
   whose preset reason is `preheat` (never a Boost — 7.2 gross, elements never
-  throttle; never occupancy or a mid-booking top-up — free gain), timed on the
+  throttle; never occupancy or a mid-booking top-up — free gain) — **judged on the
+  reason the zone ENTERED comfort, not the ladder's live reason (v1.50.2):** on
+  2026-10-15 the hall PIR lit comfort at 15:40Z from 17.0 and the pre-heat window
+  opened at 16:10Z on that same comfort, flipping the live reason to `preheat` with
+  no preset change; the sample opened there and timed **11 min of a 41-min climb**
+  (2.8 gross against the learned 12.8 — the cold-arrival direction), saved only by
+  the mild gate (outdoor 17) and the 2 °C rise floor. `_preset_entry_reason` is
+  stamped once at the application edge, so a window opening on an occupancy climb
+  opens no sample and a pre-heat that runs into its booking keeps its sample
+  (tests in `tests/test_learning_conditions.py`) — timed on the
   **coldest** probe (the quantity the lead sizes and `shortfall` judges), not inside
   the 25-min startup grace (a restart mid-pre-heat re-applies comfort on an already
   heating room), folded only if it **reached target** — judged on the reading alone,
@@ -719,6 +728,20 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    linear, +3.24 in one tick) folds inside the 10–14 gross family. `warmup_sample.observed_gain`
    replaces the old "min/°C" reading; success metric unchanged — `shortfall` ≈ 0
    with the lead no longer pinned at the cap on ordinary cold mornings.
+   **First cold-SOAKED climb (2026-10-21, the decision rule's case).** Hall 11.9
+   (coldest 11.5) at the 14:20Z pre-heat, outdoor 8, lead 132 min at gain 11.67
+   (net 4.63 °C/h predicted). All four elements ran full (panels 58–60 °C) and
+   the average reached 18.12 at the 16:30Z start (**+0.88**) and 18.88 at 16:59Z:
+   11.9 → 18.9 in ~160 min, i.e. net ~3.6 °C/h with the 2.5 finish, an implied
+   gross of **~14.6** against folded samples of 9–11.4 that all started at
+   15–17. A timber hall soaked to 12 takes the radiators' heat into the fabric
+   as well as the air, which a single gain learned on warmer starts cannot
+   see. The sample would have folded slow but never reached target (the
+   v1.50.4 reset above cut the drive at 18.5), so it was dropped. The rule
+   says nudge the fans key up one notch and let the next sample confirm:
+   **owner-side, set `zone_a_warmup_rate_fans` to ~14**. Q17 read: the climb
+   was still rising ~1.6 °C/h at 18 with elements saturated, so soak, not a
+   capacity wall.
 4. **Gap-normalised heat-loss constants (`zone_X_heatloss_pct`, seed 25).**
    July measurements: hall ~10 %/h, office ~4.5 %/h. Verify autumn/winter
    `cooloff_sample` events (they carry `gap`) confirm season transfer;
@@ -1156,6 +1179,64 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     renews the token. Note also the `last_reported` checks referenced above are
     inert (they never detect a freeze), so this alert is the *only* heater-health
     signal we will have. **BUILT v1.37.0 — see Q25 PR 4.**
+    **The single-heater case is a different blind spot, and the sync clock is
+    the only thing that sees it (v1.50.1, `HEATER_SILENT_MINUTES` = 180, field
+    2026-10-13/14).** hall_left's last upload was **18:02Z on Tuesday**, during
+    a sal-vation cleaning booking with the front door propped open 16:55–18:56Z;
+    the 10-14 19:09Z export found it 1,507 min silent, `preset None` (the
+    device never re-set itself after the 22:40Z restart's ice re-apply), its
+    reading frozen at 18.0 while the other three fell to 12.0–13.5 overnight,
+    and its panel frozen at 19.0. HA showed it `online` throughout (the cloud
+    keeps serving a dark device's last record), the 120-min frozen gate
+    correctly dropped it from the heat gate's average (`preheat_start.indoor`
+    16.5 against a trace `floor` of 16.88), the trace's `hall_sync` column
+    counted up 15 per row from 39.7 to 1,494.8 — and NOTHING alerted. Worse,
+    the drive's read-back (Q20a) cannot see it even in principle: the
+    "reported setpoint" it compares is the climate entity's `temperature`
+    attribute, which is the **cloud's copy of the value we just wrote**, so a
+    device that is not listening passes the first gate and the surface witness
+    is never consulted. Wednesday's 16:30Z booking therefore ran on three
+    heaters (pushed 19.5 to hall_left at 15:25Z, freeze-held at 15:40Z, no
+    `drive_setpoint_rejected`). So `_update_heater_silence` (its own reconcile
+    step, after the outage watch) alerts any heater whose trusted-clock upload
+    age reaches 180 min: `heater_silent` (zone, heater, minutes, the frozen
+    `reading` and `surface`, `sync_at`), one persistent notification listing
+    every silent heater (re-issued as the set changes, dismissed when empty) and
+    a companion push on each new one; `heater_heard` (minutes) when it uploads
+    again; `state.heaters_silent` in diagnostics. 180 is six idle beats (the
+    heartbeat is ~30 min, the widest gap seen 60); an install with no sync
+    clock never alerts. **Decision rule:** once a fortnight of `hall_sync`
+    shows nothing idle past 60, drop the line toward 90 so an afternoon
+    silence is caught before an evening booking; if a `heater_silent` is ever
+    followed by `heater_heard` within minutes, the heartbeat is looser than one
+    night suggested and the line stays. Owner-side: find out why hall_left
+    went dark (the wall switch during the clean, the −78 dBm heater from the
+    Rointe findings, or a hung device) — its probe is also the warmest in the
+    hall, so the frozen 18.0 is pulling the trace `floor` up by ~1 °C until it
+    speaks. **It spoke on its own** at ~18:00Z on 10-15, 48 h after it went
+    quiet (trace `hall_sync` 2,876 at 17:58Z, 9.5 at 18:13Z), nobody known to
+    have touched it — a device that hangs and recovers, not one switched off.
+    **The token expiry is now measured to the minute, and it exposed an
+    overlap fixed in v1.50.3.** The v1.49.4 deploy restart at 2026-10-12
+    22:40Z logged the Rointe integration in; at **22:40:27Z on 10-19, exactly
+    168 h later**, every heater went unavailable (`fan_sensor_lost` floor,
+    then `heaters_offline` ×3 with `all_zones` at 22:50Z) until a Rointe
+    reload at 04:45Z (`sync_clock_lost` → `sync_clock_found` 13 s apart, no
+    preset re-apply, so our integration did not restart) — 6 h 5 min dark,
+    harmlessly overnight. Every trusted clock stood through it and passed
+    180 at ~01:40Z, so v1.50.1 as first written would have pushed eight
+    "radiator not reporting … power it off and on" alerts on top of the
+    outage alert. `_update_heater_silence` now judges only a REACHABLE heater
+    (`_climate_online`) — an unreachable one is the outage watch's, whose
+    cure is a reload — and holds an already-alerted heater (no
+    `heater_heard`) while it is unreachable or its clock is briefly
+    untrusted after a reload. Tests in `tests/test_sync_clock.py`. The
+    six-day reload automation (Q25) remains the owner-side cure: the next
+    expiry is 168 h after whatever last logged the Rointe integration in (a
+    deploy restart resets it). Not changed: `_heater_probe` keeps driving a silent heater (the
+    cloud takes the write and the device will pick it up when it returns —
+    harmless), and the fan ΔT reference still averages the frozen probe in
+    (`fan_dt_on` is 0.5, so a 1 °C error does not change a decision).
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
@@ -1825,6 +1906,22 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   (owner-confirmed as the wanted behaviour). Frost protection means a forgotten
   pause can't freeze the hut, only leave a later group cool until a button /
   the next-session clear wakes it.
+  **Field pattern (2026-10-19, owner to ask the leaders): Pause is being
+  pressed when the FANS start, on rooms that are not warm.** The Monday 17:30Z
+  booking: the pre-heat relit comfort at 17:26:25Z, the reverse fans started
+  at 17:27:44Z, Pause at 17:29:06Z on coldest 17.0 / average ~18.1 — so the
+  booking arrived +0.88 short and sat at 18.0 for its whole 90 min. At the
+  19:00Z booking end the pause cleared, the next PIR trip relit comfort, the
+  fans started at 19:01:44Z and Pause came again at 19:15:14Z (coldest 17.0).
+  With 10-02 (Pause, forward breeze, no heating) and 10-12 (Boost and Pause
+  four minutes apart under a forward breeze) that is four presses in three
+  weeks, every one with fans running and only one on a warm room. Two
+  readings: active Beavers are comfortable at 17–18 (CIBSE's activity
+  figure) and the leaders want no heat at all, or the fans are the complaint
+  and Pause is the only button that stops them — the second fits the 82-s
+  timing best. Not built: a separate occupant **Fans off** hold beside Pause
+  would let them stop the fans without stopping the heat; the owner's answer
+  from the leaders decides it.
 - **A breeze-guard stop respects the minimum-run timer.** A 2-second door
   blip grants the vent pass, starts the fans, and its closure leaves up to
   10 minutes of running fans under an active hold (observed in the field,
@@ -2055,7 +2152,44 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   an insane probe is left out of the approach guard's zone average);
   a **target drop** (boost expiry, hold collapse) resets that heater's staircase
   (`drive_target_drop`) instead of re-pushing the old overdrive on the lower
-  target; **last-will reset** on
+  target — **but only once that heater's probe has reached the lower target
+  (v1.50.4); one still short keeps its stair** (`reset` / `probe` on the
+  event). Field 2026-10-21, the first cold-soaked booking (hall 11.9 at the
+  14:20Z pre-heat, outdoor 8, arrived +0.88 short at 16:30Z): the booking
+  hold sits on the 0.5 rounding line (margin 0.255 at outdoor 8.0, 0.232 at
+  9.0, with k 7.15 and gain 11.67), the weather ticked up a degree at 16:50Z,
+  the target rounded 19.5 → 19.0, and the old rule wiped +2.5–3.0 on all four
+  heaters whose probes sat at 17.5–18.0. With the coast easing then taking
+  the next 20 min (rise 0.38) and the stair rebuilding from zero under freeze
+  holds, the Squirrels' room peaked at 18.88 and ended at 18.38. The hold's
+  own dither is left alone: with the stair kept, a 0.5 wobble only moves what
+  is pushed by 0.5.
+  **The owner's feedback was about the UNBOOKED group that followed (17:30Z →
+  19:12Z alarm, hall on `motion`): "it started to go cold, then at the end of
+  the session the fans came on and it felt like it was getting warm again".**
+  At the 17:30Z booking end the hold's +0.5 went and the old rule wiped the
+  +0.5 stair on front/back/right, so the warm-end radiators fell from 20.0 to
+  19.0 with probes at 18.5–19.0 — into their throttling band, half power. The
+  door end (hall_front) fell 17.5 → 15.5 by 18:16Z (changeover door traffic,
+  never held open long enough for an `opening` event) and ran flat out. The
+  drive gave the warm-end three one first step back (19.5) and the freeze
+  guard then held them there — `drive_freeze_hold` back/right at 17:51Z, left
+  at 18:21Z, every probe static at 18.5 — so the average sat at 17.75 from
+  18:16Z to 18:31Z. Between 18:31Z and 18:46Z the panels rose 51 → 57 °C and
+  the warm-end probes reached 19.0 (average 18.25, held to the 19:12Z alarm):
+  that is the "warm again". The reverse fans had been running since 17:53Z,
+  50 min earlier, so they were not it. v1.50.4 keeps the +0.5 at the
+  changeover, which still leaves the warm end inside its throttling band, so
+  it helps this case only a little. **Open — the freeze guard in a steady
+  droop.** A heater at half power whose own corner cannot rise reads flat,
+  and the guard cannot tell that from a frozen reading, so it parks the stair
+  until the probe happens to move. **Decision rule:** on v1.50.x, if a heated
+  occupied session shows a `drive_freeze_hold` lasting ≥ 30 min on a probe
+  0.5–1.0 short while the zone average sits more than 0.5 below target, let
+  the hold lapse after two step intervals (the approach hold still blocks
+  escalation once the average is within 0.5, so a frozen-at-target zone is
+  untouched). The deeper factor that evening is Q19's: air at 18 in a hall
+  whose timber was at 12 three hours earlier feels colder than 18. **last-will reset** on
   unload AND on startup (a crash can't leave an overdrive — the staircase is not
   persisted); a `drive_capped` audit + persistent alert if a heater sits pinned
   at the cap while still short for `DRIVE_CAP_ALARM_MINUTES` (60) — a real
@@ -2268,15 +2402,46 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   has just caught up is the freshest there is and says where the room is now;
   refusing to ease on it only lets the elements run on to target + stair. The
   whole-zone average jump test (v1.42.0, the 09-21 case) stays. **The deeper
-  lever is the staircase itself, NOT built, owner's call:** every cold climb on
+  lever is the staircase itself:** every cold climb on
   record reaches +1.0 while the probes are 1.5–3 °C short and frozen, and an
   overdrive adds nothing while a heater is already at full output — it only
   moves where the element cuts (20.0 instead of 19.0), which is the overshoot
   seen on every heated session. Escalating the stair only once the probe is
-  inside the Rointe's throttling band (~1.0 of target) would hold the climb at
-  +0.5 and still let a stalled room (the Q17 capacity question) walk to the cap.
-  A feedforward step on a cold night would still add +0.5; judge that from a
+  inside the Rointe's throttling band (~1.0 of target) holds the climb at
+  +0.5. A feedforward step on a cold night would still add +0.5; judge that from a
   cold-night `drive_off` trace before touching it.
+  **BUILT (v1.50.0, `ESCALATION_BAND` = 1.0, after the first session on
+  1.49.4 — 2026-10-12, the fifth heated session in a row at `peak_over`
+  1.1–1.4).** That Monday the easing ran its full 20-min box (engaged 17:04Z
+  on 71 °C panels, `rise` 0.25) and the room still landed 20.12: the stair had
+  reached +1.0 by 16:25Z on probes frozen at 15.5 (3.5 °C short), so when the
+  box expired at 17:24Z the full 20.0 came back on a room already at 19.0 and
+  the elements ran 26 more minutes to the 19.5 release. The office did the
+  same in miniature (probe frozen at 17.0 under pushed 20.0, leapt to 21.0 —
+  +2.0 on comfort 19), the shared trio reached +1.5 (kitchen panel 83.5 °C),
+  the forward breeze then ran 54 min on the Beavers at 19.6–20.1, and someone
+  pressed Boost and then Pause four minutes apart while it blew. So
+  `update_drive` now steps UP only while the probe is within the band (errors
+  of 0.5 and 1.0 on the half-degree grid; 1.5 or more is a saturated element).
+  Outside the band it holds whatever stair it has — a door opening does not
+  unwind a landed droop step — and does **not** consume the interval
+  (`evaluated` False), so the first in-band tick steps at once; inside the
+  band the sacred first step, the freeze guard and the approach hold are
+  unchanged. Fail direction: it only withholds overdrive where the overdrive
+  was doing nothing, and the droop compensation still lands within one tick of
+  the probe arriving, so the comfort cost is at most the Rointe's own
+  half-power finish on the last half degree (the pre-heat model already charges
+  that finish, and the gross gain re-learns it). Trade accepted: `drive_capped`
+  can now only be reached from an in-band stall (a probe a step short, moving,
+  for hours); a room that cannot get within a degree of target shows as
+  `drive_no_response` or a positive shortfall with the stair at 0. Tests in
+  `tests/test_drive.py` (the 10-12 replay, the band edge, the cold-start
+  plant) and `tests/test_drive_integration.py`. **Watch:** `drive_off` in the
+  trace should sit at 0 through the bulk of every climb and reach 0.5 only in
+  the last degree; `peak_over` on the next heated bookings should fall toward
+  the 0.62 of 10-07; a positive `booking_start.shortfall` on a cold morning
+  with `drive_off` 0 would mean the half-power finish is costing more than the
+  lead allows, and the answer is the lead's `APPROACH_TAIL_C`, not the band.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`

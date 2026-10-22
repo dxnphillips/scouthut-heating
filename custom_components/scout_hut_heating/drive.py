@@ -32,6 +32,19 @@ target. Waiting between steps is the anti-windup: the trim can't run ahead of a
 plant that hasn't reacted yet, so overshoot is bounded to about one step. It is
 deliberately *patient* (the owner's chosen trade for a slow, leaky hall).
 
+And it steps up **only where a step can act** (``ESCALATION_BAND``, v1.50.0). A
+Rointe runs its element flat out until the probe is within roughly a degree of
+the setpoint and throttles inside that last degree; the setpoint only decides
+where that band sits. While the probe is further short than the band the element
+is already at full output whatever we push, so an extra step buys nothing now —
+it only moves the cut-off higher for later. That is exactly how every heated
+session of 2026-10-05 → 10-12 overshot by 1.1–1.4 °C: the stair reached +1.0
+inside the first fifteen minutes on probes 3–4 °C short (and frozen), the
+readings then caught up in one leap, and the elements ran on to target + 1.0.
+Outside the band the staircase now holds without consuming its interval, so the
+first in-band tick can step at once; inside it the droop compensation works
+exactly as before.
+
 A **feedforward** from the *learned* heat-loss gives the staircase a cold-night
 head-start (``FF_GAIN * heatloss_frac * (target - outdoor)``) so it doesn't have
 to climb from zero every time. It is kept conservative — it under-estimates the
@@ -68,6 +81,17 @@ STEP = 0.5
 # the anti-windup — shorter risks stepping faster than the hall responds and
 # overshooting; longer is safe but slower to settle.
 STEP_INTERVAL_MIN = 15.0
+# The staircase only steps UP while the probe is within this much of target —
+# the Rointe's own throttling band (it runs the element flat out below it, so a
+# bigger setpoint changes nothing there except where the element later cuts).
+# Equal to the band the pre-heat model charges as the fixed finish ("throttles
+# to half power inside the last degree"). A probe 1.0 short is at the edge of the
+# band and may step (the probes move in 0.5 quanta, so the admitted errors are
+# 0.5 and 1.0); 1.5 or more short holds. Field 2026-10-05 → 10-12: every cold
+# climb reached +1.0 within 15 min on probes 3–4 °C short, and every heated
+# session landed 1.1–1.4 over target with the forward breeze then starting on
+# the people in the room.
+ESCALATION_BAND = 1.0
 
 
 def _quantise(value: float, step: float = STEP) -> float:
@@ -151,7 +175,10 @@ def update_drive(
 
     ``evaluated`` is True when the step interval had elapsed and a step decision
     was taken (stepped, held on target, or an up-step was suppressed as a freeze or
-    approach hold); the coordinator resets its per-heater step timer on that.
+    approach hold); the coordinator resets its per-heater step timer on that. A
+    probe further short than ``ESCALATION_BAND`` is NOT an evaluation: the element
+    is saturated there, so nothing is decided and the interval is not consumed —
+    the first tick that finds the probe inside the band can step straight away.
     ``frozen_held`` is True when a would-be up-step was suppressed because the probe
     had not moved; ``approach_held`` when it was suppressed because the room average
     had reached the top of the approach — both surfaced for diagnostics/audit. The
@@ -167,6 +194,12 @@ def update_drive(
     evaluated = minutes_since_step >= STEP_INTERVAL_MIN
     frozen_held = False
     approach_held = False
+    if evaluated and error > ESCALATION_BAND:
+        # Saturated: the element is flat out whatever the setpoint, so a step
+        # could only move where it later cuts. Hold the stair as it is (an
+        # overdrive committed inside the band earlier is kept — a door opening
+        # does not unwind the droop compensation) and leave the interval alone.
+        evaluated = False
     if evaluated:
         if error >= STEP:  # a full 0.5 °C step (or more) below target: nudge up
             # The initial climb to comfort (prev_stair <= 0) is sacred and always
