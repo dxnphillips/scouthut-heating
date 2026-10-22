@@ -5375,16 +5375,25 @@ class ScoutController:
                     )
                     continue
                 # A target DROP (a boost expiring, a booking hold collapsing)
-                # restarts the staircase: carrying the old trim across would
+                # restarts the staircase for a heater whose probe has already
+                # reached the lower target: carrying the old trim across would
                 # re-push (new target + old overdrive) — 20.5 after a 21 → 19
-                # drop — and only ease it down a step per interval. From zero
-                # the initial climb still steps at once if the room is short.
+                # drop on a room already at 21 — and only ease it down a step
+                # per interval. A heater still SHORT of the lower target keeps
+                # its stair (v1.50.4): the room still needs it, and the drop
+                # alone already lowers what is pushed. Field 2026-10-21: the
+                # booking hold rounded 19.5 → 19.0 on a one-degree outdoor
+                # wobble mid-session, reset +2.5–3.0 on all four hall heaters
+                # whose probes were at 17.5–18.0 in a cold-soaked hall, and the
+                # room fell 18.9 → 17.8 over the next hour while the stair
+                # rebuilt from zero.
                 prev_target = self._drive_target.get(climate)
                 if (
                     prev_target is not None
                     and target < prev_target - 1e-9
                     and self._drive_stair.get(climate, 0.0) > 0
                 ):
+                    reset = probe >= target
                     self.audit.record(
                         "drive_target_drop",
                         now,
@@ -5393,8 +5402,11 @@ class ScoutController:
                         previous=prev_target,
                         target=target,
                         stair=self._drive_stair[climate],
+                        probe=probe,
+                        reset=reset,
                     )
-                    self._drive_stair[climate] = 0.0
+                    if reset:
+                        self._drive_stair[climate] = 0.0
                 self._drive_target[climate] = target
                 since = self._drive_minutes_since_step(climate, now)
                 # Response-keyed anti-windup: has the probe moved since the step we

@@ -151,7 +151,11 @@ reconciler, and they change how several entries above should be read:
   (`drive_withdrawn` audited — fault withdrawals only since v1.40.0; the routine
   `not_comfort` one is not, it fires per heater on every exit from comfort and the
   `preset` event beside it already records it); a target drop resets it
-  (`drive_target_drop`).
+  (`drive_target_drop`) for a heater whose probe has reached the lower target,
+  and keeps it for one still short of it (v1.50.4, `reset` / `probe` on the
+  event): on 2026-10-21 a booking hold rounding 19.5 → 19.0 on a one-degree
+  outdoor wobble reset +2.5–3.0 on four heaters at 17.5–18.0 mid-session, and
+  the cold-soaked hall fell 18.9 → 17.8 while the stair rebuilt.
 - `last_reported` / `last_updated` are refreshed every poll regardless of data,
   so the freshness guards above are inert (planned: a flat-reading detector).
 - `status_warming` is always 2: `heating_status` carries no information,

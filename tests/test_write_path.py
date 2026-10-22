@@ -290,6 +290,67 @@ def test_a_target_drop_resets_the_staircase():
     assert drops and drops[-1]["target"] == comfort and drops[-1]["stair"] >= 1.0
 
 
+def test_a_hold_that_rounds_down_mid_session_keeps_a_short_heaters_stair():
+    # 2026-10-21 16:50Z, a Wednesday booking in a hall that started the
+    # afternoon at 11.9: the booking hold sat on the 0.5 rounding line (margin
+    # 0.255 at outdoor 8.0, 0.232 at 9.0 with k 7.15 and gain 11.67), the
+    # weather ticked up a degree, the target rounded 19.5 -> 19.0, and the old
+    # rule reset +2.5-3.0 of overdrive on all four heaters while their probes
+    # sat at 17.5-18.0. The room fell 18.9 -> 17.8 over the next hour.
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    for key, value in (
+        ("hall_comfort_temp", 19.0),
+        ("zone_a_heatloss_pct", 7.15),
+        ("zone_a_warmup_rate", 11.67),
+        ("zone_a_warmup_rate_fans", 11.67),
+        ("booking_hold_cap", 1.5),
+    ):
+        ctrl._numbers[key].native_value = value
+    booking(ctrl, ZA)
+    motion(ctrl, "hall")
+    hass.states.set(E["weather"], "cloudy", {"temperature": 8.0})
+    hass.states.set(HB, "heat", {"current_temperature": 18.0})
+    hass.states.set(HF, "heat", {"current_temperature": 17.5})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_target[HB] == 19.5  # 19.0 + a hold that rounds up
+    # The overdrive the afternoon's climb had committed by then, its last step
+    # just taken (so this tick isolates the drop from the next step).
+    for climate in (HB, HF):
+        ctrl._drive_stair[climate] = 2.5
+        ctrl._drive_step_at[climate] = dt_util.utcnow()
+    hass.states.set(E["weather"], "cloudy", {"temperature": 9.0})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_target[HB] == 19.0  # the hold rounded down
+    assert ctrl._drive_stair[HB] == 2.5 and ctrl._drive_stair[HF] == 2.5
+    assert _pushed(hass, _num(HB)) == 21.5  # the drop lowers it; nothing more
+    drops = _events(ctrl, "drive_target_drop")
+    assert {e["heater"] for e in drops} == {HB, HF}
+    assert all(e["reset"] is False for e in drops)
+    assert next(e for e in drops if e["heater"] == HB)["probe"] == 18.0
+
+
+def test_a_target_drop_resets_only_the_heater_that_has_reached_it():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _hall_comfort(ctrl, hass, {HB: 18.0, HF: 18.0})
+    run(ctrl.async_reconcile())
+    target = ctrl.number("hall_comfort_temp")
+    # A higher target was in force a moment ago (a boost or a hold) and both
+    # heaters carry overdrive; hall_back's probe has reached the lower target,
+    # hall_front's has not.
+    for climate in (HB, HF):
+        ctrl._drive_target[climate] = target + 0.5
+        ctrl._drive_stair[climate] = 1.5
+    hass.states.set(HB, "heat", {"current_temperature": target})
+    hass.states.set(HF, "heat", {"current_temperature": target - 1.5})
+    run(ctrl.async_reconcile())
+    assert ctrl._drive_stair[HB] == 0.0
+    assert ctrl._drive_stair[HF] == 1.5
+    by_heater = {e["heater"]: e for e in _events(ctrl, "drive_target_drop")}
+    assert by_heater[HB]["reset"] is True and by_heater[HF]["reset"] is False
+
+
 # --- Approach guard: an insane probe is left out of the zone average --------
 def test_zone_average_for_the_approach_guard_excludes_an_insane_probe():
     _wire_numbers()
