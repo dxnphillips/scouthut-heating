@@ -83,6 +83,39 @@ def test_drive_target_stays_on_the_rointe_half_degree_grid():
     assert round(target * 2) / 2 == target  # ...but the driven target is not
 
 
+def _hold_evening(outdoor):
+    # 2026-10-22: comfort 19, hall k 9.65, gain 11.67.
+    ctrl, hass = make_controller()
+    hass.states.set("weather.forecast", "cloudy", {"temperature": outdoor})
+    ctrl._numbers["hall_comfort_temp"].native_value = 19.0
+    ctrl._numbers["zone_a_heatloss_pct"].native_value = 9.65
+    ctrl._numbers["zone_a_warmup_rate"].native_value = 11.67
+    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 11.67
+    booking(ctrl, ZA)
+    return ctrl, hass
+
+
+def test_a_hold_under_half_a_degree_adds_nothing_at_the_radiators():
+    # The hold was 0.28 at outdoor 10 and 0.36 at 7.4. Rounded to nearest both
+    # became 19.5, the 0.5 overdrive went on top, and every hall radiator was
+    # set to 20.0: the bookings peaked at 20.62 and 20.12 (v1.50.6).
+    for outdoor in (10.0, 7.4):
+        ctrl, _ = _hold_evening(outdoor)
+        assert 0.25 < ctrl._booking_hold_margin(ZA) < 0.5
+        assert ctrl._drive_comfort_target(ZA) == 19.0
+
+
+def test_the_heating_still_engages_on_the_raw_hold():
+    # The second booking relit at an average of 19.25: above bare comfort, under
+    # the held 19.36. Rounding the radiators' target down leaves that alone.
+    ctrl, _ = _hold_evening(7.4)
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.25)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    ctrl._numbers["booking_hold_cap"].native_value = 0
+    assert ctrl._desired_zone(ZA) == PRESET_ICE
+
+
 def test_hold_stops_a_slightly_warm_booking_dropping():
     # Hall at 20.0 — above bare comfort (19.5) but the hold wants it higher, so it
     # keeps heating instead of icing, pre-empting the dip.

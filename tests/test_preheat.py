@@ -842,6 +842,84 @@ def test_preheat_latch_does_not_bridge_into_the_next_booking(monkeypatch):
     assert ctrl.cal_window[ZA] is False
 
 
+def _blind_morning(monkeypatch, gap_min=200):
+    """2026-10-23 01:40Z: an eco-low booking ~200 min away, the hall half a
+    degree under its 14 target, and the refresh landing in a dropout of every
+    hall probe."""
+    from homeassistant.util import dt as dt_util
+
+    ctrl, hass = make_controller()
+    for key, value in (
+        ("preheat_minutes", 240),
+        ("zone_a_heatloss_pct", 13.44),
+        ("zone_a_warmup_rate", 11.67),
+        ("zone_a_warmup_rate_fans", 11.67),
+    ):
+        _set_rate(ctrl, key, value)
+    hass.states.set(E["weather"], "cloudy", {"temperature": 9.0})
+    start_iso = (dt_util.now() + timedelta(minutes=gap_min)).isoformat()
+    monkeypatch.setattr(
+        ctrl, "_async_calendar_events", _events_for([{"start": start_iso, "summary": "sal-vation"}])
+    )
+    return ctrl, hass
+
+
+def _hall_unreadable(hass):
+    for climate in E["hall"]:
+        hass.states.set(climate, "unavailable", {})
+
+
+def _hall_reads(hass, temp):
+    for climate in E["hall"]:
+        hass.states.set(climate, "heat", {"current_temperature": temp})
+
+
+def test_a_window_opened_blind_is_rejudged_when_the_reading_returns(monkeypatch):
+    from scout_testkit import run
+
+    ctrl, hass = _blind_morning(monkeypatch)
+    _hall_unreadable(hass)
+    run(ctrl._async_refresh_calendars())
+    # Unreadable: the lead falls back to the cap, the window opens (err warm).
+    assert ctrl.cal_window[ZA] is True
+    (opened,) = [e for e in ctrl.audit.to_list() if e["event"] == "preheat_start"]
+    assert opened["lead_min"] == 240 and opened.get("indoor") is None
+
+    # Five minutes later the probes are back: a 14 target from 13.4 needs about
+    # an hour, not 200 minutes, so the window closes instead of holding latched.
+    _hall_reads(hass, 13.4)
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is False
+    (withdrawn,) = [e for e in ctrl.audit.to_list() if e["event"] == "preheat_withdrawn"]
+    assert withdrawn["reason"] == "reading_back" and withdrawn["indoor"] == 13.4
+    assert withdrawn["lead_min"] < 200
+
+
+def test_a_window_opened_blind_stays_open_while_the_room_stays_unreadable(monkeypatch):
+    from scout_testkit import run
+
+    ctrl, hass = _blind_morning(monkeypatch)
+    _hall_unreadable(hass)
+    run(ctrl._async_refresh_calendars())
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True  # still the cap, still err warm
+    assert not [e for e in ctrl.audit.to_list() if e["event"] == "preheat_withdrawn"]
+
+
+def test_a_window_opened_on_a_reading_stays_latched_if_the_reading_drops(monkeypatch):
+    from scout_testkit import run
+
+    ctrl, hass = _blind_morning(monkeypatch, gap_min=30)
+    _hall_reads(hass, 13.4)
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True  # opened on a real lead
+    _hall_unreadable(hass)
+    run(ctrl._async_refresh_calendars())
+    _hall_reads(hass, 15.0)  # warm enough that a bare gap <= lead would close it
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True
+
+
 def test_latched_window_still_releases_when_the_event_goes_away(monkeypatch):
     """The latch is not a trap: an ended/cancelled event (empty look-ahead)
     still closes the window."""

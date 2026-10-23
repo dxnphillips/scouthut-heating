@@ -469,3 +469,4 @@ NOTIFY_HEATERS_OFFLINE = {
     "shared": "scout_shared_heaters_offline",
 }
 NOTIFY_HEATER_SILENT = "scout_heater_silent"
+NOTIFY_PROBE_IMPLAUSIBLE = "scout_probe_implausible"

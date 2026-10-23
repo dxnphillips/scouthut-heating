@@ -359,11 +359,14 @@ def test_a_hold_that_rounds_down_mid_session_keeps_a_short_heaters_stair():
     # weather ticked up a degree, the target rounded 19.5 -> 19.0, and the old
     # rule reset +2.5-3.0 of overdrive on all four heaters while their probes
     # sat at 17.5-18.0. The room fell 18.9 -> 17.8 over the next hour.
+    # Since v1.50.6 the hold rounds DOWN, so the line it dithers on is a whole
+    # 0.5 margin rather than 0.25; a leakier hall (k 15) puts it there at the
+    # same outdoor readings (0.53 at 8.0, 0.49 at 9.0).
     _wire_numbers()
     ctrl, hass = make_controller()
     for key, value in (
         ("hall_comfort_temp", 19.0),
-        ("zone_a_heatloss_pct", 7.15),
+        ("zone_a_heatloss_pct", 15.0),
         ("zone_a_warmup_rate", 11.67),
         ("zone_a_warmup_rate_fans", 11.67),
         ("booking_hold_cap", 1.5),
@@ -375,7 +378,7 @@ def test_a_hold_that_rounds_down_mid_session_keeps_a_short_heaters_stair():
     hass.states.set(HB, "heat", {"current_temperature": 18.0})
     hass.states.set(HF, "heat", {"current_temperature": 17.5})
     run(ctrl.async_reconcile())
-    assert ctrl._drive_target[HB] == 19.5  # 19.0 + a hold that rounds up
+    assert ctrl._drive_target[HB] == 19.5  # 19.0 + a hold of 0.53, rounded down
     # The overdrive the afternoon's climb had committed by then, its last step
     # just taken (so this tick isolates the drop from the next step).
     for climate in (HB, HF):
@@ -385,7 +388,9 @@ def test_a_hold_that_rounds_down_mid_session_keeps_a_short_heaters_stair():
     run(ctrl.async_reconcile())
     assert ctrl._drive_target[HB] == 19.0  # the hold rounded down
     assert ctrl._drive_stair[HB] == 2.5 and ctrl._drive_stair[HF] == 2.5
-    assert _pushed(hass, _num(HB)) == 21.5  # the drop lowers it; nothing more
+    # The drop lowers it and nothing more: 19.0 + the kept 2.5 + the one-step
+    # heat-loss feedforward a k of 15 earns on a 9 °C night.
+    assert _pushed(hass, _num(HB)) == 22.0
     drops = _events(ctrl, "drive_target_drop")
     assert {e["heater"] for e in drops} == {HB, HF}
     assert all(e["reset"] is False for e in drops)

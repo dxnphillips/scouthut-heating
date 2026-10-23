@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Any
@@ -118,6 +119,7 @@ from .const import (
     NOTIFY_INTERNAL_DOOR,
     NOTIFY_FIRE,
     NOTIFY_HEATER_SILENT,
+    NOTIFY_PROBE_IMPLAUSIBLE,
     NOTIFY_HEATERS_OFFLINE,
     NOTIFY_OPENING_INFERRED,
     NOTIFY_RECONCILE_ERROR,
@@ -498,6 +500,15 @@ HEATERS_OFFLINE_MINUTES = 10.0
 # stayed so for 25 h; its reading sat at 18.0 while the hall fell to 12, the next
 # day's session ran on three heaters, and no alert existed to say so.
 HEATER_SILENT_MINUTES = 180.0
+# A hall probe that cannot be reading the room (v1.50.6). The four hall Rointes
+# share one room, so a probe more than DRIVE_PROBE_SANE_BELOW under the median of
+# three or more readable ones is a broken reading, not a cold corner: the drive
+# already refuses to overdrive it, and it is now left out of the hall's room
+# reading too. Field 2026-10-23 06:27Z: hall_left read 8.0 beside its own 82 °C
+# panel while the others read 18.5–19.5, pulling the hall average to 16.25. It
+# is alerted once it has lasted this long, so a probe catching up a couple of
+# minutes behind its siblings (2026-09-16) is left out but not reported.
+PROBE_IMPLAUSIBLE_ALERT_MINUTES = 15.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -735,6 +746,10 @@ class ScoutController:
         # event re-evaluates `gap <= lead` fresh (else back-to-back bookings
         # inside the look-ahead would hold comfort continuously across the gap).
         self._preheat_open_for: dict[str, datetime | None] = {ZONE_A: None, ZONE_B: None}
+        # A window that opened while the room could not be read (the lead falls
+        # back to the cap) is not latched, so the next refresh re-judges it on a
+        # real reading (v1.50.6).
+        self._preheat_blind: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self.water_window = False
         # The (comfort, eco) setpoint pair last written to the hall heaters, so
         # the reconciler can re-assert the eco/eco-low value when it changes
@@ -944,6 +959,10 @@ class ScoutController:
         # uploaded to the Rointe cloud for HEATER_SILENT_MINUTES, and since when
         # (their last upload, by the trusted sync clock).
         self._heaters_silent_since: dict[str, datetime] = {}
+        # Implausible hall probes (v1.50.6): since when each has read far below
+        # its siblings, and which have been alerted.
+        self._probe_implausible_since: dict[str, datetime] = {}
+        self._probe_implausible_alerted: set[str] = set()
         # Freeze detector: each heater's last room reading and when it last
         # CHANGED (the Rointe entity's own timestamps are always fresh).
         self._probe_last_value: dict[str, float] = {}
@@ -1332,8 +1351,30 @@ class ScoutController:
             # event / empty look-ahead clears the key, and a fresh first event is
             # judged on `gap <= lead` again (else two bookings inside the look-ahead
             # would hold comfort continuously across the empty gap between them).
-            latched = start is not None and self._preheat_open_for.get(zone) == start
+            # A window opened BLIND is not latched (v1.50.6): with the room
+            # unreadable the lead falls back to the cap, which is the right
+            # answer while the reading stays lost but not one to hold once it is
+            # back. Field 2026-10-23 01:40Z: the refresh landed in an 84-s dropout
+            # of every hall probe, sized a 240-min lead for an eco-low booking
+            # 200 min away with the hall half a degree under its 14 target, and
+            # the latch then held the window from 02:40 for a 06:00 start.
+            blind = (self._last_lead_calc.get(zone) or {}).get("indoor") is None
+            latched = (
+                start is not None
+                and self._preheat_open_for.get(zone) == start
+                and not self._preheat_blind.get(zone)
+            )
             window = gap_min <= lead or latched
+            if self.cal_window[zone] and not window and self._preheat_blind.get(zone):
+                self.audit.record(
+                    "preheat_withdrawn",
+                    self._now(),
+                    zone=zone,
+                    reason="reading_back",
+                    gap_min=round(gap_min, 1),
+                    lead_min=lead,
+                    indoor=(self._last_lead_calc.get(zone) or {}).get("indoor"),
+                )
             if window and not self.cal_window[zone]:
                 self.audit.record(
                     "preheat_start",
@@ -1349,6 +1390,7 @@ class ScoutController:
                     self._clear_hall_pause("preheat")
             self.cal_window[zone] = window
             self._preheat_open_for[zone] = start if window else None
+            self._preheat_blind[zone] = window and not latched and blind
 
         water = False
         for zone in (ZONE_A, ZONE_B):
@@ -1428,9 +1470,12 @@ class ScoutController:
         now judged from the value itself (``_probe_frozen``).
         """
         vals: list[float] = []
+        implausible = self._hall_implausible_probes() if zone == ZONE_A else set()
         for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            if climate in implausible:
                 continue
             if stale_min is not None and self._probe_frozen(climate, stale_min):
                 continue
@@ -1469,6 +1514,44 @@ class ScoutController:
             # floor sensor if mapped, else the hall Rointes' average).
             return self._floor_temp(stale_min=stale_min)
         return sum(vals) / len(vals) if vals else None
+
+    def _hall_probe_readings(self) -> dict[str, float]:
+        """Every hall heater's room reading that can be read right now."""
+        readings: dict[str, float] = {}
+        for climate in self._as_list(self.config.get(CONF_HALL_CLIMATES)):
+            st = self.hass.states.get(climate)
+            if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            try:
+                readings[climate] = float(st.attributes.get("current_temperature"))
+            except (TypeError, ValueError):
+                continue
+        return readings
+
+    def _hall_implausible_probes(self) -> set[str]:
+        """Hall heaters whose reading cannot be the room (v1.50.6).
+
+        The hall is one room, so a probe more than ``DRIVE_PROBE_SANE_BELOW``
+        under the median of its siblings is the same reading the drive already
+        refuses to overdrive. It is left out of the hall's room reading as well:
+        on 2026-10-23 hall_left read 8.0 beside its own 82 °C panel while the
+        others read 18.5–19.5, so the average said 16.25 for a room at 19. That
+        average gates the heating, sizes the pre-heat and feeds the fans' ΔT,
+        and the heater itself fires against its own reading, so a comfort hall
+        would have run that radiator flat out with the gate unable to release.
+        It needs three readable probes: with two there is no telling which is
+        wrong. Same median as the drive, so the two agree on which probe it is.
+        """
+        readings = self._hall_probe_readings()
+        if len(readings) < 3:
+            return set()
+        ordered = sorted(readings.values())
+        median = ordered[len(ordered) // 2]
+        return {
+            climate
+            for climate, value in readings.items()
+            if value < median - DRIVE_PROBE_SANE_BELOW
+        }
 
     def _rointe_stale_min(self) -> float:
         """The window (minutes) after which an UNCHANGED Rointe reading is
@@ -3174,6 +3257,12 @@ class ScoutController:
                 "heaters_silent": {
                     c: _iso(t) for c, t in self._heaters_silent_since.items()
                 },
+                # Hall probes reading far below their siblings (v1.50.6), and
+                # since when: left out of the hall temperature; the radiator
+                # still heats against its own reading.
+                "probes_implausible": {
+                    c: _iso(t) for c, t in self._probe_implausible_since.items()
+                },
                 # Reconcile steps currently raising: every step AFTER one of these
                 # is being skipped each tick, so anything it owns (fans, the trace,
                 # the drive) is stale. Non-empty is a fault, not a curiosity.
@@ -4129,6 +4218,7 @@ class ScoutController:
                 ("openings", self._evaluate_openings),
                 ("heaters_offline", self._update_heaters_offline),
                 ("heater_silence", self._update_heater_silence),
+                ("probe_plausibility", self._update_probe_plausibility),
                 ("booking_edges", self._record_booking_edges),
                 ("passive_rise", self._update_passive_rise),
                 ("zones", self._reconcile_zones),
@@ -5138,12 +5228,22 @@ class ScoutController:
         Quantised to the Rointe's 0.5 °C setpoint grid: the booking-hold margin is
         a continuous number (e.g. 0.72 °C), but the radiators only accept 0.5 steps
         — an off-grid target is silently rounded by the device (and would wobble
-        the setpoint read-back self-check), so we round it here at the boundary."""
+        the setpoint read-back self-check), so it is placed on the grid here.
+
+        Rounded DOWN, not to nearest (v1.50.6). The comfort, eco and boost values
+        are already on the grid, so only the hold is affected. To nearest, a
+        0.28 margin became a whole 0.5 at the radiators, and the overdrive's 0.5
+        sat on top of it: on 2026-10-22 every hall radiator was set to 20.0 on a
+        comfort of 19, and the two evening bookings peaked at 20.62 and 20.12
+        without ever coming near the dip the hold exists for. Rounded down, a
+        margin under 0.5 adds nothing at the radiators; the heating still
+        engages and releases on the raw margin (``_desired_zone``), so the hold
+        still relights a cooling hall early."""
         base = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
         bump = self.number("boost_offset") if self._boosting(zone) else 0.0
         bump = max(bump, self._booking_hold_margin(zone))
         target = min(base + bump, ROINTE_COMFORT_MAX)
-        return round(target / DRIVE_STEP) * DRIVE_STEP
+        return math.floor(target / DRIVE_STEP + 1e-6) * DRIVE_STEP
 
     def _drive_heatloss_frac(self, zone: str) -> float:
         # The shared zone has no learned heat-loss of its own; borrow the hall's
@@ -5959,9 +6059,13 @@ class ScoutController:
                 return None
             return self._num_state(override)
         vals: list[float] = []
+        implausible = self._hall_implausible_probes()
         for climate in self._as_list(self.config.get(CONF_HALL_CLIMATES)):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            # A probe reading far below its siblings is broken, not cold (v1.50.6).
+            if climate in implausible:
                 continue
             # Freshness by VALUE (see _probe_frozen): the Rointe entity's
             # timestamps advance every poll whether or not the device synced.
@@ -6372,6 +6476,92 @@ class ScoutController:
         if new:
             await self._push_companion(
                 title, message, icon="mdi:radiator-off", channel="Scout Hut alerts"
+            )
+
+    async def _update_probe_plausibility(self) -> None:
+        """Surface a hall probe that has been left out as implausible (v1.50.6).
+
+        ``_hall_implausible_probes`` keeps such a reading out of the hall's room
+        temperature, which stops it fooling the heating and the fans, but the
+        radiator itself still heats against its own reading, so whenever the
+        hall heats it runs flat out. That needs someone at the radiator, so once
+        a probe has stayed implausible for ``PROBE_IMPLAUSIBLE_ALERT_MINUTES`` it
+        is audited (``probe_implausible`` with the reading, the median and its
+        panel), listed in a persistent notification and pushed;
+        ``probe_plausible`` is audited when it reads in step again. A heater
+        that drops off the cloud while alerted is held, not called recovered.
+        """
+        now = self._now()
+        readable = self._hall_probe_readings()
+        implausible = self._hall_implausible_probes()
+        for climate in implausible:
+            self._probe_implausible_since.setdefault(climate, now)
+        ordered = sorted(readable.values())
+        median = ordered[len(ordered) // 2] if ordered else None
+        new: list[str] = []
+        for climate, since in self._probe_implausible_since.items():
+            if climate not in implausible or climate in self._probe_implausible_alerted:
+                continue
+            if now - since < timedelta(minutes=PROBE_IMPLAUSIBLE_ALERT_MINUTES):
+                continue
+            self._probe_implausible_alerted.add(climate)
+            new.append(climate)
+            surface_id = self._heater_sensor(climate, "surface")
+            self.audit.record(
+                "probe_implausible",
+                now,
+                heater=climate,
+                reading=readable.get(climate),
+                median=median,
+                surface=self._num_state(surface_id) if surface_id else None,
+                minutes=round((now - since).total_seconds() / 60, 1),
+            )
+        cleared = [
+            c
+            for c in self._probe_implausible_since
+            if c not in implausible and c in readable
+        ]
+        recovered = False
+        for climate in cleared:
+            since = self._probe_implausible_since.pop(climate)
+            if climate in self._probe_implausible_alerted:
+                self._probe_implausible_alerted.discard(climate)
+                recovered = True
+                self.audit.record(
+                    "probe_plausible",
+                    now,
+                    heater=climate,
+                    reading=readable.get(climate),
+                    minutes=round((now - since).total_seconds() / 60, 1),
+                )
+        if not new and not recovered:
+            return
+        if not self._probe_implausible_alerted:
+            persistent_notification.async_dismiss(self.hass, NOTIFY_PROBE_IMPLAUSIBLE)
+            return
+        title = "🏕 Scout Hut – Radiator sensor reading wrong"
+        names = ", ".join(
+            f"{self._heater_label(c)} ({readable[c]:.1f} °C)"
+            if c in readable
+            else self._heater_label(c)
+            for c in sorted(self._probe_implausible_alerted)
+        )
+        verb = "is" if len(self._probe_implausible_alerted) == 1 else "are"
+        message = (
+            f"{names} {verb} reading far colder than the rest of the hall "
+            f"({median:.1f} °C), which cannot be the room. It is being left out "
+            "of the hall temperature, but a radiator heats against its own "
+            "reading, so it will run flat out whenever the hall is heated. Check "
+            "the radiator; if it is on and lit, power it off and on."
+            if median is not None
+            else f"{names} {verb} reading far colder than the rest of the hall."
+        )
+        persistent_notification.async_create(
+            self.hass, message, title=title, notification_id=NOTIFY_PROBE_IMPLAUSIBLE
+        )
+        if new:
+            await self._push_companion(
+                title, message, icon="mdi:thermometer-alert", channel="Scout Hut alerts"
             )
 
     def _mapped_fault(self) -> bool:

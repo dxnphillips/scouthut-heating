@@ -279,7 +279,11 @@ this priority (highest wins):
    cool-off rate and the outdoor temperature) and how sluggish it is to warm back
    up (the learned radiator gain): bigger on a cold night, near-zero on a mild one.
    Capped by the **Booking hold** slider (default 1.5 °C, set to 0 to switch it
-   off). Hall only, and only while a booking is actually running.
+   off). Hall only, and only while a booking is actually running. The radiators
+   only take half-degree steps, so the margin is rounded **down** onto that grid
+   (v1.50.6): a hold under half a degree changes when the heating comes back on,
+   not how hot the radiators are set. Rounded to nearest, a 0.28 margin became a
+   whole half degree and every hall radiator was set to 20.0 on a comfort of 19.
 5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
@@ -484,6 +488,14 @@ restarts) of everything it decides and learns:
   the lead — the optimistic fan-assisted one or the base) and `fan_w_last` (the
   transformer tap the fans were last seen at, since the master is off while the
   pre-heat is idle and the live power reads zero).
+- **`preheat_withdrawn`** — a pre-heat window that opened while the room could
+  not be read (so the lead fell back to the cap) and was closed again once the
+  reading came back and the real lead no longer reached (v1.50.6).
+- **`probe_implausible` / `probe_plausible`** — a hall heater reading far
+  colder than the rest of the hall (more than 4 °C under the others' median, for
+  15 minutes) is left out of the hall temperature and reported, with its
+  reading, the median and its panel temperature; the radiator still heats
+  against its own reading, so it needs checking (v1.50.6).
 - **Nothing "nudges" a silent heater any more (v1.46.0).** From v1.44.0 to
   v1.45.3 a stale heater in an attended zone was sent a no-op write (its own
   comfort number, then its own setpoint) to make it upload a fresh reading,
