@@ -1237,6 +1237,43 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     cloud takes the write and the device will pick it up when it returns —
     harmless), and the fan ΔT reference still averages the frozen probe in
     (`fan_dt_on` is 0.5, so a 1 °C error does not change a decision).
+    **A heater that IS talking but reads something that cannot be the room is
+    the third blind spot (v1.50.6, `PROBE_IMPLAUSIBLE_ALERT_MINUTES` = 15, field
+    2026-10-23).** During the boost after the 05:00Z sal-vation booking,
+    hall_left blinked unreadable at 05:49:29Z (`drive_withdrawn unreadable`),
+    read normally again, then from ~06:27Z read **8.0** while the other three
+    read 18.5–19.5 and its own panel sat at **82 °C** (the hottest in the hall:
+    it heats against its own reading, so it had run flat out). It was still
+    uploading (sync age 1 min), so neither the silence alert nor the frozen gate
+    could see it. The drive called it insane (`drive_withdrawn insane`, median
+    18.5), but the hall's room reading still averaged it in: 16.25 for a room at
+    ~19 (`boost_expired.average` 16.12, `last_lead_calc.indoor` 16.25), with
+    reverse fans started on a fake 2.6 °C strat gap at 06:28Z. On a comfort
+    booking the gate could never have reached its 19.5 release while that
+    radiator ran flat out. `_hall_implausible_probes` now leaves such a probe
+    out of `_floor_temp` / `_zone_climate_temps` (the drive's own rule and median,
+    > 4 under the median of ≥ 3 readable hall probes), and
+    `_update_probe_plausibility` alerts after 15 min (`probe_implausible` /
+    `probe_plausible`, a persistent notification, a push;
+    `state.probes_implausible`). Hall only: the shared trio are three separate
+    rooms. Fail direction considered: the only known "insane but honest" case
+    (2026-09-16 hall_front 15.5 vs 20) was itself a frozen probe that read
+    19.5 two minutes later, and the largest honest spread on record is the
+    door end ~3.25 under (2026-10-21). **Owner-side: check hall_left** — a
+    probe at 8 beside an 82 °C panel is a sensor or device fault; its blank
+    `preset` and the 05:49Z blink suggest it was power-cycled or reset during
+    the clean. **It recovered on its own at ~09:04Z** (2.5 h low, 8.0–9.5; the
+    `drive_coast_jump` at 09:04:31Z is the average catching it up), and by the
+    10:16Z export it read 18.5 against the others' 16.5, its usual warm end. On
+    1.50.4 the fault cost that morning what v1.50.6 prevents: at 08:05Z the
+    second sal-vation pre-heat sized off an average of 13.75 that counted the
+    9.0 (the other three averaged ~15.3, above the 14 eco-low target), so the
+    hall went to eco for 54 min with hall_left firing against its own reading
+    (`hall_fire` 1, panels 34 → 43 °C), and the reverse fans ran on a fake
+    4.5 °C gap until a door-open ice at 08:59Z. The same eco write failed for
+    all four hall heaters (`write_failed`, "Failed to set HVAC preset for Hall
+    Front") and was believed until the 08:59Z ice landed: the second day running
+    a preset write failed, the case v1.50.5 re-sends.
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
@@ -2132,7 +2169,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   is off, for an in-comfort withdrawal and for the last-will reset; ice needs
   none (its cached 7 is a constant). Every heater write now blocks, a raise is
   audited (`write_failed` once per failing write, `write_recovered` on success)
-  and the value is retried next tick rather than believed; consecutive pushes
+  and the value is retried next tick rather than believed — **for drive pushes
+  from v1.37.0, but for PRESET writes only from v1.50.5.** Until then
+  `_async_set_preset` and `_reconcile_shared` recorded `applied` whatever the
+  call returned, so a failed preset was believed and never re-sent. Field
+  2026-10-22 (the first day on 1.50.4): the hall's ice write failed at the
+  06:37Z deploy restart (harmless, already on ice) and the office's ice write
+  failed at 11:46Z as the alarm was set — the office then heated an armed,
+  empty building 18.5 → 20.0 until the next preset change at 14:53Z. Now a
+  write that raised sets the existing re-send flag (`_zone_offline_apply` /
+  `_shared_offline_apply`), so the next tick re-sends it with no new `preset`
+  event and one `write_failed`. Tests in `tests/test_write_path.py`. Consecutive pushes
   are spaced `HEATER_WRITE_SPACING_S` (1 s) apart because each command makes the
   Rointe integration refresh all 8 heaters. It only ever drives *harder* than the
   owner's setpoint; clamped to `[target, target + drive_max_offset]` (default
@@ -2695,6 +2742,17 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   cold-radiant hall is real): a boost is the "I want more than the standing
   setpoint right now" signal, and the slider lets the owner tune how aggressive it
   is. It only ever aims *warmer*, time-boxed, so it cannot leave the hut overheated.
+  **Open (owner's call, not built): a Boost during an ECO-keyword booking still
+  aims at comfort + offset.** Field 2026-10-23: the 05:00Z sal-vation eco-low
+  booking (target 14) started at 14.0, the first hall motion came at
+  05:02:25Z, and Boost was pressed 25 s later. The hall was driven toward 21
+  for 90 min and the shared trio to comfort; the boost outlasted the booking
+  (06:00Z) until the alarm at 06:33Z, and the hall reached 18.5 for an hour's
+  cleaning. Working as designed (a Boost is an explicit "warmer now"), but the
+  step from 14 to 21 is large. Lifting a Boost on an eco booking to plain
+  comfort is the candidate if the owner wants it. `booking_end.peak_over` 4.5
+  for that booking is measured against 14, not the boosted target, so it is
+  not an overshoot figure. The audit does not record who pressed Boost.
 - **A booking "holds" the hall above comfort so it can't dip during the slot
   (2026-08-07, owner insight; `preheat.hold_margin`).** The drive is slow (0.5 °C
   staircase, 15 min/step) and only fires *below* target, so on a cooling evening it
@@ -2726,6 +2784,72 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   (hold working) or still dip (raise the cap / `HOLD_LEAD_BASE_MIN`)? And confirm it
   self-zeros on mild evenings. Pairs with Q17 (a capacity-limited hall may not
   *reach* the held target — the `drive_capped` alarm surfaces that).
+  **First read on the escalation band (2026-10-22, the first day on 1.50.4): the
+  hold is now the largest controllable part of the overshoot, and it no longer
+  self-zeros.** The band did its job — `drive_off` 0 through the 10.6 → 16.5
+  morning climb and never above 0.5 all day — yet the two evening bookings came
+  in at `peak_over` **1.62** (48 min over) and **1.12** (44 min over), each
+  followed by a forward breeze on the children (17:49–18:33Z, 19:46–20:11Z). With
+  `zone_a_heatloss_pct` up to 9.65 the margin is 0.031 × (19 − outdoor): 0.28 at
+  outdoor 10 and 0.36 at 7.4, both of which round the drive target to **19.5**
+  (it stays there at any outdoor ≤ ~10.9). Target 19.5 + a 0.5 stair = **20.0 on
+  every hall setpoint** (`drive_approach_hold` pushed 20.0 at 17:10Z and
+  17:28Z), and a Rointe fires to its own probe until it reads 20. The first
+  booking went 19.25 → 20.38 in one 15-min row as twenty children arrived and the
+  probes caught up, then 20.62. The second was relit at average 19.25 — above
+  comfort, below the hold's 19.36 engage line — heated to its 19.86 release,
+  and peaked 20.12. Neither booking dipped below 18.62, so the dip the hold
+  exists for was never close. (Fixed in code, v1.50.6 — see the end of the next
+  paragraph; an earlier slider suggestion is superseded.)
+  **The same hold drove that evening's fan cycling, and it breaks the v1.38.0
+  one-reference guarantee (owner: "I'm sure the fans kept flapping, though the
+  temperature seemed pretty good throughout").** Six fan changes in 2 h 23 min,
+  with no Pause or Boost pressed: reverse → forward at 17:48:58Z (15 min after
+  the `booking_warm` ice, the direction debounce), off at 18:32:58Z (average
+  19.5, the breeze's release line), reverse at 18:48:48Z (the second booking
+  relit comfort at 18:47:28Z on average 19.25), off at 19:33:30Z
+  (`booking_warm`), forward at 19:46:28Z (the panel tail lifted the average to
+  20.12, coast `rise` 0.62), off at 20:11:28Z. The breeze releases at comfort +
+  0.5 (19.5), but the held heating line sat at comfort + margin (19.36), 0.14
+  below it; the `cooling_hold` covered exactly its 15 min after the last
+  cooling tick (18:32:28Z → 18:47:28Z) and the booking rung relit on the tick
+  it lapsed. The v1.38.0 claim that the release "can never land on the heating
+  line, whatever the sliders" holds only with the hold at 0: `_cooling_reference`
+  is bare comfort while the heating line is comfort + margin, and at k 9.65 /
+  gain 11.67 the margin (0.031 × (19 − outdoor)) reaches the 0.5 release floor
+  at outdoor ~3 °C, below which a booked hall's breeze stops inside its own
+  heating band. **The event-by-event read, and the owner's goal.** The first
+  booking (Beavers, 17:00–18:15Z) arrived at 19.12 and rose to 20.62 by 17:49Z
+  under the 20.0 setpoints. Its breeze then ran into the changeover and, with
+  the door traffic, took the room from 20.62 to 19.5. The second booking
+  (Scouts, 18:30Z) arrived at 19.75 / cold end 18.5. Its relight at 18:47:28Z
+  (on bare comfort it would have come ~10 min later) took ~45 min to bite:
+  panels averaged 27 → 34 °C, a 5-min coast easing ran on leftover 48 °C panel
+  heat at 18:47:52Z, and the room dipped to 18.62 / 17.5 at 19:04–19:19Z. The
+  probes then caught up (release at 19:32:58Z) and the stored heat carried the
+  room to 20.12 under the second breeze. The owner's verdict: the fan changes
+  helped, and the target is the overshoot. And the fix belongs in the code, not
+  a slider (owner, next morning: "I don't really want to change toggles
+  constantly though, the logic just needs to work really"). **BUILT v1.50.6:
+  `_drive_comfort_target` rounds the hold DOWN onto the 0.5 grid** (comfort,
+  eco and boost values are on the grid already, so only the hold is affected).
+  A margin under 0.5 now adds nothing at the radiators (19.0 + the 0.5 stair =
+  19.5, not 20.0), while the gate still engages and releases on the RAW margin.
+  So the second booking's early relight at 19.25 (on the 19.36 line, ~10 min
+  ahead of bare comfort) is kept, without the cost of a cap at 0. Expect
+  ~0.3–0.5 off each peak. A margin of 0.5 or more (outdoor ≲ 3 °C at today's
+  constants) still lifts the radiators, which is where the hold's purpose is
+  real. `booking_hold_cap` stays at 1.5, `cooling_above_comfort` at 1.0.
+  **Decision rule:** read `peak_over` on the next heated bookings; if it does not
+  fall toward ~1.0 on cool evenings, the release line on the raw margin
+  (19.78–19.86, which keeps the zone in comfort while the radiators idle at
+  19.5) is the next piece to look at. The one-reference gap is unchanged
+  (heating line 19.36 vs breeze release 19.5) and the owner judged that
+  evening's breezes helpful; if the margin reaches 0.5 and the breeze↔relight
+  chase becomes a complaint, `_cooling_reference` should carry the hold margin
+  so the two lines move together. (The slider suggestions made that evening —
+  `booking_hold_cap` 0, and briefly `cooling_above_comfort` 2.0 — are
+  superseded.)
 - **Heating is decoupled from the season — one gate, occupancy == booking
   (2026-08-07).** The seasonal lockout no longer blocks heat. Both a booking and
   bare occupancy heat on the **same** self-calibrating test, `_room_wants_heat(zone,
@@ -2911,6 +3035,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   14, not 16. A warm hall in the tail lands on `occupied_warm` ice as usual; the
   manual override is exempt; a new booking start clears the tail; a restart
   drops it (fail direction: ordinary comfort). Tests in `tests/test_eco_tail.py`.
+  **The shared block follows the tail too (v1.50.7, field 2026-10-23).** The
+  second sal-vation booking ended at 10:15:01Z and on that tick the shared went
+  eco → comfort (`shared_motion`) on a kitchen trip 13 minutes old: the
+  cleaner finishing up, heating the kitchen and toilets toward 19. With no
+  booking running and either zone's tail active, a shared PIR trip now rests
+  the block at eco (reason `eco_tail`); after the tail it heats as before.
   **Two logging gaps closed in the same release (v1.49.1).** `fan_sensor_lost`
   now carries `ceiling` / `floor` (which input dropped) and `fan_sensor_restored`
   marks the recovery — the ~06:20–06:30Z losses on 2026-10-01 and 10-03 could not
@@ -2949,6 +3079,19 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the entity go off re-lit comfort as a phantom `preheat` (four times, 09-17 →
   09-21). `_record_booking_edges` now closes the window and latch on the edge and
   flags an immediate refresh, so the next event is judged fresh within a tick.
+  **And a window opened BLIND is not latched (v1.50.6, field 2026-10-23).** The
+  01:40:29Z refresh landed in an 84-s dropout of every hall probe
+  (`fan_sensor_lost` floor → `fan_sensor_restored` 01:41:53Z), so the lead fell
+  back to the 240-min cap for the 05:00Z sal-vation eco-low booking 200 min
+  away. The hall sat at 13.38 against a 14 target, a ~45–60-min lead. The latch
+  then held the window, and the hall was kept at 14–14.9 from 02:40 local
+  (eco 01:40–02:25Z and 03:36–04:12Z). A window that opened while
+  `_last_lead_calc.indoor` was None (`_preheat_blind`) is now re-judged on the
+  next refresh. If the reading is back and the real lead no longer reaches,
+  it closes with `preheat_withdrawn` (`reason` `reading_back`); if the room is
+  still unreadable, the cap still holds it open (err warm). A window opened on
+  a real reading keeps its latch through a later dropout. Tests in
+  `tests/test_preheat.py`.
 - **Warm-enough reads reject a frozen Rointe value (2026-08-06).** The Rointe
   cloud can freeze while the entity still reads `available`, so every path that
   decides "is the room warm enough?" — pre-heat sizing (`_zone_preheat_minutes`),

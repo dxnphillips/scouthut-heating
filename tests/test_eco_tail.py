@@ -21,6 +21,7 @@ from scout_testkit import (
     hall_temp,
     make_controller,
     motion,
+    shared_temp,
 )
 
 
@@ -96,3 +97,23 @@ def test_a_new_booking_starting_inside_the_tail_owns_the_zone():
     motion(ctrl, "hall")
     assert ctrl._desired_zone(ZA) == PRESET_COMFORT
     assert ctrl._preset_reason[ZA] == "booking"
+
+
+# --- The shared block follows the tail (v1.50.7) -----------------------------
+def test_the_cleaner_in_the_kitchen_after_the_booking_keeps_the_shared_at_eco():
+    # 2026-10-23 10:15:01Z: the second sal-vation booking ended and the shared
+    # went eco -> comfort on a kitchen trip 13 minutes old.
+    ctrl = _ended_eco_booking(15.5)
+    shared_temp(ctrl, 18.0)  # under shared comfort: an ordinary trip would heat
+    motion(ctrl, "kitchen")
+    assert ctrl._desired_shared() == PRESET_ECO
+    assert ctrl._preset_reason["shared"] == "eco_tail"
+
+
+def test_after_the_tail_a_kitchen_trip_heats_the_shared_as_before():
+    ctrl = _ended_eco_booking(15.5)
+    shared_temp(ctrl, 18.0)
+    advance(ctrl, ctrl.number("motion_timeout_minutes") + 1)
+    motion(ctrl, "kitchen")
+    assert ctrl._desired_shared() == PRESET_COMFORT
+    assert ctrl._preset_reason["shared"] == "shared_motion"

@@ -348,6 +348,8 @@ def advance(ctrl, minutes):
         ctrl._sync_seen_at[climate] = ts - delta
     for climate, ts in list(ctrl._heaters_silent_since.items()):
         ctrl._heaters_silent_since[climate] = ts - delta
+    for climate, ts in list(ctrl._probe_implausible_since.items()):
+        ctrl._probe_implausible_since[climate] = ts - delta
     for zone, ts in list(ctrl._stale_relit_at.items()):
         ctrl._stale_relit_at[zone] = ts - delta
     for zone, ts in ctrl._cooloff_cooling_since.items():
