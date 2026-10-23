@@ -1262,7 +1262,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     door end ~3.25 under (2026-10-21). **Owner-side: check hall_left** — a
     probe at 8 beside an 82 °C panel is a sensor or device fault; its blank
     `preset` and the 05:49Z blink suggest it was power-cycled or reset during
-    the clean.
+    the clean. **It recovered on its own at ~09:04Z** (2.5 h low, 8.0–9.5; the
+    `drive_coast_jump` at 09:04:31Z is the average catching it up), and by the
+    10:16Z export it read 18.5 against the others' 16.5, its usual warm end. On
+    1.50.4 the fault cost that morning what v1.50.6 prevents: at 08:05Z the
+    second sal-vation pre-heat sized off an average of 13.75 that counted the
+    9.0 (the other three averaged ~15.3, above the 14 eco-low target), so the
+    hall went to eco for 54 min with hall_left firing against its own reading
+    (`hall_fire` 1, panels 34 → 43 °C), and the reverse fans ran on a fake
+    4.5 °C gap until a door-open ice at 08:59Z. The same eco write failed for
+    all four hall heaters (`write_failed`, "Failed to set HVAC preset for Hall
+    Front") and was believed until the 08:59Z ice landed: the second day running
+    a preset write failed, the case v1.50.5 re-sends.
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
@@ -3024,6 +3035,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   14, not 16. A warm hall in the tail lands on `occupied_warm` ice as usual; the
   manual override is exempt; a new booking start clears the tail; a restart
   drops it (fail direction: ordinary comfort). Tests in `tests/test_eco_tail.py`.
+  **The shared block follows the tail too (v1.50.7, field 2026-10-23).** The
+  second sal-vation booking ended at 10:15:01Z and on that tick the shared went
+  eco → comfort (`shared_motion`) on a kitchen trip 13 minutes old: the
+  cleaner finishing up, heating the kitchen and toilets toward 19. With no
+  booking running and either zone's tail active, a shared PIR trip now rests
+  the block at eco (reason `eco_tail`); after the tail it heats as before.
   **Two logging gaps closed in the same release (v1.49.1).** `fan_sensor_lost`
   now carries `ceiling` / `floor` (which input dropped) and `fan_sensor_restored`
   marks the recovery — the ~06:20–06:30Z losses on 2026-10-01 and 10-03 could not

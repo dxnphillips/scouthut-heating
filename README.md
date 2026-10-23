@@ -558,7 +558,9 @@ restarts) of everything it decides and learns:
   decided them: `booking`, `preheat`, `booking_warm`, `booking_eco`,
   `booking_quiet`, `preheat_coast`, `booking_coast`, `motion`, `eco_tail`
   (occupancy inside the motion timeout after an ECO-keyword booking ended,
-  heating toward that booking's eco-low target rather than comfort),
+  heating toward that booking's eco-low target rather than comfort; the shared
+  kitchen/toilets follow it too since v1.50.7, resting at eco on a kitchen or
+  toilet trip rather than going to comfort),
   `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `opening`,
   `boost`, `heating_paused`, `building_empty`, ...; the `_warm` reasons mark a
   room already at/above target that landed on `ice` so the cooling fans can

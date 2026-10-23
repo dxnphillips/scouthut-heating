@@ -4021,12 +4021,22 @@ class ScoutController:
             (cal_a and not self._eco_keyword_active(ZONE_A))
             or (cal_b and not self._eco_keyword_active(ZONE_B))
         )
+        # The eco tail reaches the shared block too (v1.50.7): whoever trips a
+        # kitchen or toilet PIR in the motion timeout after a cleaning booking is
+        # the cleaner finishing up, so the block stays at eco rather than going
+        # to comfort. Field 2026-10-23 10:15:01Z: the second sal-vation booking
+        # ended and the shared went eco -> comfort on a kitchen trip 13 min old.
+        eco_tail = not booking and (
+            self._eco_tail_active(ZONE_A) or self._eco_tail_active(ZONE_B)
+        )
         shared_motion = any(self._motion_recent(a, timeout) for a in WATER_MOTION_AREAS)
         if booking or shared_motion:
             if eco_booking:
                 # Low-key session (the cleaner IS the motion): rest at eco, which
                 # the Rointe idles at once warm enough, so no demand is created.
                 return self._reason("shared", "booking_eco", PRESET_ECO)
+            if eco_tail:
+                return self._reason("shared", "eco_tail", PRESET_ECO)
             if self._shared_wants_heat():
                 reason = "booking" if booking else "shared_motion"
                 return self._reason("shared", reason, PRESET_COMFORT)
