@@ -242,7 +242,7 @@ BOOKING_RELIGHT_STALE_MIN = 35.0
 # short when the booking started, nobody had arrived, and eco cut the heating for
 # the ten minutes until the group walked in. And an away-armed alarm ices a
 # running booking nobody is in (`booking_armed`): the same evening the group
-# armed the alarm and left at 19:09Z, the calendar event ran on past midnight,
+# armed the alarm and left at 19:09Z, a 24-hour booking took over at 19:30Z,
 # and the hall held eco 16 in an empty, alarmed building with all four radiators
 # firing from 22:21Z. At the start the alarm is often still set from before (it
 # was then, until the 16:39Z arrival), so the ice must not land on a late group.
@@ -862,6 +862,10 @@ class ScoutController:
         # When this controller saw each running booking start — the fallback for
         # `_booking_running_minutes` when the calendar entity carries no start.
         self._booking_started_at: dict[str, datetime | None] = {ZONE_A: None, ZONE_B: None}
+        # The running event's start_time as last seen (its identity), and whether
+        # the current booking took over from one that ended the same minute.
+        self._cal_event_prev: dict[str, str | None] = {ZONE_A: None, ZONE_B: None}
+        self._booking_handover: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         # Set on a booking_end edge: refresh the calendar look-ahead on the next
         # tick instead of waiting for the five-minute cadence.
         self._cal_refresh_due = False
@@ -3930,14 +3934,21 @@ class ScoutController:
             # In its first BOOKING_ARRIVAL_GRACE_MIN an empty running booking is a
             # group on its way: neither rule below may cut the heat yet. Unknown
             # start -> no grace and no alarm ice, the behaviour before v1.50.8.
+            # Not after a handover: a booking that takes over from one ending the
+            # same minute had no pre-heat, so there is no climb to finish, and the
+            # room is whatever the last session left.
             running_min = self._booking_running_minutes(zone) if event_running else None
-            awaiting = running_min is not None and running_min < BOOKING_ARRIVAL_GRACE_MIN
+            awaiting = (
+                running_min is not None
+                and running_min < BOOKING_ARRIVAL_GRACE_MIN
+                and not self._booking_handover[zone]
+            )
             # The group has been and gone: the alarm is set to away and nobody has
             # moved in the zone for the motion timeout. A booking overrides the
             # alarm so that a pre-heat can warm an empty, armed building and a
             # late group finds it warm; neither applies once the event has run
             # past its arrival grace. Field 2026-10-23: the group armed and left
-            # at 19:09Z, the event ran on past midnight, and the hall held eco 16
+            # at 19:09Z, a 24-hour booking took over at 19:30Z, and the hall held eco 16
             # with all four radiators firing from 22:21Z.
             if alarm_on and not occupied and running_min is not None and not awaiting:
                 self._note_coasting(zone, False)
@@ -4628,6 +4639,15 @@ class ScoutController:
         when the CONTROLLER saw the calendar entity finish — so a fan or
         preset change shortly after can be read against it — and its
         temperature anchors the cool-off that follows.
+
+        Two bookings that meet never turn the calendar entity off: only its
+        event changes. So a change of the running event's ``start_time`` is an
+        end and a start too (a handover, v1.50.8). Field 2026-10-23: a 24-hour
+        booking began at 19:30Z as the Friday one ended, and neither edge was
+        seen — no `booking_end` for Friday, no `booking_start` for the next,
+        and nothing that hangs off them ran (the hall pause clearing, the eco
+        latch, the overshoot summary). An event edited in place keeps its start
+        and is not a handover.
         """
         for zone in (ZONE_A, ZONE_B):
             cal = self.config.get(ZONE_CALENDAR[zone])
@@ -4635,92 +4655,122 @@ class ScoutController:
                 continue
             running = self._is_on(cal)
             was = self._cal_running_prev[zone]
+            key = self._running_event_key(cal) if running else None
+            prev_key = self._cal_event_prev[zone]
             self._cal_running_prev[zone] = running
+            self._cal_event_prev[zone] = key
+            handover = bool(running and was and key and prev_key and key != prev_key)
+            if handover:
+                self._booking_ended(zone, handover=True)
             self._track_booking_overshoot(zone, running)
+            if handover:
+                self._booking_began(zone, handover=True)
+                continue
             if was is None or running == was:
                 continue
-            if not running:
-                self.audit.record(
-                    "booking_end",
-                    self._now(),
-                    zone=zone,
-                    coldest=self._zone_room_temp(zone, coldest=True),
-                    average=self._zone_room_temp(zone),
-                    outdoor=self._outdoor_temp(),
-                    preset=self.applied[zone],
-                    # Overshoot summary for this episode (pre-heat + slot): the
-                    # peak the room's average sailed past target, and the minutes
-                    # it stayed >OVERSHOOT_BAND over. Judges "ran too hot" from
-                    # data. peak_over 0 = never over (a cold-arrival session), OR
-                    # the room was never heated toward target this slot (a warm
-                    # coast above a low eco floor is not overshoot).
-                    peak_over=(
-                        round(self._booking_over_peak[zone], 2)
-                        if self._booking_over_heated[zone]
-                        else 0.0
-                    ),
-                    minutes_over=(
-                        round(self._booking_over_minutes[zone], 1)
-                        if self._booking_over_heated[zone]
-                        else 0.0
-                    ),
-                )
-                self._reset_booking_overshoot(zone)
-                self._booking_started_at[zone] = None
-                # The pre-heat window was held True for the whole running event
-                # (`_async_refresh_calendars` short-circuits on a running
-                # calendar), and the calendar look-ahead only refreshes every
-                # five minutes — so without this the tick that sees the event
-                # end still carries `cal_window` True with `cal_on` False and
-                # re-lights comfort as a phantom `preheat` for up to five minutes
-                # (four times in five days, 2026-09-17 -> 09-21: each a heater
-                # write, a drive push and a 10-min reverse fan min-run on an
-                # empty hall). Close the window on the edge and ask for a prompt
-                # refresh, so a genuine NEXT event is judged on its own lead
-                # within a tick rather than inheriting this one's window.
-                self.cal_window[zone] = False
-                self._preheat_open_for[zone] = None
-                self._cal_refresh_due = True
-                # An ECO-keyword booking leaves an eco tail as long as the motion
-                # timeout: whoever is still tripping the PIR is the same low-key
-                # visit, not a new session wanting comfort (v1.49.0).
-                if self._cal_eco_running[zone]:
-                    self._eco_tail_until[zone] = self._now() + timedelta(
-                        minutes=self.number("motion_timeout_minutes")
-                    )
-                self._cal_eco_running[zone] = False
-                # A hall booking ending is the deliberate boundary that lifts a
-                # pause carried through the session: an adjacent next booking
-                # then starts fresh (inheriting the still-warm room, so its
-                # pre-heat is naturally reduced or skipped).
-                if zone == ZONE_A:
-                    self._clear_hall_pause("booking_end")
-                continue
-            eco = self._eco_keyword_active(zone)
-            self._cal_eco_running[zone] = eco
-            self._eco_tail_until[zone] = None  # a new booking owns the zone now
-            self._booking_started_at[zone] = self._now()
-            target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
-            coldest = self._zone_room_temp(zone, coldest=True)
-            average = self._zone_room_temp(zone)
-            self.audit.record(
-                "booking_start",
-                self._now(),
-                zone=zone,
-                title=self.cal_title.get(zone) or None,
-                eco=eco,
-                target=target,
-                coldest=coldest,
-                average=average,
-                # Judged on the AVERAGE since v1.47.0 — what the lead sized and
-                # the gate released on; `coldest` stays beside it for the record.
-                shortfall=None if average is None else target - average,
-                outdoor=self._outdoor_temp(),
-                preset=self.applied[zone],
-                # The fan tap the pre-heat's fan-assisted rate assumed, so a
-                # shortfall can be read against a speed the occupants dropped.
-                fan_w_last=self._fan_w_last_seen if zone == ZONE_A else None,
+            if running:
+                self._booking_began(zone, handover=False)
+            else:
+                self._booking_ended(zone, handover=False)
+
+    def _running_event_key(self, cal: str) -> str | None:
+        """The running event's identity: its ``start_time`` as the entity
+        publishes it, or None when it carries none."""
+        state = self.hass.states.get(cal)
+        value = state.attributes.get("start_time") if state else None
+        return str(value) if value else None
+
+    def _booking_ended(self, zone: str, handover: bool) -> None:
+        self.audit.record(
+            "booking_end",
+            self._now(),
+            zone=zone,
+            coldest=self._zone_room_temp(zone, coldest=True),
+            average=self._zone_room_temp(zone),
+            outdoor=self._outdoor_temp(),
+            preset=self.applied[zone],
+            # Overshoot summary for this episode (pre-heat + slot): the
+            # peak the room's average sailed past target, and the minutes
+            # it stayed >OVERSHOOT_BAND over. Judges "ran too hot" from
+            # data. peak_over 0 = never over (a cold-arrival session), OR
+            # the room was never heated toward target this slot (a warm
+            # coast above a low eco floor is not overshoot).
+            peak_over=(
+                round(self._booking_over_peak[zone], 2)
+                if self._booking_over_heated[zone]
+                else 0.0
+            ),
+            minutes_over=(
+                round(self._booking_over_minutes[zone], 1)
+                if self._booking_over_heated[zone]
+                else 0.0
+            ),
+            handover=True if handover else None,
+        )
+        self._reset_booking_overshoot(zone)
+        self._booking_started_at[zone] = None
+        # The pre-heat window was held True for the whole running event
+        # (`_async_refresh_calendars` short-circuits on a running
+        # calendar), and the calendar look-ahead only refreshes every
+        # five minutes — so without this the tick that sees the event
+        # end still carries `cal_window` True with `cal_on` False and
+        # re-lights comfort as a phantom `preheat` for up to five minutes
+        # (four times in five days, 2026-09-17 -> 09-21: each a heater
+        # write, a drive push and a 10-min reverse fan min-run on an
+        # empty hall). Close the window on the edge and ask for a prompt
+        # refresh, so a genuine NEXT event is judged on its own lead
+        # within a tick rather than inheriting this one's window.
+        self.cal_window[zone] = False
+        self._preheat_open_for[zone] = None
+        self._cal_refresh_due = True
+        # An ECO-keyword booking leaves an eco tail as long as the motion
+        # timeout: whoever is still tripping the PIR is the same low-key
+        # visit, not a new session wanting comfort (v1.49.0).
+        if self._cal_eco_running[zone]:
+            self._eco_tail_until[zone] = self._now() + timedelta(
+                minutes=self.number("motion_timeout_minutes")
             )
+        self._cal_eco_running[zone] = False
+        # A hall booking ending is the deliberate boundary that lifts a
+        # pause carried through the session: an adjacent next booking
+        # then starts fresh (inheriting the still-warm room, so its
+        # pre-heat is naturally reduced or skipped).
+        if zone == ZONE_A:
+            self._clear_hall_pause("booking_end")
+
+    def _booking_began(self, zone: str, handover: bool) -> None:
+        # The title is otherwise refreshed every five minutes; at a handover it
+        # would still be the last event's, and the eco latch reads it.
+        state = self.hass.states.get(self.config.get(ZONE_CALENDAR[zone]))
+        if state is not None and state.attributes.get("message") is not None:
+            self.cal_title[zone] = str(state.attributes.get("message")).lower()
+        eco = self._eco_keyword_active(zone)
+        self._cal_eco_running[zone] = eco
+        self._eco_tail_until[zone] = None  # a new booking owns the zone now
+        self._booking_started_at[zone] = self._now()
+        self._booking_handover[zone] = handover
+        target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
+        coldest = self._zone_room_temp(zone, coldest=True)
+        average = self._zone_room_temp(zone)
+        self.audit.record(
+            "booking_start",
+            self._now(),
+            zone=zone,
+            title=self.cal_title.get(zone) or None,
+            eco=eco,
+            target=target,
+            coldest=coldest,
+            average=average,
+            # Judged on the AVERAGE since v1.47.0 — what the lead sized and
+            # the gate released on; `coldest` stays beside it for the record.
+            shortfall=None if average is None else target - average,
+            outdoor=self._outdoor_temp(),
+            preset=self.applied[zone],
+            # The fan tap the pre-heat's fan-assisted rate assumed, so a
+            # shortfall can be read against a speed the occupants dropped.
+            fan_w_last=self._fan_w_last_seen if zone == ZONE_A else None,
+            handover=True if handover else None,
+        )
 
     def _refresh_motion_from_states(self) -> None:
         """Refresh timestamps for any motion sensor currently reading 'on'."""

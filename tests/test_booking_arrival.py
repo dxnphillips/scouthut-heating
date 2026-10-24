@@ -3,7 +3,7 @@
 Field 2026-10-23, the Friday 16:30Z booking. The pre-heat left the hall 0.25
 short at the start, nobody had arrived, and `booking_quiet` dropped it to eco
 until the group walked in at 16:39Z. The group then armed the alarm and left at
-19:09Z, the calendar event ran on past midnight, and the hall held eco 16 in an
+19:09Z, a 24-hour booking took over at 19:30Z, and the hall held eco 16 in an
 empty, alarmed building with all four radiators firing from 22:21Z, because a
 running booking overrode the alarm entirely.
 
@@ -57,7 +57,7 @@ def _armed(hass):
 # --- The group has been and gone -------------------------------------------------
 def test_an_armed_empty_booking_past_its_grace_is_iced():
     ctrl, hass = _friday()
-    _started(ctrl, ZA, 300)  # 19:09Z -> past midnight
+    _started(ctrl, ZA, 300)
     hall_temp(ctrl, 15.5)  # cold enough that eco 16 had all four firing
     _armed(hass)
     assert ctrl._desired_zone(ZA) == PRESET_ICE
@@ -208,3 +208,87 @@ def test_a_restart_mid_booking_reads_the_start_from_the_calendar():
     assert ctrl.applied[ZA] == PRESET_ICE
     running = ctrl.diagnostics_data()["state"]["booking_running_min"]
     assert running[ZA] == 600.0 and running[ZB] is None
+
+
+# --- Back-to-back bookings (a handover) -------------------------------------------
+# Field 2026-10-23: a 24-hour booking began at 19:30Z the minute the Friday one
+# ended. The calendar entity never went off, so neither edge was seen.
+def _events(ctrl, name):
+    return [e for e in ctrl.audit.to_list() if e.get("event") == name]
+
+
+def _handover(ctrl, title="24 hour booking"):
+    """The running event changes to one that starts now; the entity stays on."""
+    cal = ctrl.config.get(C.ZONE_CALENDAR[ZA])
+    ctrl.hass.states.set(
+        cal,
+        "on",
+        {"message": title, "start_time": ctrl._now().strftime("%Y-%m-%d %H:%M:%S")},
+    )
+
+
+def _friday_running(hass_title=""):
+    ctrl, hass = _friday()
+    hall_temp(ctrl, 18.5)
+    run(ctrl.async_reconcile())  # calendar seen off
+    # Started three hours back by the calendar's own clock (the test clock
+    # does not move; `advance` ages stored stamps instead).
+    _started(ctrl, ZA, 180, hass_title)
+    run(ctrl.async_reconcile())  # the Friday booking starts
+    return ctrl, hass
+
+
+def test_a_handover_is_an_end_and_a_start():
+    ctrl, hass = _friday_running()
+    advance(ctrl, 180)
+    _handover(ctrl)
+    run(ctrl.async_reconcile())
+    (end,) = _events(ctrl, "booking_end")
+    assert end["handover"] is True
+    starts = _events(ctrl, "booking_start")
+    assert len(starts) == 2 and starts[-1]["handover"] is True
+    assert ctrl._booking_running_minutes(ZA) < 1
+
+
+def test_the_group_that_left_is_not_awaited_at_a_handover():
+    # 19:09Z armed and gone, 19:30Z the next booking takes over: no arrival
+    # grace (there was no pre-heat to finish), so the hall ices at once rather
+    # than relighting comfort for half an hour in an empty, alarmed hut.
+    ctrl, hass = _friday_running()
+    advance(ctrl, 180)
+    _armed(hass)
+    _handover(ctrl)
+    run(ctrl.async_reconcile())
+    assert ctrl.applied[ZA] == PRESET_ICE
+    assert ctrl._preset_reason[ZA] == "booking_armed"
+
+
+def test_a_handover_lifts_the_hall_pause():
+    ctrl, hass = _friday_running()
+    ctrl.hall_heating_paused = True
+    advance(ctrl, 180)
+    _handover(ctrl)
+    run(ctrl.async_reconcile())
+    assert ctrl.hall_heating_paused is False
+    (resumed,) = _events(ctrl, "heating_resumed")
+    assert resumed["reason"] == "booking_end"
+
+
+def test_the_eco_latch_follows_the_new_event():
+    ctrl, hass = _friday_running("Sal-vation clean")
+    assert _events(ctrl, "booking_start")[-1]["eco"] is True
+    advance(ctrl, 60)
+    _handover(ctrl, "Cubs")
+    run(ctrl.async_reconcile())
+    assert _events(ctrl, "booking_start")[-1]["eco"] is False
+    assert ctrl._cal_eco_running[ZA] is False
+
+
+def test_an_event_edited_in_place_is_not_a_handover():
+    ctrl, hass = _friday_running()
+    cal = ctrl.config.get(C.ZONE_CALENDAR[ZA])
+    start = hass.states.get(cal).attributes["start_time"]
+    hass.states.set(cal, "on", {"message": "renamed", "start_time": start})
+    run(ctrl.async_reconcile())
+    assert not _events(ctrl, "booking_end")
+    assert len(_events(ctrl, "booking_start")) == 1

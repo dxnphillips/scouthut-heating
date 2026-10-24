@@ -293,8 +293,9 @@ this priority (highest wins):
    arrives), but not after that (v1.50.8): a running booking with the alarm
    set to away and nobody moving in the zone for the motion timeout means the
    group has been and gone, so it goes to `ice` (reason `booking_armed`). On
-   2026-10-23 the group armed and left at 20:09 BST, the calendar event ran
-   on past midnight, and the hall had held eco 16 with all four radiators on.
+   2026-10-23 the group armed and left at 20:09 BST, a 24-hour booking took
+   over at 20:30, and the hall held eco 16 with all four radiators on past
+   midnight.
 6. **Booking or pre-heat window** (optimum start — see below) → `comfort`,
    **when the room genuinely wants heat** (the average of its heater probes is
    below the booking target — the cold end of the 20 m hall may sit ~0.5 under
@@ -304,7 +305,9 @@ this priority (highest wins):
    by whether the room is actually cold. An unoccupied room drops to `eco` only
    once the event has been running 30 minutes (the pre-heat window always heats at
    comfort, since its whole purpose is reaching the target by event start, and a
-   group arriving a few minutes late finds it still heating, v1.50.8) — and
+   group arriving a few minutes late finds it still heating, v1.50.8; a booking
+   that follows straight on from another gets no such grace, as it had no
+   pre-heat) — and
    "unoccupied" here counts the things a motion sensor can't see: as well as
    recent motion, the **occupied-override** switch or a **Night/Home alarm arm**
    hold a booking at comfort, so a **sleepover** of still, sleeping occupants
@@ -547,7 +550,12 @@ restarts) of everything it decides and learns:
   how long it stayed more than 0.5 °C over. Pure measurement (nothing keys off
   it): the signal for whether a booking runs too hot, judged from data rather
   than eyeballed off the trace. `peak_over` 0 is a session that never reached
-  target (a cold arrival).
+  target (a cold arrival). Two bookings that meet never turn the calendar off,
+  so since v1.50.8 a change of the running event (its start time) is logged as
+  a `booking_end` and a `booking_start` with `handover: true`; before that a
+  booking followed straight on by another (2026-10-23: a 24-hour booking from
+  the end of the Friday one) had neither edge, and the hall pause, the eco flag
+  and the overshoot summary all missed the changeover.
 - **`motion`** — a PIR trip after its area has been quiet longer than the
   occupancy timeout (a genuine *arrival*, not every re-trigger while someone
   is already there — that would flood the log during a busy session). This
@@ -626,7 +634,8 @@ response (the full ledger with decision rules lives in
   booked autumn weeks pull them to the building's truth. Success metric:
   arrival shortfall ≈ 0.
 - **Calendar entity blips** — one mid-event dropout observed (2026-07-11);
-  `booking_end`/`booking_start` pairs mid-slot now make it visible. If it
+  `booking_end`/`booking_start` pairs mid-slot without `handover` now make it
+  visible (a back-to-back booking carries `handover: true`). If it
   recurs, an entity-off debounce gets built.
 - **Hot-breeze guard (29 °C mix) and its vent trend-test (+0.5 °C
   revoke)** — calibrated from one measured solar-charge day; verified
