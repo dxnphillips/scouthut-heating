@@ -1274,6 +1274,23 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     all four hall heaters (`write_failed`, "Failed to set HVAC preset for Hall
     Front") and was believed until the 08:59Z ice landed: the second day running
     a preset write failed, the case v1.50.5 re-sends.
+    **Its first field alarm was an honest cold end, fixed v1.50.8
+    (`PROBE_PANEL_AGREES_C` = 3).** 2026-10-23 13:37Z, the hall on ice since
+    10:40Z at outdoor 7: hall_front by the front door read 14.0 with its own
+    idle panel at 15.5, beside 15.5, 18.5 and 18.5. Against the drive's
+    upper-middle 18.5 it was 4.5 under, so it was pushed to the owner as a
+    broken sensor and left out of the 14:55Z pre-heat (indoor 17.33 on three
+    probes; with it ~16.6 and a lead of ~107–110 min instead of 98, i.e. a
+    window opening 10–15 min earlier), and the 16:30Z booking arrived 0.25
+    short. It read 17.0 by 15:36Z as the pre-heat warmed it. Two changes, the
+    room rule only (the drive's sanity rule is unchanged): the median is the
+    true one (mean of the middle two of four; 17.0 here, 3.0 under), and a
+    probe its own idle panel agrees with to within 3 °C is the room at that
+    end — every iced heater across the October exports reads its panel
+    0.5–1.0 above its probe once cooled, 2–5 while still shedding. A firing
+    panel corroborates nothing, so the 06:27Z case (8.0 beside 82 °C) is still
+    caught. Fail direction: keeping a cold reading lowers the average, which
+    errs warm. Tests in `tests/test_probe_plausibility.py`.
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
@@ -2850,6 +2867,16 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   so the two lines move together. (The slider suggestions made that evening —
   `booking_hold_cap` 0, and briefly `cooling_above_comfort` 2.0 — are
   superseded.)
+  **The margin reached 0.5 two days later, on a higher k (2026-10-23 Friday,
+  v1.50.7).** `zone_a_heatloss_pct` had risen 7.15 → 13.44 over the 10-21 and
+  10-22 evenings on post-session cool-offs anchored 40–141 min after the ice
+  edge (the fast phase the v1.49.4 note keeps folding on purpose), so at
+  outdoor 7.5 the margin was 0.50 and the radiators' target 19.5; the stair
+  reached +1.5 (pushed 21.0 at 17:26Z, probes freeze-held at 19.0). The hall
+  average peaked at 19.75 (18:21Z) and sat at 19.4–19.6 until the group left:
+  +0.75 over comfort, no breeze, no complaint. At k 13.44 the radiators are
+  lifted at any outdoor ≲ 7.6 °C, not ≲ 3. The lead it sized that afternoon
+  (98 min) arrived 0.25 short, so the higher k is not over-leading yet.
 - **Heating is decoupled from the season — one gate, occupancy == booking
   (2026-08-07).** The seasonal lockout no longer blocks heat. Both a booking and
   bare occupancy heat on the **same** self-calibrating test, `_room_wants_heat(zone,
@@ -3193,9 +3220,32 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   `alarm_control_panel` and only an *away*-type arm (`armed_away`/
   `armed_vacation` = empty building) drops a zone to ice; `armed_night`/
   `armed_home` (people sleeping/present inside — e.g. a sleepover) keep the heat
-  on, and `triggered`/`arming`/`disarmed` never suppress. A booking still
-  overrides the alarm entirely (`alarm_on and not cal_on`), and shared/water
-  still need *both* panels away. Back-compat: a legacy `binary_sensor`/
+  on, and `triggered`/`arming`/`disarmed` never suppress. A booking overrides
+  the alarm (`alarm_on and not cal_on`) while the building is empty and armed by
+  design — the pre-heat window and the first `BOOKING_ARRIVAL_GRACE_MIN` (30) of
+  the event — and shared/water still need *both* panels away. **Past the grace
+  an away arm with nobody moving ices a running booking (v1.50.8, reason
+  `booking_armed`).** Field 2026-10-23: the Friday 16:30Z booking (16:30–19:30Z
+  on 10-09 and 10-16) did not end at 19:30Z; the calendar entity was still
+  on at the 00:49Z export, so the event had been extended or a contiguous one
+  followed (titles are redacted; owner to check). The group armed and left at
+  19:09Z (Pause pressed and resumed on the way out), and the hall held eco 16
+  on `booking_quiet` in an empty, alarmed building, all four radiators firing
+  from 22:21Z as it fell to 15.5. The rule needs the zone's own motion quiet for
+  the timeout, no occupied override and no night arm; it applies to comfort and
+  ECO-keyword bookings and to the office on its own panel. The start is read
+  from the calendar entity's `start_time` (so a restart mid-booking still
+  knows), else the start edge this controller saw; an unknown start keeps the
+  old behaviour. The same grace holds `booking_quiet` off at the start: on
+  the same booking the hall was 0.25 short at 16:30Z, nobody had arrived, and
+  eco cut the heating until the group came in at 16:39Z (the hall average
+  then sat at 18.25–18.5 for the first hour). Water is left on `override or
+  cal` under both arms — a 15 L tank's standing loss is a few hundred Wh a
+  day. Diagnostics `state.booking_running_min`; tests in
+  `tests/test_booking_arrival.py`. **Watch:** `booking_running_min` must read
+  a number during a running booking in the field (None means HA's calendar
+  entity carries no `start_time` and the rule is resting on the edge stamp).
+  Back-compat: a legacy `binary_sensor`/
   `input_boolean` mapping's `on` is treated as armed-away, so installs feeding
   the alarm through a helper keep pre-1.12 behaviour — but a binary cannot tell
   night from away, so night-awareness needs the real panel mapped. The config

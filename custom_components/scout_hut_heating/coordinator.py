@@ -236,6 +236,17 @@ ROOM_READING_GRACE_MIN = 2.0
 # would have relit a merely-quiet heater; 35 clears the heartbeat and only a
 # heater that has genuinely fallen silent trips it.
 BOOKING_RELIGHT_STALE_MIN = 35.0
+# For this long after a booking starts, an empty zone is a group not yet arrived,
+# not a group gone (v1.50.8). Two rules wait it out. `booking_quiet` drops an
+# empty running booking to eco: field 2026-10-23 16:30Z, the hall was still 0.25
+# short when the booking started, nobody had arrived, and eco cut the heating for
+# the ten minutes until the group walked in. And an away-armed alarm ices a
+# running booking nobody is in (`booking_armed`): the same evening the group
+# armed the alarm and left at 19:09Z, the calendar event ran on past midnight,
+# and the hall held eco 16 in an empty, alarmed building with all four radiators
+# firing from 22:21Z. At the start the alarm is often still set from before (it
+# was then, until the 16:39Z arrival), so the ice must not land on a late group.
+BOOKING_ARRIVAL_GRACE_MIN = 30.0
 # There is deliberately NO "probe nudge" any more (v1.44.0 -> retired v1.46.0).
 # A no-op write (the comfort number re-written with its own value, or
 # `climate.set_temperature` with the setpoint the heater already holds) was
@@ -509,6 +520,16 @@ HEATER_SILENT_MINUTES = 180.0
 # is alerted once it has lasted this long, so a probe catching up a couple of
 # minutes behind its siblings (2026-09-16) is left out but not reported.
 PROBE_IMPLAUSIBLE_ALERT_MINUTES = 15.0
+# An idle radiator panel is a second thermometer beside its own probe: once it
+# has cooled it reads 0.5–1.0 above the probe (every iced heater in the October
+# exports), 2–5 while it is still shedding. A probe its own idle panel agrees
+# with to within this is the room at that end, however far it sits under the
+# others (v1.50.8). Field 2026-10-23 13:37Z: hall_front read 14.0 by the front
+# door with its panel at 15.5, the next probe 15.5 and two at 18.5; it was called
+# implausible and pushed as a broken sensor, and left out of the 14:55Z pre-heat
+# sizing, which then opened 10–15 min late for a booking that arrived 0.25
+# short.
+PROBE_PANEL_AGREES_C = 3.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -838,6 +859,9 @@ class ScoutController:
         # Previous running state per calendar; None = not yet observed, so a
         # restart mid-booking does not audit a phantom booking start.
         self._cal_running_prev: dict[str, bool | None] = {ZONE_A: None, ZONE_B: None}
+        # When this controller saw each running booking start — the fallback for
+        # `_booking_running_minutes` when the calendar entity carries no start.
+        self._booking_started_at: dict[str, datetime | None] = {ZONE_A: None, ZONE_B: None}
         # Set on a booking_end edge: refresh the calendar look-ahead on the next
         # tick instead of waiting for the five-minute cadence.
         self._cal_refresh_due = False
@@ -1540,18 +1564,47 @@ class ScoutController:
         and the heater itself fires against its own reading, so a comfort hall
         would have run that radiator flat out with the gate unable to release.
         It needs three readable probes: with two there is no telling which is
-        wrong. Same median as the drive, so the two agree on which probe it is.
+        wrong.
+
+        Two things keep an honest cold end in (v1.50.8). The median is the true
+        one, the mean of the middle two of four: the drive's upper-middle reading
+        sits on the warm side, the wrong side for a rule that leaves cold
+        readings out. And a probe its own idle panel agrees with
+        (``PROBE_PANEL_AGREES_C``) is the room at that end. On 2026-10-23 at
+        13:37Z hall_front read 14.0 by the front door, panel 15.5, beside 15.5,
+        18.5 and 18.5: 4.5 under the upper-middle 18.5, 3.0 under the true 17.0.
+        It was called broken, pushed to the owner and left out of the pre-heat.
+        A firing panel corroborates nothing (it is hot because of the reading),
+        so the 8.0 beside 82 °C is still caught.
         """
         readings = self._hall_probe_readings()
         if len(readings) < 3:
             return set()
-        ordered = sorted(readings.values())
-        median = ordered[len(ordered) // 2]
+        median = self._hall_probe_median(readings)
         return {
             climate
             for climate, value in readings.items()
             if value < median - DRIVE_PROBE_SANE_BELOW
+            and not self._panel_agrees(climate, value)
         }
+
+    @staticmethod
+    def _hall_probe_median(readings: dict[str, float]) -> float | None:
+        """The true median of the hall's readings (mean of the middle two)."""
+        ordered = sorted(readings.values())
+        if not ordered:
+            return None
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[mid]
+        return (ordered[mid - 1] + ordered[mid]) / 2
+
+    def _panel_agrees(self, climate: str, reading: float) -> bool:
+        """Does this heater's own panel, idle beside its probe, read the same
+        room? A cooled idle panel sits 0.5–1.0 above its probe."""
+        surface_id = self._heater_sensor(climate, "surface")
+        surface = self._num_state(surface_id) if surface_id else None
+        return surface is not None and abs(surface - reading) <= PROBE_PANEL_AGREES_C
 
     def _rointe_stale_min(self) -> float:
         """The window (minutes) after which an UNCHANGED Rointe reading is
@@ -3276,6 +3329,14 @@ class ScoutController:
                 },
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
+                # Minutes the running booking has been on (v1.50.8), from the
+                # calendar's own start_time or the start edge; None = not running
+                # or start unknown, when the arrival grace and the alarm ice
+                # (`booking_armed`) both stand aside.
+                "booking_running_min": {
+                    z: None if (m := self._booking_running_minutes(z)) is None else round(m, 1)
+                    for z in (ZONE_A, ZONE_B)
+                },
                 # Booking titles carry hirer names; the export keeps only what
                 # the controller acted on (the eco-keyword match).
                 "cal_title": {z: self._redact_title(t) for z, t in self.cal_title.items()},
@@ -3540,6 +3601,29 @@ class ScoutController:
 
     def _cal_active(self, zone: str) -> bool:
         return self._is_on(self.config.get(ZONE_CALENDAR[zone])) or self.cal_window[zone]
+
+    def _booking_running_minutes(self, zone: str) -> float | None:
+        """How long this zone's running booking has been running, or None.
+
+        Read from the calendar entity's own ``start_time``, so a restart in the
+        middle of a booking still knows; else the start edge this controller
+        saw. None when no booking is running or its start is unknown, and both
+        rules that read it (`BOOKING_ARRIVAL_GRACE_MIN`) then behave as they did
+        before v1.50.8.
+        """
+        cal = self.config.get(ZONE_CALENDAR[zone])
+        if not self._is_on(cal):
+            return None
+        state = self.hass.states.get(cal)
+        start = self._parse_event_start(state.attributes.get("start_time")) if state else None
+        if start is None:
+            start = self._booking_started_at.get(zone)
+        if start is None:
+            return None
+        try:
+            return max((self._now() - start).total_seconds() / 60, 0.0)
+        except TypeError:  # naive/aware mismatch from an odd calendar
+            return None
 
     def _eco_tail_active(self, zone: str) -> bool:
         """Is this zone inside the eco tail an ECO-keyword booking left behind?
@@ -3843,6 +3927,21 @@ class ScoutController:
                 or self.switch_on(f"{zone}_occupied_override")
                 or self._alarm_present(self.config.get(ZONE_ALARM[zone]))
             )
+            # In its first BOOKING_ARRIVAL_GRACE_MIN an empty running booking is a
+            # group on its way: neither rule below may cut the heat yet. Unknown
+            # start -> no grace and no alarm ice, the behaviour before v1.50.8.
+            running_min = self._booking_running_minutes(zone) if event_running else None
+            awaiting = running_min is not None and running_min < BOOKING_ARRIVAL_GRACE_MIN
+            # The group has been and gone: the alarm is set to away and nobody has
+            # moved in the zone for the motion timeout. A booking overrides the
+            # alarm so that a pre-heat can warm an empty, armed building and a
+            # late group finds it warm; neither applies once the event has run
+            # past its arrival grace. Field 2026-10-23: the group armed and left
+            # at 19:09Z, the event ran on past midnight, and the hall held eco 16
+            # with all four radiators firing from 22:21Z.
+            if alarm_on and not occupied and running_min is not None and not awaiting:
+                self._note_coasting(zone, False)
+                return self._reason(zone, "booking_armed", PRESET_ICE)
             # A running comfort booking holds the room a little ABOVE comfort (the
             # booking hold) so a cooling evening cannot drop it below comfort while
             # the slow drive catches up. The gate engages at that raised target so
@@ -3915,8 +4014,10 @@ class ScoutController:
             # started (persistence stops at the empty room). During the pre-heat
             # window the room is empty by definition — demoting there would heat
             # toward eco while the optimum-start lead was sized to reach comfort,
-            # so hirers would always arrive to a shortfall.
-            if base == PRESET_COMFORT and event_running and not occupied:
+            # so hirers would always arrive to a shortfall. The same holds for the
+            # first minutes of the event itself, while the group is still arriving
+            # (v1.50.8).
+            if base == PRESET_COMFORT and event_running and not occupied and not awaiting:
                 return self._reason(zone, "booking_quiet", PRESET_ECO)
             if base == PRESET_ECO:
                 return self._reason(zone, "booking_stale" if stale else "booking_eco", base)
@@ -4565,6 +4666,7 @@ class ScoutController:
                     ),
                 )
                 self._reset_booking_overshoot(zone)
+                self._booking_started_at[zone] = None
                 # The pre-heat window was held True for the whole running event
                 # (`_async_refresh_calendars` short-circuits on a running
                 # calendar), and the calendar look-ahead only refreshes every
@@ -4597,6 +4699,7 @@ class ScoutController:
             eco = self._eco_keyword_active(zone)
             self._cal_eco_running[zone] = eco
             self._eco_tail_until[zone] = None  # a new booking owns the zone now
+            self._booking_started_at[zone] = self._now()
             target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
             coldest = self._zone_room_temp(zone, coldest=True)
             average = self._zone_room_temp(zone)
@@ -6506,8 +6609,7 @@ class ScoutController:
         implausible = self._hall_implausible_probes()
         for climate in implausible:
             self._probe_implausible_since.setdefault(climate, now)
-        ordered = sorted(readable.values())
-        median = ordered[len(ordered) // 2] if ordered else None
+        median = self._hall_probe_median(readable)
         new: list[str] = []
         for climate, since in self._probe_implausible_since.items():
             if climate not in implausible or climate in self._probe_implausible_alerted:

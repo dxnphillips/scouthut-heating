@@ -287,7 +287,14 @@ this priority (highest wins):
 5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
-   sleepover), and a legacy binary `on` still counts as away.
+   sleepover), and a legacy binary `on` still counts as away. A booking
+   overrides the alarm while the building is empty and armed by design (the
+   pre-heat window, and the first 30 minutes of the event while the group
+   arrives), but not after that (v1.50.8): a running booking with the alarm
+   set to away and nobody moving in the zone for the motion timeout means the
+   group has been and gone, so it goes to `ice` (reason `booking_armed`). On
+   2026-10-23 the group armed and left at 20:09 BST, the calendar event ran
+   on past midnight, and the hall had held eco 16 with all four radiators on.
 6. **Booking or pre-heat window** (optimum start — see below) → `comfort`,
    **when the room genuinely wants heat** (the average of its heater probes is
    below the booking target — the cold end of the 20 m hall may sit ~0.5 under
@@ -295,8 +302,9 @@ this priority (highest wins):
    every heated session, v1.47.0). A booking already at/above target lands on `ice` instead, so
    the cooling fans are free to run — heating is **not** gated by the season, only
    by whether the room is actually cold. An unoccupied room drops to `eco` only
-   once the event has actually started (the pre-heat window always heats at
-   comfort, since its whole purpose is reaching the target by event start) — and
+   once the event has been running 30 minutes (the pre-heat window always heats at
+   comfort, since its whole purpose is reaching the target by event start, and a
+   group arriving a few minutes late finds it still heating, v1.50.8) — and
    "unoccupied" here counts the things a motion sensor can't see: as well as
    recent motion, the **occupied-override** switch or a **Night/Home alarm arm**
    hold a booking at comfort, so a **sleepover** of still, sleeping occupants
@@ -495,7 +503,10 @@ restarts) of everything it decides and learns:
   colder than the rest of the hall (more than 4 °C under the others' median, for
   15 minutes) is left out of the hall temperature and reported, with its
   reading, the median and its panel temperature; the radiator still heats
-  against its own reading, so it needs checking (v1.50.6).
+  against its own reading, so it needs checking (v1.50.6). Since v1.50.8 the
+  median of four is the mean of the middle two, and a reading its own idle
+  panel agrees with (within 3 °C) is kept as the cold end of the hall rather
+  than reported.
 - **Nothing "nudges" a silent heater any more (v1.46.0).** From v1.44.0 to
   v1.45.3 a stale heater in an attended zone was sent a no-op write (its own
   comfort number, then its own setpoint) to make it upload a fresh reading,
@@ -561,7 +572,7 @@ restarts) of everything it decides and learns:
   heating toward that booking's eco-low target rather than comfort; the shared
   kitchen/toilets follow it too since v1.50.7, resting at eco on a kitchen or
   toilet trip rather than going to comfort),
-  `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `opening`,
+  `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `booking_armed`, `opening`,
   `boost`, `heating_paused`, `building_empty`, ...; the `_warm` reasons mark a
   room already at/above target that landed on `ice` so the cooling fans can
   run); and the hall pause records its temps/occupancy on
