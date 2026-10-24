@@ -288,14 +288,10 @@ this priority (highest wins):
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
    sleepover), and a legacy binary `on` still counts as away. A booking
-   overrides the alarm while the building is empty and armed by design (the
-   pre-heat window, and the first 30 minutes of the event while the group
-   arrives), but not after that (v1.50.8): a running booking with the alarm
-   set to away and nobody moving in the zone for the motion timeout means the
-   group has been and gone, so it goes to `ice` (reason `booking_armed`). On
-   2026-10-23 the group armed and left at 20:09 BST, a 24-hour booking took
-   over at 20:30, and the hall held eco 16 with all four radiators on past
-   midnight.
+   overrides the alarm for its whole length: if it is booked, the group is
+   expected back, so an empty booking rests at `eco` whether or not the alarm
+   is set (2026-10-23: a 24-hour booking after the Friday one kept the hall at
+   16 after the group had armed and left).
 6. **Booking or pre-heat window** (optimum start — see below) → `comfort`,
    **when the room genuinely wants heat** (the average of its heater probes is
    below the booking target — the cold end of the 20 m hall may sit ~0.5 under
@@ -580,7 +576,7 @@ restarts) of everything it decides and learns:
   heating toward that booking's eco-low target rather than comfort; the shared
   kitchen/toilets follow it too since v1.50.7, resting at eco on a kitchen or
   toilet trip rather than going to comfort),
-  `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `booking_armed`, `opening`,
+  `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `opening`,
   `boost`, `heating_paused`, `building_empty`, ...; the `_warm` reasons mark a
   room already at/above target that landed on `ice` so the cooling fans can
   run); and the hall pause records its temps/occupancy on

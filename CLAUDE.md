@@ -3220,43 +3220,41 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   `alarm_control_panel` and only an *away*-type arm (`armed_away`/
   `armed_vacation` = empty building) drops a zone to ice; `armed_night`/
   `armed_home` (people sleeping/present inside — e.g. a sleepover) keep the heat
-  on, and `triggered`/`arming`/`disarmed` never suppress. A booking overrides
-  the alarm (`alarm_on and not cal_on`) while the building is empty and armed by
-  design — the pre-heat window and the first `BOOKING_ARRIVAL_GRACE_MIN` (30) of
-  the event — and shared/water still need *both* panels away. **Past the grace
-  an away arm with nobody moving ices a running booking (v1.50.8, reason
-  `booking_armed`).** Field 2026-10-23: the Friday 16:30–19:30Z booking was
-  followed the same minute by a 24-hour booking (owner-confirmed), so the
-  calendar entity never went off. The group armed and left at 19:09Z (Pause
-  pressed and resumed on the way out), and the hall held eco 16 on
-  `booking_quiet` in an empty, alarmed building, all four radiators firing
-  from 22:21Z as it fell to 15.5. The rule needs the zone's own motion quiet for
-  the timeout, no occupied override and no night arm; it applies to comfort and
-  ECO-keyword bookings and to the office on its own panel. The start is read
+  on, and `triggered`/`arming`/`disarmed` never suppress. A booking still
+  overrides the alarm entirely (`alarm_on and not cal_on`), and shared/water
+  still need *both* panels away. **That is the owner's rule, not an oversight
+  (2026-10-24): "if it's booked we're expecting them to return".** Field
+  2026-10-23: the Friday 16:30–19:30Z booking was followed the same minute by
+  a 24-hour booking, the group armed and left at 19:09Z (Pause pressed and
+  resumed on the way out), and the hall rested at eco 16 on `booking_quiet`
+  through the empty, alarmed evening, all four radiators firing from 22:21Z as
+  it fell to 15.5. A v1.50.8 draft iced such a booking past its arrival grace
+  (`booking_armed`) and was dropped before release on that answer: a group
+  coming back to a frosted hut waits ~2.5 h for 19 and no pre-heat is
+  possible without an arrival time. Do not re-propose it; if empty booked
+  time ever becomes the cost to chase, the lever is the eco floor during
+  `booking_quiet`, not the alarm. What v1.50.8 did keep:
+  (a) **arrival grace** (`BOOKING_ARRIVAL_GRACE_MIN` = 30): `booking_quiet`
+  does not demote an empty booking in its first 30 min — on the same booking
+  the hall was 0.25 short at 16:30Z with nobody in yet (the alarm still set
+  from before), eco cut the heating until the group came in at 16:39Z, and
+  the average then sat at 18.25–18.5 for the first hour. The start is read
   from the calendar entity's `start_time` (so a restart mid-booking still
-  knows), else the start edge this controller saw; an unknown start keeps the
-  old behaviour. The same grace holds `booking_quiet` off at the start: on
-  the same booking the hall was 0.25 short at 16:30Z, nobody had arrived, and
-  eco cut the heating until the group came in at 16:39Z (the hall average
-  then sat at 18.25–18.5 for the first hour). **Back-to-back bookings were
-  invisible:** `_record_booking_edges` only saw the entity turn on and off,
-  so the 19:30Z changeover logged neither Friday's `booking_end` nor the
-  24-hour booking's `booking_start`, and the hall pause clearing, the eco
-  latch and its tail, and the overshoot summary all skipped it. A change of
-  the running event's `start_time` is now an end plus a start (`handover`
-  on both); an event edited in place keeps its start and is not one. A
-  booking that takes over gets no arrival grace (no pre-heat climb to
-  finish), so on Friday the hall would have iced at 19:30Z rather than
-  relighting comfort for half an hour in an empty, alarmed hut. **Open
-  (owner's call):** a long booking nobody is in, alarm set to away, now sits
-  at frost rather than eco 16; a group returning mid-booking finds a cold
-  hut that heats from when they disarm (no pre-heat is possible without an
-  arrival time). Water is left on `override or
-  cal` under both arms — a 15 L tank's standing loss is a few hundred Wh a
-  day. Diagnostics `state.booking_running_min`; tests in
-  `tests/test_booking_arrival.py`. **Watch:** `booking_running_min` must read
-  a number during a running booking in the field (None means HA's calendar
-  entity carries no `start_time` and the rule is resting on the edge stamp).
+  knows), else the start edge this controller saw; an unknown start keeps
+  the old immediate demotion. (b) **Back-to-back bookings were invisible:**
+  `_record_booking_edges` only saw the entity turn on and off, so the 19:30Z
+  changeover logged neither Friday's `booking_end` nor the 24-hour booking's
+  `booking_start`, and the hall pause clearing, the eco latch and its tail,
+  and the overshoot summary all skipped it. A change of the running event's
+  `start_time` is now an end plus a start (`handover` on both); an event
+  edited in place keeps its start and is not one. A booking that takes over
+  gets no arrival grace (no pre-heat climb to finish), so an empty hall at a
+  handover stays at eco rather than relighting comfort. Water stays on
+  `override or cal` under both arms. Diagnostics `state.booking_running_min`;
+  tests in `tests/test_booking_arrival.py`. **Watch:** `booking_running_min`
+  must read a number during a running booking in the field (None means HA's
+  calendar entity carries no `start_time` and the grace is resting on the
+  edge stamp).
   Back-compat: a legacy `binary_sensor`/
   `input_boolean` mapping's `on` is treated as armed-away, so installs feeding
   the alarm through a helper keep pre-1.12 behaviour — but a binary cannot tell

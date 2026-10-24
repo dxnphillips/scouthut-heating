@@ -237,15 +237,11 @@ ROOM_READING_GRACE_MIN = 2.0
 # heater that has genuinely fallen silent trips it.
 BOOKING_RELIGHT_STALE_MIN = 35.0
 # For this long after a booking starts, an empty zone is a group not yet arrived,
-# not a group gone (v1.50.8). Two rules wait it out. `booking_quiet` drops an
-# empty running booking to eco: field 2026-10-23 16:30Z, the hall was still 0.25
-# short when the booking started, nobody had arrived, and eco cut the heating for
-# the ten minutes until the group walked in. And an away-armed alarm ices a
-# running booking nobody is in (`booking_armed`): the same evening the group
-# armed the alarm and left at 19:09Z, a 24-hour booking took over at 19:30Z,
-# and the hall held eco 16 in an empty, alarmed building with all four radiators
-# firing from 22:21Z. At the start the alarm is often still set from before (it
-# was then, until the 16:39Z arrival), so the ice must not land on a late group.
+# not a group gone (v1.50.8), so `booking_quiet` does not drop it to eco yet.
+# Field 2026-10-23 16:30Z: the hall was still 0.25 short when the booking
+# started, nobody had arrived (the alarm was still set from before), and eco cut
+# the heating for the ten minutes until the group walked in; the average then
+# sat at 18.25-18.5 for the first hour.
 BOOKING_ARRIVAL_GRACE_MIN = 30.0
 # There is deliberately NO "probe nudge" any more (v1.44.0 -> retired v1.46.0).
 # A no-op write (the comfort number re-written with its own value, or
@@ -3335,8 +3331,7 @@ class ScoutController:
                 "cal_window": dict(self.cal_window),
                 # Minutes the running booking has been on (v1.50.8), from the
                 # calendar's own start_time or the start edge; None = not running
-                # or start unknown, when the arrival grace and the alarm ice
-                # (`booking_armed`) both stand aside.
+                # or start unknown, when the arrival grace stands aside.
                 "booking_running_min": {
                     z: None if (m := self._booking_running_minutes(z)) is None else round(m, 1)
                     for z in (ZONE_A, ZONE_B)
@@ -3611,9 +3606,9 @@ class ScoutController:
 
         Read from the calendar entity's own ``start_time``, so a restart in the
         middle of a booking still knows; else the start edge this controller
-        saw. None when no booking is running or its start is unknown, and both
-        rules that read it (`BOOKING_ARRIVAL_GRACE_MIN`) then behave as they did
-        before v1.50.8.
+        saw. None when no booking is running or its start is unknown, and the
+        arrival grace (`BOOKING_ARRIVAL_GRACE_MIN`) then stands aside, as before
+        v1.50.8.
         """
         cal = self.config.get(ZONE_CALENDAR[zone])
         if not self._is_on(cal):
@@ -3932,27 +3927,20 @@ class ScoutController:
                 or self._alarm_present(self.config.get(ZONE_ALARM[zone]))
             )
             # In its first BOOKING_ARRIVAL_GRACE_MIN an empty running booking is a
-            # group on its way: neither rule below may cut the heat yet. Unknown
-            # start -> no grace and no alarm ice, the behaviour before v1.50.8.
-            # Not after a handover: a booking that takes over from one ending the
-            # same minute had no pre-heat, so there is no climb to finish, and the
-            # room is whatever the last session left.
+            # group on its way, so `booking_quiet` below may not cut the heat yet.
+            # Unknown start -> no grace, the behaviour before v1.50.8. Not after a
+            # handover: a booking that takes over from one ending the same minute
+            # had no pre-heat, so there is no climb to finish, and the room is
+            # whatever the last session left.
+            # An away-armed alarm does NOT end a running booking: if it is booked,
+            # the group is expected back (owner, 2026-10-24), so an empty armed
+            # booking rests at eco like any other empty one, ready for the return.
             running_min = self._booking_running_minutes(zone) if event_running else None
             awaiting = (
                 running_min is not None
                 and running_min < BOOKING_ARRIVAL_GRACE_MIN
                 and not self._booking_handover[zone]
             )
-            # The group has been and gone: the alarm is set to away and nobody has
-            # moved in the zone for the motion timeout. A booking overrides the
-            # alarm so that a pre-heat can warm an empty, armed building and a
-            # late group finds it warm; neither applies once the event has run
-            # past its arrival grace. Field 2026-10-23: the group armed and left
-            # at 19:09Z, a 24-hour booking took over at 19:30Z, and the hall held eco 16
-            # with all four radiators firing from 22:21Z.
-            if alarm_on and not occupied and running_min is not None and not awaiting:
-                self._note_coasting(zone, False)
-                return self._reason(zone, "booking_armed", PRESET_ICE)
             # A running comfort booking holds the room a little ABOVE comfort (the
             # booking hold) so a cooling evening cannot drop it below comfort while
             # the slow drive catches up. The gate engages at that raised target so
