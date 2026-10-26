@@ -499,13 +499,17 @@ restarts) of everything it decides and learns:
   not be read (so the lead fell back to the cap) and was closed again once the
   reading came back and the real lead no longer reached (v1.50.6).
 - **`probe_implausible` / `probe_plausible`** — a hall heater reading far
-  colder than the rest of the hall (more than 4 °C under the others' median, for
+  colder than the rest of the hall (more than 3.5 °C under the others' median, for
   15 minutes) is left out of the hall temperature and reported, with its
   reading, the median and its panel temperature; the radiator still heats
   against its own reading, so it needs checking (v1.50.6). Since v1.50.8 the
-  median of four is the mean of the middle two, and a reading its own idle
-  panel agrees with (within 3 °C) is kept as the cold end of the hall rather
-  than reported.
+  median of four is the mean of the middle two, a probe is left out at more
+  than 3.5 °C under it and let back in only once it is within 2 °C (so one
+  wobbling on the line is not swapped in and out, each time with an alert),
+  and a reading its own idle panel agrees with (within 3 °C) is kept as the
+  cold end of the hall rather than reported. A cool-off sample in flight when
+  a probe joins or leaves the hall reading is dropped (`cooloff_discarded`,
+  reason `probes_changed`): the swap moves the reading, not the room.
 - **Nothing "nudges" a silent heater any more (v1.46.0).** From v1.44.0 to
   v1.45.3 a stale heater in an attended zone was sent a no-op write (its own
   comfort number, then its own setpoint) to make it upload a fresh reading,

@@ -508,10 +508,9 @@ HEATERS_OFFLINE_MINUTES = 10.0
 # day's session ran on three heaters, and no alert existed to say so.
 HEATER_SILENT_MINUTES = 180.0
 # A hall probe that cannot be reading the room (v1.50.6). The four hall Rointes
-# share one room, so a probe more than DRIVE_PROBE_SANE_BELOW under the median of
-# three or more readable ones is a broken reading, not a cold corner: the drive
-# already refuses to overdrive it, and it is now left out of the hall's room
-# reading too. Field 2026-10-23 06:27Z: hall_left read 8.0 beside its own 82 °C
+# share one room, so a probe well under the median of three or more readable
+# ones (PROBE_IMPLAUSIBLE_BELOW, below) is a broken reading, not a cold corner,
+# and it is left out of the hall's room reading. Field 2026-10-23 06:27Z: hall_left read 8.0 beside its own 82 °C
 # panel while the others read 18.5–19.5, pulling the hall average to 16.25. It
 # is alerted once it has lasted this long, so a probe catching up a couple of
 # minutes behind its siblings (2026-09-16) is left out but not reported.
@@ -526,6 +525,19 @@ PROBE_IMPLAUSIBLE_ALERT_MINUTES = 15.0
 # sizing, which then opened 10–15 min late for a booking that arrived 0.25
 # short.
 PROBE_PANEL_AGREES_C = 3.0
+# The implausible-probe line, with hysteresis (v1.50.8). A probe ENTERS more than
+# PROBE_IMPLAUSIBLE_BELOW under the true median and LEAVES only once it is back
+# within PROBE_PLAUSIBLE_WITHIN of it (or its idle panel agrees). Field 2026-10-25:
+# hall_left read 6.5-7.5 against siblings at 10-11.5 from Saturday 20:40Z on
+# (cold panels too, so not the hot-panel effect), sitting right on the old 4 C
+# line; it was left out and put back four times with an alert each time, every
+# swap moved the hall average about 1 C, and the cool-off learning read those
+# steps as heat loss (k 13.44 -> 26.26). 3.5 under the true median is about the
+# v1.50.6 line on the drive's upper-middle reading, which caught both hall_left
+# faults; the largest honest spread on record is the door end ~3.25 under
+# (2026-10-21), and an idle cold end is kept by its own panel anyway.
+PROBE_IMPLAUSIBLE_BELOW = 3.5
+PROBE_PLAUSIBLE_WITHIN = 2.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -811,6 +823,9 @@ class ScoutController:
             ZONE_A: None,
             ZONE_B: None,
         }
+        # Which probes made up the zone's reading when its cool-off sample
+        # anchored: a sample never spans a change in that set (v1.50.8).
+        self._cooloff_members: dict[str, frozenset[str]] = {}
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
         # Last good room reading per zone (time, temp), so a transient Rointe
         # drop-out holds the recent truth instead of erring warm on a blip.
@@ -1552,12 +1567,29 @@ class ScoutController:
                 continue
         return readings
 
+    def _room_reading_members(self, zone: str) -> frozenset[str]:
+        """The heaters whose readings make up the zone's room reading now: the
+        readable ones, less (in the hall) any left out as implausible. Empty
+        when a mapped floor sensor is the hall's reading instead."""
+        if zone == ZONE_A and self.config.get(CONF_FLOOR_TEMP):
+            return frozenset()
+        implausible = self._hall_implausible_probes() if zone == ZONE_A else set()
+        members: set[str] = set()
+        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+            st = self.hass.states.get(climate)
+            if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            if climate in implausible or st.attributes.get("current_temperature") is None:
+                continue
+            members.add(climate)
+        return frozenset(members)
+
     def _hall_implausible_probes(self) -> set[str]:
         """Hall heaters whose reading cannot be the room (v1.50.6).
 
-        The hall is one room, so a probe more than ``DRIVE_PROBE_SANE_BELOW``
-        under the median of its siblings is the same reading the drive already
-        refuses to overdrive. It is left out of the hall's room reading as well:
+        The hall is one room, so a probe more than ``PROBE_IMPLAUSIBLE_BELOW``
+        under the median of its siblings is a broken reading, the kind the drive
+        already refuses to overdrive. It is left out of the hall's room reading:
         on 2026-10-23 hall_left read 8.0 beside its own 82 °C panel while the
         others read 18.5–19.5, so the average said 16.25 for a room at 19. That
         average gates the heating, sizes the pre-heat and feeds the fans' ΔT,
@@ -1575,18 +1607,25 @@ class ScoutController:
         18.5 and 18.5: 4.5 under the upper-middle 18.5, 3.0 under the true 17.0.
         It was called broken, pushed to the owner and left out of the pre-heat.
         A firing panel corroborates nothing (it is hot because of the reading),
-        so the 8.0 beside 82 °C is still caught.
+        so the 8.0 beside 82 °C is still caught. Once out, a probe stays out
+        until it is back within ``PROBE_PLAUSIBLE_WITHIN`` (see the constants).
         """
         readings = self._hall_probe_readings()
         if len(readings) < 3:
             return set()
         median = self._hall_probe_median(readings)
-        return {
-            climate
-            for climate, value in readings.items()
-            if value < median - DRIVE_PROBE_SANE_BELOW
-            and not self._panel_agrees(climate, value)
-        }
+        out: set[str] = set()
+        for climate, value in readings.items():
+            if self._panel_agrees(climate, value):
+                continue
+            # Hysteresis: a probe already left out stays out until it is back
+            # within PROBE_PLAUSIBLE_WITHIN, so one wobbling a quantum either
+            # side of the entry line is not swapped in and out (2026-10-25).
+            held = climate in self._probe_implausible_since
+            line = PROBE_PLAUSIBLE_WITHIN if held else PROBE_IMPLAUSIBLE_BELOW
+            if value < median - line:
+                out.add(climate)
+        return out
 
     @staticmethod
     def _hall_probe_median(readings: dict[str, float]) -> float | None:
@@ -2533,6 +2572,15 @@ class ScoutController:
             temp = self._zone_room_temp(zone)
             outdoor = self._outdoor_temp()
             sample = self._cooloff_start[zone]
+            # A probe joining or leaving the reading moves it by its distance
+            # from the rest, which is not heat loss (v1.50.8): on 2026-10-25 a
+            # hall_left reading 4 C low was swapped in and out of the hall
+            # average, and a 0.5-h sample that ended on the swap read 1.33 C,
+            # walking k 21.01 -> 26.26. Discard and start again on the new set.
+            members = self._room_reading_members(zone)
+            if sample is not None and members != self._cooloff_members.get(zone):
+                self.audit.record("cooloff_discarded", now, zone=zone, reason="probes_changed")
+                self._cooloff_start[zone] = sample = None
 
             def _anchor(anchor_temp: float) -> tuple[Any, ...]:
                 w = self._o1_watts() if zone == ZONE_A else None
@@ -2564,6 +2612,7 @@ class ScoutController:
                         and not self._zone_panels_hot(zone, temp)
                     ):
                         self._cooloff_start[zone] = _anchor(temp)
+                        self._cooloff_members[zone] = members
                 else:
                     # Heating (or reading lost): a later cool-off re-settles.
                     self._cooloff_cooling_since[zone] = None

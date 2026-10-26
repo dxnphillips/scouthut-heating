@@ -195,3 +195,78 @@ def test_the_field_cold_door_end_raises_no_alert(monkeypatch):
     run(ctrl.async_reconcile())
     assert not _events(ctrl, "probe_implausible")
     assert C.NOTIFY_PROBE_IMPLAUSIBLE not in created
+
+
+# --- Hysteresis, and the cool-off guard (v1.50.8) --------------------------------
+# Field 2026-10-25/26: from Saturday 20:40Z hall_left read 6.5-7.5 against
+# siblings at 10-11.5, cold panels and all. It sat on the old 4 °C line, so it
+# was left out and put back four times with an alert each time, and each swap
+# moved the hall average about 1 °C; the cool-off learning read the swaps as
+# heat loss and walked the hall's k from 13.44 to 26.26.
+SUNDAY = {FRONT: 10.0, BACK: 11.0, LEFT: 6.5, RIGHT: 11.5}
+
+
+def test_the_entry_line_is_three_and_a_half_under_the_true_median():
+    ctrl, _ = _hall(SUNDAY)
+    assert ctrl._hall_implausible_probes() == {LEFT}  # 4.0 under 10.5
+    ctrl, _ = _hall({**SUNDAY, LEFT: 7.0})
+    assert ctrl._hall_implausible_probes() == set()  # 3.5 under: on the line
+
+
+def test_a_probe_wobbling_on_the_line_stays_out_until_back_in_step(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        C.persistent_notification,
+        "async_create",
+        lambda hass, msg, **k: created.append(k.get("notification_id")),
+    )
+    monkeypatch.setattr(C.persistent_notification, "async_dismiss", lambda hass, nid: None)
+    ctrl, hass = _hall(SUNDAY)
+    run(ctrl.async_reconcile())
+    advance(ctrl, C.PROBE_IMPLAUSIBLE_ALERT_MINUTES + 1)
+    run(ctrl.async_reconcile())
+    assert len(_events(ctrl, "probe_implausible")) == 1
+    # 7.5 is only 3.0 under: without the hysteresis it would be swapped back in.
+    for reading in (7.5, 7.0, 7.5, 8.0):
+        _set(hass, {LEFT: reading})
+        advance(ctrl, 10)
+        run(ctrl.async_reconcile())
+        assert ctrl._hall_implausible_probes() == {LEFT}
+        assert ctrl._floor_temp() == 10.833333333333334
+    assert len(_events(ctrl, "probe_implausible")) == 1
+    assert not _events(ctrl, "probe_plausible")
+    _set(hass, {LEFT: 9.0})  # 1.5 under 10.5: back in step
+    run(ctrl.async_reconcile())
+    assert ctrl._hall_implausible_probes() == set()
+    (back,) = _events(ctrl, "probe_plausible")
+    assert back["reading"] == 9.0
+    assert created.count(C.NOTIFY_PROBE_IMPLAUSIBLE) == 1
+
+
+def test_a_held_probe_its_idle_panel_agrees_with_is_let_back_in():
+    ctrl, hass = _hall(SUNDAY)
+    run(ctrl.async_reconcile())
+    assert LEFT in ctrl._probe_implausible_since
+    _panels(hass, {FRONT: 11.0, BACK: 12.0, LEFT: 7.5, RIGHT: 12.5})
+    assert ctrl._hall_implausible_probes() == set()
+
+
+def test_a_probe_joining_the_reading_restarts_the_cool_off_sample():
+    # 2026-10-25 22:59Z: a 0.5-h sample ended on hall_left being put back in,
+    # read 1.33 °C of "loss" and walked k 21.01 -> 26.26.
+    ctrl, hass = _hall({FRONT: 11.0, BACK: 11.0, LEFT: 6.0, RIGHT: 11.5})
+    hass.states.set("weather.forecast", "cloudy", {"temperature": 6.0})
+    ctrl._numbers["zone_a_heatloss_pct"].native_value = 21.01
+    ctrl.applied[ZA] = PRESET_ICE
+    ctrl._update_cooloff_learning()
+    advance(ctrl, C.COOL_SETTLE_MINUTES + 1)
+    ctrl._update_cooloff_learning()
+    assert ctrl._cooloff_start[ZA] is not None  # anchored on the three in step
+    advance(ctrl, 31)
+    _set(hass, {FRONT: 10.5, BACK: 10.5, LEFT: 8.0, RIGHT: 11.0})  # LEFT back in
+    ctrl._update_cooloff_learning()
+    (gone,) = _events(ctrl, "cooloff_discarded")
+    assert gone["reason"] == "probes_changed"
+    assert not _events(ctrl, "cooloff_sample")
+    assert ctrl.number("zone_a_heatloss_pct") == 21.01
+    assert ctrl._cooloff_start[ZA] is not None  # started again on all four

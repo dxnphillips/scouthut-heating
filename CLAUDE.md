@@ -1291,6 +1291,32 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     panel corroborates nothing, so the 06:27Z case (8.0 beside 82 °C) is still
     caught. Fail direction: keeping a cold reading lowers the average, which
     errs warm. Tests in `tests/test_probe_plausibility.py`.
+    **Then hall_left failed for real, and the rule flapped on it (v1.50.8,
+    `PROBE_IMPLAUSIBLE_BELOW` = 3.5, `PROBE_PLAUSIBLE_WITHIN` = 2.0, 2026-10-26
+    01:10Z export, 1.50.7 deployed).** From 10-24 ~20:40Z, an hour after the
+    24-hour group left, hall_left read 4–5 °C under its siblings with COLD
+    panels (6.5–7.5 against 10–11.5 overnight), so this is no longer the
+    hot-panel effect of 10-23 06:27Z / 10-24 09:02Z (12.0 beside 73 °C while
+    the others rose 3–4 °C): the probe or the heater is faulty. On ice it reads
+    under the 7 °C anti-frost setpoint, so it frost-fires all night in an
+    empty hall (panel 16–26 °C). It sat on the 4 °C line, so the rule left it
+    out and put it back four times on Sunday (06:52, 10:36–20:56, 23:24,
+    00:24Z), pushing an alert each time; each swap moved the hall average
+    ~1 °C (`drive_coast_jump` 23:09:57Z is one), and three cool-off samples
+    that spanned a swap or the drift were accepted: 10-24 21:30Z (→ 16.81),
+    22:25Z (→ 21.01), 10-25 22:59Z (1.33 °C in 0.5 h → 26.26). Two fixes:
+    the rule has hysteresis (enter > 3.5 under the true median, leave within
+    2.0 or on an agreeing idle panel; 3.5 on the true median is about the old
+    4 on the upper-middle, which caught both faults, and the panel witness —
+    not the median — now protects the honest idle cold end), and a cool-off
+    sample is discarded and restarted when the set of probes in the zone's
+    reading changes (`cooloff_discarded` reason `probes_changed`,
+    `_room_reading_members`). Tests in `tests/test_probe_plausibility.py`.
+    **Owner-side:** reset `zone_a_heatloss_pct` to ~13 (26.26 is the corrupt
+    value; 13.44 was the last before the swaps — the precedent is the
+    `zone_b` reset), and get hall_left looked at (obstruction first, else
+    the Rointe sensor). **Not done:** the drive's own sanity rule
+    (`DRIVE_PROBE_SANE_BELOW` on the upper-middle) is unchanged.
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels

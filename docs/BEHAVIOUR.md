@@ -213,8 +213,8 @@ reconciler, and they change how several entries above should be read:
   reload. Diagnostics: `state.heaters_silent`.
 - **A hall probe that cannot be the room is left out of it (v1.50.6)** —
   `_hall_implausible_probes`: with three or more hall probes readable, one
-  more than `DRIVE_PROBE_SANE_BELOW` (4 °C) under their median (the drive's
-  own sanity rule) is dropped from the hall's room reading —
+  well under their median (the drive's own sanity rule at first; see the
+  v1.50.8 line below) is dropped from the hall's room reading —
   `_floor_temp` and `_zone_climate_temps`, so the heat gate, the pre-heat
   lead, the learning, the fans' ΔT and the trace all see the same hall. Field
   2026-10-23 06:27Z: hall_left read 8.0 beside its own 82 °C panel while the
@@ -239,7 +239,19 @@ reconciler, and they change how several entries above should be read:
   with its panel at 15.5, beside 15.5, 18.5 and 18.5: it was pushed as a
   broken sensor and left out of the 14:55Z pre-heat, which opened 10–15 min
   late for a booking that arrived 0.25 short. A firing panel corroborates
-  nothing, so the 8.0 beside 82 °C is still caught.
+  nothing, so the 8.0 beside 82 °C is still caught. **With hysteresis
+  (v1.50.8):** a probe enters more than `PROBE_IMPLAUSIBLE_BELOW` (3.5 °C)
+  under the true median and leaves only once back within
+  `PROBE_PLAUSIBLE_WITHIN` (2 °C) or its idle panel agrees. From 2026-10-24
+  20:40Z hall_left read 6.5–7.5 against siblings at 10–11.5 with cold panels,
+  right on the old 4 °C line: it was swapped out and in four times with an
+  alert each time, and each swap moved the hall average about 1 °C. 3.5 on
+  the true median sits about where 4 on the drive's upper-middle reading did
+  (the line that caught both hall_left faults); the largest honest spread on
+  record is ~3.25. A cool-off sample in flight when the set of probes in the
+  zone's reading changes is discarded (`cooloff_discarded`, reason
+  `probes_changed`) and restarted on the new set: the swaps above read as
+  heat loss and walked the hall's k from 13.44 to 26.26.
 
 Reachability comes from each heater's Rointe **Connected** binary_sensor
 (auto-detected from the device, like the Effective Power sensors), falling back
