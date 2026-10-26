@@ -237,7 +237,7 @@ ROOM_READING_GRACE_MIN = 2.0
 # heater that has genuinely fallen silent trips it.
 BOOKING_RELIGHT_STALE_MIN = 35.0
 # For this long after a booking starts, an empty zone is a group not yet arrived,
-# not a group gone (v1.50.8), so `booking_quiet` does not drop it to eco yet.
+# not a group gone (v1.50.9), so `booking_quiet` does not drop it to eco yet.
 # Field 2026-10-23 16:30Z: the hall was still 0.25 short when the booking
 # started, nobody had arrived (the alarm was still set from before), and eco cut
 # the heating for the ten minutes until the group walked in; the average then
@@ -519,13 +519,13 @@ PROBE_IMPLAUSIBLE_ALERT_MINUTES = 15.0
 # has cooled it reads 0.5–1.0 above the probe (every iced heater in the October
 # exports), 2–5 while it is still shedding. A probe its own idle panel agrees
 # with to within this is the room at that end, however far it sits under the
-# others (v1.50.8). Field 2026-10-23 13:37Z: hall_front read 14.0 by the front
+# others (v1.50.9). Field 2026-10-23 13:37Z: hall_front read 14.0 by the front
 # door with its panel at 15.5, the next probe 15.5 and two at 18.5; it was called
 # implausible and pushed as a broken sensor, and left out of the 14:55Z pre-heat
 # sizing, which then opened 10–15 min late for a booking that arrived 0.25
 # short.
 PROBE_PANEL_AGREES_C = 3.0
-# The implausible-probe line, with hysteresis (v1.50.8). A probe ENTERS more than
+# The implausible-probe line, with hysteresis (v1.50.9). A probe ENTERS more than
 # PROBE_IMPLAUSIBLE_BELOW under the true median and LEAVES only once it is back
 # within PROBE_PLAUSIBLE_WITHIN of it (or its idle panel agrees). Field 2026-10-25:
 # hall_left read 6.5-7.5 against siblings at 10-11.5 from Saturday 20:40Z on
@@ -824,7 +824,7 @@ class ScoutController:
             ZONE_B: None,
         }
         # Which probes made up the zone's reading when its cool-off sample
-        # anchored: a sample never spans a change in that set (v1.50.8).
+        # anchored: a sample never spans a change in that set (v1.50.9).
         self._cooloff_members: dict[str, frozenset[str]] = {}
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
         # Last good room reading per zone (time, temp), so a transient Rointe
@@ -1598,7 +1598,7 @@ class ScoutController:
         It needs three readable probes: with two there is no telling which is
         wrong.
 
-        Two things keep an honest cold end in (v1.50.8). The median is the true
+        Two things keep an honest cold end in (v1.50.9). The median is the true
         one, the mean of the middle two of four: the drive's upper-middle reading
         sits on the warm side, the wrong side for a rule that leaves cold
         readings out. And a probe its own idle panel agrees with
@@ -2573,7 +2573,7 @@ class ScoutController:
             outdoor = self._outdoor_temp()
             sample = self._cooloff_start[zone]
             # A probe joining or leaving the reading moves it by its distance
-            # from the rest, which is not heat loss (v1.50.8): on 2026-10-25 a
+            # from the rest, which is not heat loss (v1.50.9): on 2026-10-25 a
             # hall_left reading 4 C low was swapped in and out of the hall
             # average, and a 0.5-h sample that ended on the swap read 1.33 C,
             # walking k 21.01 -> 26.26. Discard and start again on the new set.
@@ -3378,7 +3378,7 @@ class ScoutController:
                 },
                 "seasonal_lockout": self.seasonal_lockout,
                 "cal_window": dict(self.cal_window),
-                # Minutes the running booking has been on (v1.50.8), from the
+                # Minutes the running booking has been on (v1.50.9), from the
                 # calendar's own start_time or the start edge; None = not running
                 # or start unknown, when the arrival grace stands aside.
                 "booking_running_min": {
@@ -3657,7 +3657,7 @@ class ScoutController:
         middle of a booking still knows; else the start edge this controller
         saw. None when no booking is running or its start is unknown, and the
         arrival grace (`BOOKING_ARRIVAL_GRACE_MIN`) then stands aside, as before
-        v1.50.8.
+        v1.50.9.
         """
         cal = self.config.get(ZONE_CALENDAR[zone])
         if not self._is_on(cal):
@@ -3977,7 +3977,7 @@ class ScoutController:
             )
             # In its first BOOKING_ARRIVAL_GRACE_MIN an empty running booking is a
             # group on its way, so `booking_quiet` below may not cut the heat yet.
-            # Unknown start -> no grace, the behaviour before v1.50.8. Not after a
+            # Unknown start -> no grace, the behaviour before v1.50.9. Not after a
             # handover: a booking that takes over from one ending the same minute
             # had no pre-heat, so there is no climb to finish, and the room is
             # whatever the last session left.
@@ -4064,7 +4064,7 @@ class ScoutController:
             # toward eco while the optimum-start lead was sized to reach comfort,
             # so hirers would always arrive to a shortfall. The same holds for the
             # first minutes of the event itself, while the group is still arriving
-            # (v1.50.8).
+            # (v1.50.9).
             if base == PRESET_COMFORT and event_running and not occupied and not awaiting:
                 return self._reason(zone, "booking_quiet", PRESET_ECO)
             if base == PRESET_ECO:
@@ -4679,7 +4679,7 @@ class ScoutController:
 
         Two bookings that meet never turn the calendar entity off: only its
         event changes. So a change of the running event's ``start_time`` is an
-        end and a start too (a handover, v1.50.8). Field 2026-10-23: a 24-hour
+        end and a start too (a handover, v1.50.9). Field 2026-10-23: a 24-hour
         booking began at 19:30Z as the Friday one ended, and neither edge was
         seen — no `booking_end` for Friday, no `booking_start` for the next,
         and nothing that hangs off them ran (the hall pause clearing, the eco

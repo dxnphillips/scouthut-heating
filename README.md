@@ -301,7 +301,7 @@ this priority (highest wins):
    by whether the room is actually cold. An unoccupied room drops to `eco` only
    once the event has been running 30 minutes (the pre-heat window always heats at
    comfort, since its whole purpose is reaching the target by event start, and a
-   group arriving a few minutes late finds it still heating, v1.50.8; a booking
+   group arriving a few minutes late finds it still heating, v1.50.9; a booking
    that follows straight on from another gets no such grace, as it had no
    pre-heat) — and
    "unoccupied" here counts the things a motion sensor can't see: as well as
@@ -502,7 +502,7 @@ restarts) of everything it decides and learns:
   colder than the rest of the hall (more than 3.5 °C under the others' median, for
   15 minutes) is left out of the hall temperature and reported, with its
   reading, the median and its panel temperature; the radiator still heats
-  against its own reading, so it needs checking (v1.50.6). Since v1.50.8 the
+  against its own reading, so it needs checking (v1.50.6). Since v1.50.9 the
   median of four is the mean of the middle two, a probe is left out at more
   than 3.5 °C under it and let back in only once it is within 2 °C (so one
   wobbling on the line is not swapped in and out, each time with an alert),
@@ -551,7 +551,7 @@ restarts) of everything it decides and learns:
   it): the signal for whether a booking runs too hot, judged from data rather
   than eyeballed off the trace. `peak_over` 0 is a session that never reached
   target (a cold arrival). Two bookings that meet never turn the calendar off,
-  so since v1.50.8 a change of the running event (its start time) is logged as
+  so since v1.50.9 a change of the running event (its start time) is logged as
   a `booking_end` and a `booking_start` with `handover: true`; before that a
   booking followed straight on by another (2026-10-23: a 24-hour booking from
   the end of the Friday one) had neither edge, and the hall pause, the eco flag

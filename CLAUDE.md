@@ -19,6 +19,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   convention. Develop on `claude/hvac-controller-audit-26ei4w`, restarted
   from `origin/main` each time (`git checkout -B <branch> origin/main`)
   because merges are squashes.
+  Tags are the owner's: `v1.50.8` was tagged on the v1.50.7 commit before #127
+  merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
   a fully wired controller). Every behaviour change ships with tests. 255
@@ -1274,7 +1276,7 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     all four hall heaters (`write_failed`, "Failed to set HVAC preset for Hall
     Front") and was believed until the 08:59Z ice landed: the second day running
     a preset write failed, the case v1.50.5 re-sends.
-    **Its first field alarm was an honest cold end, fixed v1.50.8
+    **Its first field alarm was an honest cold end, fixed v1.50.9
     (`PROBE_PANEL_AGREES_C` = 3).** 2026-10-23 13:37Z, the hall on ice since
     10:40Z at outdoor 7: hall_front by the front door read 14.0 with its own
     idle panel at 15.5, beside 15.5, 18.5 and 18.5. Against the drive's
@@ -1291,7 +1293,7 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     panel corroborates nothing, so the 06:27Z case (8.0 beside 82 °C) is still
     caught. Fail direction: keeping a cold reading lowers the average, which
     errs warm. Tests in `tests/test_probe_plausibility.py`.
-    **Then hall_left failed for real, and the rule flapped on it (v1.50.8,
+    **Then hall_left failed for real, and the rule flapped on it (v1.50.9,
     `PROBE_IMPLAUSIBLE_BELOW` = 3.5, `PROBE_PLAUSIBLE_WITHIN` = 2.0, 2026-10-26
     01:10Z export, 1.50.7 deployed).** From 10-24 ~20:40Z, an hour after the
     24-hour group left, hall_left read 4–5 °C under its siblings with COLD
@@ -3254,12 +3256,12 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   a 24-hour booking, the group armed and left at 19:09Z (Pause pressed and
   resumed on the way out), and the hall rested at eco 16 on `booking_quiet`
   through the empty, alarmed evening, all four radiators firing from 22:21Z as
-  it fell to 15.5. A v1.50.8 draft iced such a booking past its arrival grace
+  it fell to 15.5. A v1.50.9 draft iced such a booking past its arrival grace
   (`booking_armed`) and was dropped before release on that answer: a group
   coming back to a frosted hut waits ~2.5 h for 19 and no pre-heat is
   possible without an arrival time. Do not re-propose it; if empty booked
   time ever becomes the cost to chase, the lever is the eco floor during
-  `booking_quiet`, not the alarm. What v1.50.8 did keep:
+  `booking_quiet`, not the alarm. What v1.50.9 did keep:
   (a) **arrival grace** (`BOOKING_ARRIVAL_GRACE_MIN` = 30): `booking_quiet`
   does not demote an empty booking in its first 30 min — on the same booking
   the hall was 0.25 short at 16:30Z with nobody in yet (the alarm still set
