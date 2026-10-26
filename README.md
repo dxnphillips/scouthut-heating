@@ -287,7 +287,11 @@ this priority (highest wins):
 5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
-   sleepover), and a legacy binary `on` still counts as away.
+   sleepover), and a legacy binary `on` still counts as away. A booking
+   overrides the alarm for its whole length: if it is booked, the group is
+   expected back, so an empty booking rests at `eco` whether or not the alarm
+   is set (2026-10-23: a 24-hour booking after the Friday one kept the hall at
+   16 after the group had armed and left).
 6. **Booking or pre-heat window** (optimum start — see below) → `comfort`,
    **when the room genuinely wants heat** (the average of its heater probes is
    below the booking target — the cold end of the 20 m hall may sit ~0.5 under
@@ -295,8 +299,11 @@ this priority (highest wins):
    every heated session, v1.47.0). A booking already at/above target lands on `ice` instead, so
    the cooling fans are free to run — heating is **not** gated by the season, only
    by whether the room is actually cold. An unoccupied room drops to `eco` only
-   once the event has actually started (the pre-heat window always heats at
-   comfort, since its whole purpose is reaching the target by event start) — and
+   once the event has been running 30 minutes (the pre-heat window always heats at
+   comfort, since its whole purpose is reaching the target by event start, and a
+   group arriving a few minutes late finds it still heating, v1.50.8; a booking
+   that follows straight on from another gets no such grace, as it had no
+   pre-heat) — and
    "unoccupied" here counts the things a motion sensor can't see: as well as
    recent motion, the **occupied-override** switch or a **Night/Home alarm arm**
    hold a booking at comfort, so a **sleepover** of still, sleeping occupants
@@ -492,10 +499,17 @@ restarts) of everything it decides and learns:
   not be read (so the lead fell back to the cap) and was closed again once the
   reading came back and the real lead no longer reached (v1.50.6).
 - **`probe_implausible` / `probe_plausible`** — a hall heater reading far
-  colder than the rest of the hall (more than 4 °C under the others' median, for
+  colder than the rest of the hall (more than 3.5 °C under the others' median, for
   15 minutes) is left out of the hall temperature and reported, with its
   reading, the median and its panel temperature; the radiator still heats
-  against its own reading, so it needs checking (v1.50.6).
+  against its own reading, so it needs checking (v1.50.6). Since v1.50.8 the
+  median of four is the mean of the middle two, a probe is left out at more
+  than 3.5 °C under it and let back in only once it is within 2 °C (so one
+  wobbling on the line is not swapped in and out, each time with an alert),
+  and a reading its own idle panel agrees with (within 3 °C) is kept as the
+  cold end of the hall rather than reported. A cool-off sample in flight when
+  a probe joins or leaves the hall reading is dropped (`cooloff_discarded`,
+  reason `probes_changed`): the swap moves the reading, not the room.
 - **Nothing "nudges" a silent heater any more (v1.46.0).** From v1.44.0 to
   v1.45.3 a stale heater in an attended zone was sent a no-op write (its own
   comfort number, then its own setpoint) to make it upload a fresh reading,
@@ -536,7 +550,12 @@ restarts) of everything it decides and learns:
   how long it stayed more than 0.5 °C over. Pure measurement (nothing keys off
   it): the signal for whether a booking runs too hot, judged from data rather
   than eyeballed off the trace. `peak_over` 0 is a session that never reached
-  target (a cold arrival).
+  target (a cold arrival). Two bookings that meet never turn the calendar off,
+  so since v1.50.8 a change of the running event (its start time) is logged as
+  a `booking_end` and a `booking_start` with `handover: true`; before that a
+  booking followed straight on by another (2026-10-23: a 24-hour booking from
+  the end of the Friday one) had neither edge, and the hall pause, the eco flag
+  and the overshoot summary all missed the changeover.
 - **`motion`** — a PIR trip after its area has been quiet longer than the
   occupancy timeout (a genuine *arrival*, not every re-trigger while someone
   is already there — that would flood the log during a busy session). This
@@ -615,7 +634,8 @@ response (the full ledger with decision rules lives in
   booked autumn weeks pull them to the building's truth. Success metric:
   arrival shortfall ≈ 0.
 - **Calendar entity blips** — one mid-event dropout observed (2026-07-11);
-  `booking_end`/`booking_start` pairs mid-slot now make it visible. If it
+  `booking_end`/`booking_start` pairs mid-slot without `handover` now make it
+  visible (a back-to-back booking carries `handover: true`). If it
   recurs, an entity-off debounce gets built.
 - **Hot-breeze guard (29 °C mix) and its vent trend-test (+0.5 °C
   revoke)** — calibrated from one measured solar-charge day; verified
