@@ -1,4 +1,4 @@
-"""A running booking's empty hall: a group on its way, or one coming back (v1.50.8).
+"""A running booking's empty hall: a group on its way, or one coming back (v1.50.9).
 
 Field 2026-10-23, the Friday 16:30Z booking. The pre-heat left the hall 0.25
 short at the start, nobody had arrived, and `booking_quiet` dropped it to eco

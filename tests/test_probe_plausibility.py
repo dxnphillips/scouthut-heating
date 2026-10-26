@@ -112,7 +112,7 @@ def test_a_lasting_implausible_probe_is_alerted_and_cleared(monkeypatch):
     advance(ctrl, C.PROBE_IMPLAUSIBLE_ALERT_MINUTES + 1)
     run(ctrl.async_reconcile())
     (evt,) = _events(ctrl, "probe_implausible")
-    # The true median of 8.0, 18.5, 19.0 and 19.5 (v1.50.8).
+    # The true median of 8.0, 18.5, 19.0 and 19.5 (v1.50.9).
     assert evt["heater"] == LEFT and evt["reading"] == 8.0 and evt["median"] == 18.75
     assert created and created[-1][0] == C.NOTIFY_PROBE_IMPLAUSIBLE
     assert "8.0" in created[-1][1]
@@ -133,7 +133,7 @@ def test_a_lasting_implausible_probe_is_alerted_and_cleared(monkeypatch):
     assert not ctrl._probe_implausible_since
 
 
-# --- An honest cold end is kept (v1.50.8) ----------------------------------------
+# --- An honest cold end is kept (v1.50.9) ----------------------------------------
 # Field 2026-10-23 13:37Z, the hall on ice since 10:40Z with the outdoor at 7:
 # hall_front by the front door read 14.0 with its own idle panel at 15.5, the
 # next probe 15.5 and two at 18.5. Judged against the upper-middle 18.5 it was
@@ -197,7 +197,7 @@ def test_the_field_cold_door_end_raises_no_alert(monkeypatch):
     assert C.NOTIFY_PROBE_IMPLAUSIBLE not in created
 
 
-# --- Hysteresis, and the cool-off guard (v1.50.8) --------------------------------
+# --- Hysteresis, and the cool-off guard (v1.50.9) --------------------------------
 # Field 2026-10-25/26: from Saturday 20:40Z hall_left read 6.5-7.5 against
 # siblings at 10-11.5, cold panels and all. It sat on the old 4 °C line, so it
 # was left out and put back four times with an alert each time, and each swap
