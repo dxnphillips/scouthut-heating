@@ -505,6 +505,19 @@ HEATER_WRITE_SPACING_S = 1.0
 # audit trail. Routine cloud blips are single polls (seconds), so a zone whose
 # EVERY heater has been offline this long is a real outage, not a hiccup.
 HEATERS_OFFLINE_MINUTES = 10.0
+# Every heater unreachable at once is the Rointe integration's sign-in expiring:
+# its Nexa token lasts 168 h and is never renewed, and a reload of the
+# integration is the cure (2026-10-19 22:40Z: dark for 6 h until a manual
+# reload at 04:45Z). So once the outage has lasted HEATERS_OFFLINE_MINUTES we ask
+# Home Assistant to reload it ourselves (v1.51.0) — the same thing the owner does
+# by hand; nothing in the Rointe integration changes. Up to
+# ROINTE_RELOAD_MAX_ATTEMPTS tries, ROINTE_RELOAD_RETRY_MIN apart (a genuine
+# internet or cloud outage will not be cured by a reload, so it gives up and
+# says so). The outage push waits ROINTE_RELOAD_SETTLE_MIN after a reload, so a
+# reload that works does not wake anyone.
+ROINTE_RELOAD_MAX_ATTEMPTS = 3
+ROINTE_RELOAD_RETRY_MIN = 60.0
+ROINTE_RELOAD_SETTLE_MIN = 10.0
 # ONE heater that has stopped talking to the Rointe cloud (v1.50.1). The cloud
 # keeps serving a dark device's last record, so HA still shows it online, its
 # probe and panel readings freeze, and every write we make is echoed back by the
@@ -1051,6 +1064,9 @@ class ScoutController:
         self._heaters_offline_since: dict[str, datetime | None] = {}
         self._heaters_seen_online: set[str] = set()
         self._heaters_offline_notified: set[str] = set()
+        # Automatic reloads of the Rointe integration in the current outage.
+        self._rointe_reloads = 0
+        self._rointe_reloaded_at: datetime | None = None
         # Single-heater silence watch (v1.50.1): heaters alerted as not having
         # uploaded to the Rointe cloud for HEATER_SILENT_MINUTES, and since when
         # (their last upload, by the trusted sync clock).
@@ -2564,6 +2580,15 @@ class ScoutController:
             # Once engaged, the band, the time box and `_zone_panels_hot` bound it.
             if hottest is None or hottest < DRIVE_COAST_MIN_SURFACE_C:
                 return 0.0
+            # ...and someone must be in the room, or it must already be at
+            # target (v1.51.0). Across October an easing in an empty room still
+            # short of target rose 0-0.25 °C, mostly 0, holding it half a degree
+            # under for the whole 20-min box; with people in it rose 0.4-1.0, the
+            # occupants supplying much of what the panels alone cannot (10-29
+            # 18:19Z empty pre-heat 0.0; 10-30 17:58Z occupied +1.0; 10-30
+            # 17:04Z empty but at target +0.62). Also engage-only.
+            if not (self._zone_occupied(zone) or zone_avg >= target):
+                return 0.0
             self._drive_coast_since[zone] = now
             self._drive_coast_from[zone] = zone_avg
             self._drive_coast_peak[zone] = zone_avg
@@ -2643,6 +2668,16 @@ class ScoutController:
             self._drive_coast_jumped.pop(zone, None)
             return False
         return True
+
+    def _zone_occupied(self, zone: str) -> bool:
+        """Someone is in this zone now: recent motion on its own PIR, its
+        occupied override, or a Night/Home arm on its panel."""
+        area = ZONE_MOTION_AREA.get(zone) or ROOM_MOTION_AREA.get(zone)
+        return (
+            (area is not None and self._motion_recent(area, self.number("motion_timeout_minutes")))
+            or self.switch_on(f"{zone}_occupied_override")
+            or (zone in ZONE_ALARM and self._alarm_present(self.config.get(ZONE_ALARM[zone])))
+        )
 
     def _end_drive_coast(
         self, zone: str, now: datetime, zone_avg: float | None
@@ -6799,11 +6834,32 @@ class ScoutController:
                 self._heaters_offline_since[zone] = now
         if not watched:
             return
+        if all_down:
+            await self._maybe_reload_rointe(now)
+        elif self._rointe_reloads:
+            self.audit.record(
+                "rointe_reload_recovered",
+                now,
+                attempts=self._rointe_reloads,
+                minutes_since_reload=round(
+                    (now - self._rointe_reloaded_at).total_seconds() / 60, 1
+                )
+                if self._rointe_reloaded_at
+                else None,
+            )
+            self._rointe_reloads = 0
+            self._rointe_reloaded_at = None
+        settling = (
+            all_down
+            and self._rointe_reloaded_at is not None
+            and (now - self._rointe_reloaded_at).total_seconds() / 60
+            < ROINTE_RELOAD_SETTLE_MIN
+        )
         for zone, since in list(self._heaters_offline_since.items()):
             if since is None or zone in self._heaters_offline_notified:
                 continue
             minutes = (now - since).total_seconds() / 60
-            if minutes < HEATERS_OFFLINE_MINUTES:
+            if minutes < HEATERS_OFFLINE_MINUTES or settling:
                 continue
             self._heaters_offline_notified.add(zone)
             self.audit.record(
@@ -6821,7 +6877,15 @@ class ScoutController:
                 "(the radiators frost-protect on their own if they still have "
                 "power)."
             )
-            if all_down:
+            if all_down and self._rointe_reloads:
+                message += (
+                    " Every zone is down at once. The Rointe integration has "
+                    f"been reloaded automatically {self._rointe_reloads} time(s) "
+                    "and the heaters have not come back, so this is more than "
+                    "its 7-day sign-in expiring: check the internet connection "
+                    "and the Rointe integration."
+                )
+            elif all_down:
                 message += (
                     " Every zone is down at once, which is the Rointe cloud "
                     "session expiring (its token lasts 7 days) — reload the "
@@ -6836,6 +6900,51 @@ class ScoutController:
             await self._push_companion(
                 title, message, icon="mdi:radiator-off", channel="Scout Hut alerts"
             )
+
+    async def _maybe_reload_rointe(self, now: datetime) -> None:
+        """Reload the Rointe integration when every heater has been offline for
+        ``HEATERS_OFFLINE_MINUTES`` (v1.51.0, see ``ROINTE_RELOAD_MAX_ATTEMPTS``).
+
+        Uses Home Assistant's own ``homeassistant.reload_config_entry`` on the
+        mapped heaters, which reloads whichever integration owns them. Audited as
+        ``rointe_reload`` (attempt, minutes down, ok); recovery is audited as
+        ``rointe_reload_recovered``. A zone never yet seen online is not judged
+        inside the startup grace, so a slow boot never triggers it.
+        """
+        down = [t for t in self._heaters_offline_since.values() if t is not None]
+        if not down:
+            return
+        minutes = (now - min(down)).total_seconds() / 60
+        if minutes < HEATERS_OFFLINE_MINUTES or self._rointe_reloads >= ROINTE_RELOAD_MAX_ATTEMPTS:
+            return
+        if (
+            self._rointe_reloaded_at is not None
+            and (now - self._rointe_reloaded_at).total_seconds() / 60 < ROINTE_RELOAD_RETRY_MIN
+        ):
+            return
+        climates: list[str] = []
+        for key in self._OFFLINE_ZONE_CLIMATES.values():
+            climates += self._as_list(self.config.get(key))
+        self._rointe_reloads += 1
+        self._rointe_reloaded_at = now
+        error = None
+        try:
+            await self.hass.services.async_call(
+                "homeassistant",
+                "reload_config_entry",
+                {"entity_id": climates},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - a failed reload is retried, then alerted
+            error = f"{type(err).__name__}: {err}"
+        self.audit.record(
+            "rointe_reload",
+            now,
+            attempt=self._rointe_reloads,
+            minutes_down=round(minutes, 1),
+            ok=error is None,
+            error=error,
+        )
 
     def _heater_label(self, climate: str) -> str:
         st = self.hass.states.get(climate)

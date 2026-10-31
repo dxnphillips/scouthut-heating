@@ -23,7 +23,7 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 763
+  a fully wired controller). Every behaviour change ships with tests. 773
   passing as of 2026-10-31.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
@@ -1353,6 +1353,18 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     plausibility swap still ends it at once (`probes_changed`), heating resuming
     still ends it, and only heating resets the settle clock. Tests in
     `tests/test_cooloff_dropout.py`.
+    **The expiry now fixes itself (v1.51.0, owner: "lock those in").** When
+    every heater has been unreachable for `HEATERS_OFFLINE_MINUTES` (10),
+    `_maybe_reload_rointe` calls `homeassistant.reload_config_entry` on the
+    mapped heaters (`rointe_reload`); the outage push waits 10 min after a
+    reload, so a reload that works (`rointe_reload_recovered`) wakes nobody.
+    Three tries an hour apart, then the alert says the reloads did not help
+    (internet or cloud). Nothing in the Rointe integration is touched: it is
+    the same reload the owner does by hand. The owner-side six-day reload
+    automation is no longer needed. **Watch:** the first expiry after the
+    v1.51.0 deploy (168 h after that restart) should show `heaters_offline`
+    absent and a `rointe_reload` / `rointe_reload_recovered` pair ~10–12 min
+    apart.
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
@@ -2581,8 +2593,14 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the hall:** an easing in an EMPTY room still short of target almost never
   lands (10-29 18:19Z pre-heat 0.0, and every empty pre-heat in October 0–0.25)
   while occupied ones land 0.5–1.0, and one engaged inside a booking that had
-  arrived short (10-28 19:04Z, +0.75 short, rise 0.12 over the full box). "Ease
-  only while occupied or at target" is the candidate; not built.
+  arrived short (10-28 19:04Z, +0.75 short, rise 0.12 over the full box).
+  **BUILT (v1.51.0, owner: "lock those in"):** the easing engages only when
+  someone is in the zone (`_zone_occupied`: PIR, override or Night/Home arm) or
+  its average is already at target, judged at engage like the panel line. The
+  10-30 17:04Z empty-at-target case (+0.62) still eases; the 10-29 18:19Z empty
+  pre-heat (0.0) would not. The 10-28 in-booking case had hall motion and still
+  eases. **Watch:** `drive_coast_end.rise` should now cluster 0.4–1.0; zero-rise
+  boxes should be rare.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`

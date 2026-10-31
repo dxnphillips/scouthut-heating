@@ -357,6 +357,15 @@ notification instead (v1.50.3), since that one needs the Rointe integration
 reloaded rather than the radiator power-cycled. Turn the switch off to go back
 to "set the target and trust the heater".
 
+**Every radiator offline at once is fixed automatically (v1.51.0).** That is
+the Rointe integration's sign-in expiring (it lasts 7 days and is never
+renewed). Ten minutes into such an outage the integration asks Home Assistant
+to reload the Rointe integration — what you would do by hand — and only
+alerts you if the radiators are still unreachable 10 minutes later. It tries
+up to three times, an hour apart, then gives up and says so: an outage a
+reload does not fix is the internet or the Rointe cloud. Audited as
+`rointe_reload` and `rointe_reload_recovered`.
+
 **Pause hall heating** (occupant cutout). The hall radiators are locked, so if
 someone finds it too warm mid-session they have no way to turn them down. The
 *Pause hall heating* button — ideally wired to a physical remote — forces the
