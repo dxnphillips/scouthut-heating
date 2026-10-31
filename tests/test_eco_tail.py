@@ -107,8 +107,8 @@ def test_the_cleaner_in_the_kitchen_after_the_booking_keeps_the_shared_at_eco():
     ctrl = _ended_eco_booking(15.5)
     shared_temp(ctrl, 18.0)  # under shared comfort: an ordinary trip would heat
     motion(ctrl, "kitchen")
-    assert ctrl._desired_shared() == PRESET_ECO
-    assert ctrl._preset_reason["shared"] == "eco_tail"
+    assert ctrl._desired_room("kitchen") == PRESET_ECO
+    assert ctrl._preset_reason["kitchen"] == "eco_tail"
 
 
 def test_after_the_tail_a_kitchen_trip_heats_the_shared_as_before():
@@ -116,8 +116,8 @@ def test_after_the_tail_a_kitchen_trip_heats_the_shared_as_before():
     shared_temp(ctrl, 18.0)
     advance(ctrl, ctrl.number("motion_timeout_minutes") + 1)
     motion(ctrl, "kitchen")
-    assert ctrl._desired_shared() == PRESET_COMFORT
-    assert ctrl._preset_reason["shared"] == "shared_motion"
+    assert ctrl._desired_room("kitchen") == PRESET_COMFORT
+    assert ctrl._preset_reason["kitchen"] == "motion"
 
 
 # --- The tail lasts the visit (v1.51.0) ----------------------------------------
@@ -175,6 +175,6 @@ def test_the_shared_block_stays_at_eco_while_the_cleaner_is_still_there():
     shared_temp(ctrl, 18.0)
     for _ in range(5):
         motion(ctrl, "kitchen")
-        assert ctrl._desired_shared() == PRESET_ECO
-        assert ctrl._preset_reason["shared"] == "eco_tail"
+        assert ctrl._desired_room("kitchen") == PRESET_ECO
+        assert ctrl._preset_reason["kitchen"] == "eco_tail"
         advance(ctrl, 10)

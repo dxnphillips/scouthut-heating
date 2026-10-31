@@ -576,6 +576,9 @@ DRIVE_COMFORT_TARGET_KEY = {
     ZONE_A: "hall_comfort_temp",
     ZONE_B: "office_comfort_temp",
     "shared": "shared_comfort_temp",
+    "kitchen": "shared_comfort_temp",
+    "gents": "shared_comfort_temp",
+    "ladies": "shared_comfort_temp",
 }
 # A cool-off is only a clean read of the FABRIC loss when the room is decaying
 # from at/near its heating setpoint. A room sitting this far ABOVE comfort has
@@ -682,6 +685,24 @@ MOTION_AREAS = {
     "female": CONF_MOTION_FEMALE,
 }
 WATER_MOTION_AREAS = ("kitchen", "gents", "female")
+# The kitchen and the two toilets are three zones of their own (v1.51.0), each
+# run the way the hall is: its own heater's reading, its own PIR, its own
+# pre-heat lead and learned rates, and a booking (hall or office) holds it through
+# the session whatever the alarm says. They used to be one block that went to
+# frost protection whenever both alarm panels were set, so it only started
+# heating when someone disarmed on arrival: in the week of 2026-10-26 the coldest
+# room was 13-16 at every evening booking's start, took 70-95 min to reach 19
+# and on two of three evenings never got there before the group left.
+ROOMS = ("kitchen", "gents", "ladies")
+ROOM_MOTION_AREA = {"kitchen": "kitchen", "gents": "gents", "ladies": "female"}
+ROOM_LABEL = {"kitchen": "kitchen", "gents": "gents toilet", "ladies": "ladies toilet"}
+# Which shared heater is which room, read from its entity id so no new mapping
+# is needed. A heater that matches none fills a room left without one, in order.
+ROOM_KEYWORDS = {
+    "kitchen": ("kitchen",),
+    "gents": ("gent",),
+    "ladies": ("ladies", "lady", "female", "women"),
+}
 
 
 class ScoutController:
@@ -780,7 +801,6 @@ class ScoutController:
         # A zone whose last preset was sent while a heater was offline, or whose
         # preset write raised: re-send it once every heater is online.
         self._zone_offline_apply: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
-        self._shared_offline_apply = False
 
         # Cached calendar look-ahead (refreshed on a slower cadence).
         self.cal_window: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
@@ -870,6 +890,22 @@ class ScoutController:
         # event fires once on entry, not every tick.
         self._passive_rise: deque[tuple[datetime, float]] = deque()
         self._coasting: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
+        # The three room zones carry the same per-zone state as the hall and
+        # office (v1.51.0). Their openings follow the shared windows.
+        for room in ROOMS:
+            self.opening_ice[room] = False
+            self.applied[room] = None
+            self.cal_window[room] = False
+            self._preheat_open_for[room] = None
+            self._preheat_blind[room] = False
+            self._warmup_start[room] = None
+            self._cooloff_start[room] = None
+            self._cooloff_cooling_since[room] = None
+            self._zone_comfort_target[room] = None
+            self._last_room_temp[room] = None
+            self._opening_inferred[room] = False
+            self._coasting[room] = False
+            self._zone_offline_apply[room] = False
 
         # Rolling audit trail of decisions, learning samples and outcomes,
         # persisted with the snapshot and exported via the diagnostics
@@ -1247,6 +1283,48 @@ class ScoutController:
             return [value]
         return list(value)
 
+    def _room_climates(self) -> dict[str, list[str]]:
+        """Which shared heaters make up each room zone (v1.51.0).
+
+        Matched by entity id (``ROOM_KEYWORDS``), so no new mapping is needed;
+        a heater that matches no room fills the first room still without one,
+        and any left after that join the last room. Rooms with no heater are
+        absent.
+        """
+        climates = self._as_list(self.config.get(CONF_SHARED_CLIMATES))
+        out: dict[str, list[str]] = {}
+        left: list[str] = []
+        for climate in climates:
+            name = climate.lower()
+            room = next(
+                (
+                    r for r in ROOMS
+                    if r not in out and any(k in name for k in ROOM_KEYWORDS[r])
+                ),
+                None,
+            )
+            if room is None:
+                left.append(climate)
+            else:
+                out[room] = [climate]
+        for climate in left:
+            room = next((r for r in ROOMS if r not in out), None)
+            if room is not None:
+                out[room] = [climate]
+            else:
+                out.setdefault(ROOMS[-1], []).append(climate)
+        return {r: out[r] for r in ROOMS if r in out}
+
+    def _rooms(self) -> list[str]:
+        """The room zones that have a heater."""
+        return list(self._room_climates())
+
+    def _climates_of(self, zone: str) -> list[str]:
+        """The heaters of any zone: the hall, the office, a room or "shared"."""
+        if zone in ROOMS:
+            return self._room_climates().get(zone, [])
+        return self._as_list(self.config.get(DRIVE_ZONE_CLIMATES.get(zone)))
+
     def _is_on(self, entity_id: str | None) -> bool:
         if not entity_id:
             return False
@@ -1347,6 +1425,10 @@ class ScoutController:
         water_preheat = int(self.number("water_preheat_minutes"))
         cap = int(round(self.number("preheat_minutes")))
         now = dt_util.now()
+        # The next COMFORT booking on either calendar, for the room zones'
+        # pre-heat: (start, minutes until it) per calendar that has one.
+        room_next: list[tuple[datetime | None, float | None]] = []
+        calendar_blip = False
         for zone in (ZONE_A, ZONE_B):
             cal = self.config.get(ZONE_CALENDAR[zone])
             if not cal:
@@ -1371,6 +1453,7 @@ class ScoutController:
                 # Calendar service blip: keep the previous window and title.
                 # Dropping to "no window" on a transient error would cancel an
                 # active pre-heat and release a manual hold mid-booking.
+                calendar_blip = True
                 continue
             if not events:
                 self.cal_window[zone] = False
@@ -1378,16 +1461,17 @@ class ScoutController:
                 self._coasting[zone] = False
                 self._preheat_open_for[zone] = None
                 continue
+            for event in events:
+                title = (event.get("summary", "") or "").lower()
+                if not any(kw in title for kw in self.eco_keywords()):
+                    ev_start = self._parse_event_start(event.get("start"))
+                    room_next.append((ev_start, self._minutes_until(ev_start, now)))
+                    break
             first = events[0]
             start = self._parse_event_start(first.get("start"))
             self.cal_title[zone] = (first.get("summary", "") or "").lower()
             eco = any(kw in self.cal_title[zone] for kw in self.eco_keywords())
-            gap_min: float | None = None
-            if start is not None:
-                try:
-                    gap_min = max((start - now).total_seconds() / 60, 0.0)
-                except TypeError:  # naive/aware mismatch from an odd calendar
-                    gap_min = None
+            gap_min = self._minutes_until(start, now)
             if gap_min is None:
                 # The event is inside the cap window but its start could not
                 # be read: err on the warm side and pre-heat now.
@@ -1399,58 +1483,10 @@ class ScoutController:
                         self._clear_hall_pause("preheat")
                 self.cal_window[zone] = True
                 continue
-            lead = self._zone_preheat_minutes(zone, eco=eco, gap_hours=gap_min / 60)
-            # Latch the window OPEN once it has opened FOR THIS EVENT, rather than
-            # re-deciding the boundary every refresh. `lead` shrinks as the room
-            # warms, so a bare `gap <= lead` test lets the window close again the
-            # moment the room nears target — flipping the zone out of comfort and
-            # back (observed 2026-08-05: comfort->ice->comfort during a near-target
-            # pre-heat, amplified under the seasonal-lockout pierce). The latch is
-            # keyed to the event's start (`_preheat_open_for`), so it holds this
-            # pre-heat open but does NOT bridge into the NEXT booking: a running
-            # event / empty look-ahead clears the key, and a fresh first event is
-            # judged on `gap <= lead` again (else two bookings inside the look-ahead
-            # would hold comfort continuously across the empty gap between them).
-            # A window opened BLIND is not latched (v1.50.6): with the room
-            # unreadable the lead falls back to the cap, which is the right
-            # answer while the reading stays lost but not one to hold once it is
-            # back. Field 2026-10-23 01:40Z: the refresh landed in an 84-s dropout
-            # of every hall probe, sized a 240-min lead for an eco-low booking
-            # 200 min away with the hall half a degree under its 14 target, and
-            # the latch then held the window from 02:40 for a 06:00 start.
-            blind = (self._last_lead_calc.get(zone) or {}).get("indoor") is None
-            latched = (
-                start is not None
-                and self._preheat_open_for.get(zone) == start
-                and not self._preheat_blind.get(zone)
-            )
-            window = gap_min <= lead or latched
-            if self.cal_window[zone] and not window and self._preheat_blind.get(zone):
-                self.audit.record(
-                    "preheat_withdrawn",
-                    self._now(),
-                    zone=zone,
-                    reason="reading_back",
-                    gap_min=round(gap_min, 1),
-                    lead_min=lead,
-                    indoor=(self._last_lead_calc.get(zone) or {}).get("indoor"),
-                )
-            if window and not self.cal_window[zone]:
-                self.audit.record(
-                    "preheat_start",
-                    self._now(),
-                    zone=zone,
-                    **(self._last_lead_calc.get(zone) or {}),
-                )
-                # A session emerging from an idle gap is the deliberate signal to
-                # lift a hall pause (the too-warm occupants have gone; warm the
-                # incoming group). Mid-booking this edge never fires — the window
-                # is already open — so adjacent bookings clear at booking_end.
-                if zone == ZONE_A:
-                    self._clear_hall_pause("preheat")
-            self.cal_window[zone] = window
-            self._preheat_open_for[zone] = start if window else None
-            self._preheat_blind[zone] = window and not latched and blind
+            self._judge_preheat_window(zone, start, gap_min, eco)
+
+        if not calendar_blip:  # a blip keeps the rooms' windows, like the zones'
+            self._refresh_room_windows(room_next)
 
         water = False
         for zone in (ZONE_A, ZONE_B):
@@ -1460,6 +1496,101 @@ class ScoutController:
             in_window, _ = await self._async_calendar_window(cal, water_preheat)
             water = water or in_window or self._is_on(cal)
         self.water_window = water
+
+    @staticmethod
+    def _minutes_until(start: datetime | None, now: datetime) -> float | None:
+        if start is None:
+            return None
+        try:
+            return max((start - now).total_seconds() / 60, 0.0)
+        except TypeError:  # naive/aware mismatch from an odd calendar
+            return None
+
+    def _judge_preheat_window(
+        self, zone: str, start: datetime | None, gap_min: float, eco: bool
+    ) -> None:
+        """Open, hold or close one zone's pre-heat window for its next event."""
+        lead = self._zone_preheat_minutes(zone, eco=eco, gap_hours=gap_min / 60)
+        # Latch the window OPEN once it has opened FOR THIS EVENT, rather than
+        # re-deciding the boundary every refresh. `lead` shrinks as the room
+        # warms, so a bare `gap <= lead` test lets the window close again the
+        # moment the room nears target — flipping the zone out of comfort and
+        # back (observed 2026-08-05: comfort->ice->comfort during a near-target
+        # pre-heat, amplified under the seasonal-lockout pierce). The latch is
+        # keyed to the event's start (`_preheat_open_for`), so it holds this
+        # pre-heat open but does NOT bridge into the NEXT booking: a running
+        # event / empty look-ahead clears the key, and a fresh first event is
+        # judged on `gap <= lead` again (else two bookings inside the look-ahead
+        # would hold comfort continuously across the empty gap between them).
+        # A window opened BLIND is not latched (v1.50.6): with the room
+        # unreadable the lead falls back to the cap, which is the right
+        # answer while the reading stays lost but not one to hold once it is
+        # back. Field 2026-10-23 01:40Z: the refresh landed in an 84-s dropout
+        # of every hall probe, sized a 240-min lead for an eco-low booking
+        # 200 min away with the hall half a degree under its 14 target, and
+        # the latch then held the window from 02:40 for a 06:00 start.
+        blind = (self._last_lead_calc.get(zone) or {}).get("indoor") is None
+        latched = (
+            start is not None
+            and self._preheat_open_for.get(zone) == start
+            and not self._preheat_blind.get(zone)
+        )
+        window = gap_min <= lead or latched
+        if self.cal_window[zone] and not window and self._preheat_blind.get(zone):
+            self.audit.record(
+                "preheat_withdrawn",
+                self._now(),
+                zone=zone,
+                reason="reading_back",
+                gap_min=round(gap_min, 1),
+                lead_min=lead,
+                indoor=(self._last_lead_calc.get(zone) or {}).get("indoor"),
+            )
+        if window and not self.cal_window[zone]:
+            self.audit.record(
+                "preheat_start",
+                self._now(),
+                zone=zone,
+                **(self._last_lead_calc.get(zone) or {}),
+            )
+            # A session emerging from an idle gap is the deliberate signal to
+            # lift a hall pause (the too-warm occupants have gone; warm the
+            # incoming group). Mid-booking this edge never fires — the window
+            # is already open — so adjacent bookings clear at booking_end.
+            if zone == ZONE_A:
+                self._clear_hall_pause("preheat")
+        self.cal_window[zone] = window
+        self._preheat_open_for[zone] = start if window else None
+        self._preheat_blind[zone] = window and not latched and blind
+
+    def _refresh_room_windows(
+        self, room_next: list[tuple[datetime | None, float | None]]
+    ) -> None:
+        """Each room zone's pre-heat window for the next comfort booking on
+        either calendar, on that room's own lead (v1.51.0).
+
+        An eco-keyword booking does not pre-heat them (the cleaner gets eco once
+        the booking runs, as before). A booking whose start cannot be read opens
+        the window at once, as it does for the hall (err warm).
+        """
+        if room_next:
+            start, gap_min = min(
+                room_next, key=lambda item: -1.0 if item[1] is None else item[1]
+            )
+        for room in self._rooms():
+            if not room_next:
+                self.cal_window[room] = False
+                self._preheat_open_for[room] = None
+                self._preheat_blind[room] = False
+                continue
+            if gap_min is None:
+                if not self.cal_window[room]:
+                    self.audit.record(
+                        "preheat_start", self._now(), zone=room, reason="unreadable_start"
+                    )
+                self.cal_window[room] = True
+                continue
+            self._judge_preheat_window(room, start, gap_min, eco=False)
 
     async def _async_calendar_events(self, cal: str, minutes: int) -> list[dict] | None:
         """Events on a calendar within the next `minutes`; None on error."""
@@ -1531,7 +1662,7 @@ class ScoutController:
         """
         vals: list[float] = []
         implausible = self._hall_implausible_probes() if zone == ZONE_A else set()
-        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+        for climate in self._climates_of(zone):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
@@ -1596,7 +1727,7 @@ class ScoutController:
             return frozenset()
         implausible = self._hall_implausible_probes() if zone == ZONE_A else set()
         members: set[str] = set()
-        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+        for climate in self._climates_of(zone):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
@@ -2019,6 +2150,8 @@ class ScoutController:
         """
         if zone == ZONE_A:
             return self.number("hall_comfort_temp")
+        if zone in ROOMS:
+            return self.number("shared_comfort_temp")
         if zone == ZONE_B and self.switch_on("drive_to_target", default=True):
             return self.number("office_comfort_temp")
         cached = self._zone_comfort_target.get(zone)
@@ -2218,7 +2351,7 @@ class ScoutController:
         """
         now = self._now()
         stale = self._rointe_stale_min()
-        for zone in (ZONE_A, ZONE_B):
+        for zone in (ZONE_A, ZONE_B, *self._rooms()):
             comfort = (
                 self.applied[zone] == PRESET_COMFORT
                 and not self.opening_ice[zone]
@@ -2229,7 +2362,7 @@ class ScoutController:
             # Cache the zone's real comfort target from its own heater while
             # it is actually in comfort (needed for the office, see _zone_target).
             if comfort:
-                climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
+                climates = self._climates_of(zone)
                 if climates and (st := self.hass.states.get(climates[0])) is not None:
                     try:
                         target_attr = st.attributes.get("temperature")
@@ -2552,7 +2685,7 @@ class ScoutController:
         unmapped zone or an install with no surface sensor yields None.
         """
         hottest: float | None = None
-        for climate in self._as_list(self.config.get(DRIVE_ZONE_CLIMATES.get(zone))):
+        for climate in self._climates_of(zone):
             surface = self._num_state(self._heater_sensor(climate, "surface"))
             if surface is not None and (hottest is None or surface > hottest):
                 hottest = surface
@@ -2582,7 +2715,7 @@ class ScoutController:
     def _zone_probe_readings(self, zone: str) -> dict[str, float]:
         """Each readable heater's own room reading, keyed by climate."""
         out: dict[str, float] = {}
-        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+        for climate in self._climates_of(zone):
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
@@ -2604,7 +2737,7 @@ class ScoutController:
         learning, so warmth can never be mistaken for insulation.
         """
         now = self._now()
-        for zone in (ZONE_A, ZONE_B):
+        for zone in (ZONE_A, ZONE_B, *self._rooms()):
             # A held-open door/window is ventilation loss, not fabric loss:
             # discard any in-flight sample rather than learning it as
             # insulation quality.
@@ -3232,11 +3365,11 @@ class ScoutController:
         self.hall_heating_paused = bool(data.get("hall_heating_paused", False))
         self._fire_hold = bool(data.get("fire_hold", False))
         saved_window = data.get("cal_window") or {}
-        for zone in (ZONE_A, ZONE_B):
+        for zone in (ZONE_A, ZONE_B, *ROOMS):
             if zone in saved_window:
                 self.cal_window[zone] = bool(saved_window[zone])
         saved_latch = data.get("preheat_open_for") or {}
-        for zone in (ZONE_A, ZONE_B):
+        for zone in (ZONE_A, ZONE_B, *ROOMS):
             start = _dt(saved_latch.get(zone))
             # A latch for an event already in the past is stale (the event ran
             # or was dropped while HA was down): the next refresh re-derives.
@@ -3342,6 +3475,20 @@ class ScoutController:
                 # guard uses, with the coldest alongside like the other zones.
                 "average": self._shared_room_avg(),
                 "coldest": self._shared_room_temp(),
+                # Each room zone (v1.51.0): what it is doing and why, its own
+                # pre-heat window and the last lead it sized.
+                "rooms": {
+                    room: {
+                        "heaters": self._climates_of(room),
+                        "temp": self._zone_room_temp(room),
+                        "preset": self.applied.get(room),
+                        "reason": self._preset_reason.get(room),
+                        "window": self.cal_window.get(room),
+                        "window_for": _iso(self._preheat_open_for.get(room)),
+                        "lead": self._last_lead_calc.get(room),
+                    }
+                    for room in self._rooms()
+                },
             }
 
         stale_min = self.number("fan_sensor_stale_minutes")
@@ -4218,68 +4365,105 @@ class ScoutController:
         # booking ends while a cleaner is still in the kitchen).
         return self._reason(zone, "others_present", PRESET_ECO)
 
-    def _desired_shared(self) -> str | None:
-        if not self.config.get(CONF_SHARED_CLIMATES):
+    def _desired_room(self, room: str) -> str | None:
+        """The preset for one room zone: the kitchen, the gents or the ladies
+        (v1.51.0).
+
+        Run the way the hall is, on the room's own heater reading and its own
+        PIR: frost protection under fire or an open window; comfort on a Boost
+        (either the hall's or the office's); a booking pre-heats it on its own
+        lead (`cal_window[room]`) and holds it through the session whatever the
+        alarm says, heating only while the room is below target (warm → ice,
+        `booking_warm`); bare presence heats a cold room (`motion`), a warm one
+        lands on ice (`occupied_warm`); someone elsewhere in the building rests
+        it at eco (`others_present`); nobody → ice. Where it differs from the
+        hall, it is because these rooms serve the whole building:
+
+        * Either calendar's booking counts. The warmest active booking wins: an
+          ECO-keyword booking rests it at eco (`booking_eco`) and does not
+          pre-heat it, unless a comfort booking is also on.
+        * `booking_quiet` looks at the WHOLE building, not the room's PIR: a
+          toilet is empty most of a session, and the group being in the hut is
+          what should keep it warm. With nobody anywhere (after the arrival
+          grace, as for the hall) a running booking rests it at eco.
+        * Away-armed with no booking needs BOTH panels away, as before: the
+          office's users share these rooms.
+        * No coast predictor, cooling hold, booking hold or stale relight; those
+          are about the hall's fans and its four-probe reading.
+        """
+        if not self._climates_of(room):
             return None
         if self._fire_hold:
-            return self._reason("shared", "fire", PRESET_ICE)
-        # The shared kitchen/toilets/stores heat toward `shared_comfort_temp`
-        # (like the hall/office zones) when the block is genuinely in use — a
-        # hall/office booking is running (people are in for a session and will
-        # use the kitchen/toilets) OR there is motion in the shared PIRs
-        # themselves (kitchen/gents/female). Gated by the shared zone being
-        # genuinely cold (`_shared_wants_heat`); a warm shared zone rests at eco.
-        # Bare motion only in the hall/office (nobody in the shared rooms) keeps
-        # the lighter eco floor, so a cleaner in the office does not warm the
-        # toilets to comfort. No seasonal gate: the season no longer blocks heat.
-        if self.opening_ice["shared"]:
-            return self._reason("shared", "opening", PRESET_ICE)
+            return self._reason(room, "fire", PRESET_ICE)
+        if self.opening_ice.get(room):
+            return self._reason(room, "opening", PRESET_ICE)
         if self.boost_active(ZONE_A) or self.boost_active(ZONE_B):
-            return self._reason("shared", "boost", PRESET_COMFORT)
-        if self._alarm_armed(self.config.get(CONF_ALARM_MAIN)) and self._alarm_armed(
-            self.config.get(CONF_ALARM_OFFICE)
+            return self._reason(room, "boost", PRESET_COMFORT)
+        running = {
+            zone: self._is_on(self.config.get(ZONE_CALENDAR[zone])) for zone in (ZONE_A, ZONE_B)
+        }
+        comfort_running = any(
+            on and not self._eco_keyword_active(zone) for zone, on in running.items()
+        )
+        eco_running = any(running.values()) and not comfort_running
+        window = self.cal_window.get(room, False)
+        booked = comfort_running or eco_running or window
+        if (
+            not booked
+            and self._alarm_armed(self.config.get(CONF_ALARM_MAIN))
+            and self._alarm_armed(self.config.get(CONF_ALARM_OFFICE))
         ):
-            return self._reason("shared", "alarm", PRESET_ICE)
+            return self._reason(room, "alarm", PRESET_ICE)
         timeout = self.number("motion_timeout_minutes")
-        cal_a = self._cal_active(ZONE_A)
-        cal_b = self._cal_active(ZONE_B)
-        booking = cal_a or cal_b
-        # The shared block serves whoever is booked, so the WARMEST active booking
-        # wins: a real comfort session (hall or office) heats the toilets/kitchen
-        # to comfort, but when EVERY active booking is an eco-keyword (low-key
-        # cleaning) one the shared follows the eco floor, matching the hall. This
-        # stops a sal-vation session driving the toilets to full comfort — heat the
-        # room did not need (it was already above eco) — whose demand then spun the
-        # hall fans with nothing to reclaim (field 2026-08-21). A concurrent
-        # non-eco office booking still wins, so an eco hall booking can never
-        # downgrade the shared below what a real office session needs.
-        eco_booking = booking and not (
-            (cal_a and not self._eco_keyword_active(ZONE_A))
-            or (cal_b and not self._eco_keyword_active(ZONE_B))
-        )
-        # The eco tail reaches the shared block too (v1.50.7): whoever trips a
-        # kitchen or toilet PIR in the motion timeout after a cleaning booking is
-        # the cleaner finishing up, so the block stays at eco rather than going
-        # to comfort. Field 2026-10-23 10:15:01Z: the second sal-vation booking
-        # ended and the shared went eco -> comfort on a kitchen trip 13 min old.
-        eco_tail = not booking and (
-            self._eco_tail_active(ZONE_A) or self._eco_tail_active(ZONE_B)
-        )
-        shared_motion = any(self._motion_recent(a, timeout) for a in WATER_MOTION_AREAS)
-        if booking or shared_motion:
-            if eco_booking:
-                # Low-key session (the cleaner IS the motion): rest at eco, which
-                # the Rointe idles at once warm enough, so no demand is created.
-                return self._reason("shared", "booking_eco", PRESET_ECO)
-            if eco_tail:
-                return self._reason("shared", "eco_tail", PRESET_ECO)
-            if self._shared_wants_heat():
-                reason = "booking" if booking else "shared_motion"
-                return self._reason("shared", reason, PRESET_COMFORT)
-            return self._reason("shared", "shared_warm", PRESET_ECO)
+        area = ROOM_MOTION_AREA.get(room)
+        here = area is not None and self._motion_recent(area, timeout)
+        goal = self._zone_target(room)
+
+        if comfort_running or window:
+            if not self._room_wants_heat(room, goal, PRESET_COMFORT):
+                return self._reason(room, "booking_warm", PRESET_ICE)
+            if comfort_running:
+                present = (
+                    self._motion_recent_any(timeout)
+                    or self.switch_on(f"{ZONE_A}_occupied_override")
+                    or self.switch_on(f"{ZONE_B}_occupied_override")
+                    or self._alarm_present(self.config.get(CONF_ALARM_MAIN))
+                    or self._alarm_present(self.config.get(CONF_ALARM_OFFICE))
+                )
+                if not present and not self._rooms_awaiting_arrival(running):
+                    return self._reason(room, "booking_quiet", PRESET_ECO)
+                return self._reason(room, "booking", PRESET_COMFORT)
+            return self._reason(room, "preheat", PRESET_COMFORT)
+        if eco_running:
+            # Low-key session (the cleaner IS the motion): rest at eco, which
+            # the Rointe idles at once warm enough.
+            return self._reason(room, "booking_eco", PRESET_ECO)
+        if here:
+            # Whoever is in here just after a cleaning booking is the cleaner
+            # finishing up (the eco tail, v1.50.7 for the block, v1.51.0 here).
+            if self._eco_tail_active(ZONE_A) or self._eco_tail_active(ZONE_B):
+                return self._reason(room, "eco_tail", PRESET_ECO)
+            if self._room_wants_heat(room, goal, PRESET_COMFORT):
+                return self._reason(room, "motion", PRESET_COMFORT)
+            return self._reason(room, "occupied_warm", PRESET_ICE)
         if self._motion_recent_any(timeout):
-            return self._reason("shared", "motion", PRESET_ECO)
-        return self._reason("shared", "building_empty", PRESET_ICE)
+            return self._reason(room, "others_present", PRESET_ECO)
+        return self._reason(room, "building_empty", PRESET_ICE)
+
+    def _rooms_awaiting_arrival(self, running: dict[str, bool]) -> bool:
+        """Is a running comfort booking still inside its arrival grace?
+
+        The rooms' version of the hall's `awaiting`: an empty building in the
+        first `BOOKING_ARRIVAL_GRACE_MIN` of a booking is a group on its way,
+        except at a handover (no pre-heat climb to finish).
+        """
+        for zone, on in running.items():
+            if not on or self._eco_keyword_active(zone) or self._booking_handover[zone]:
+                continue
+            minutes = self._booking_running_minutes(zone)
+            if minutes is not None and minutes < BOOKING_ARRIVAL_GRACE_MIN:
+                return True
+        return False
 
     def _shared_room_temp(self, stale_min: float | None = None) -> float | None:
         """Coldest reported room temperature around the water heater.
@@ -4288,7 +4472,7 @@ class ScoutController:
         heater that is unavailable; the tank lives in that zone, so the coldest
         reading is the one that matters for frost. ``stale_min`` (see
         ``_zone_climate_temps``) drops a heater whose reading has frozen — passed
-        on the warm-enough decision path (`_shared_wants_heat`), omitted for the
+        on a warm-enough decision path, omitted for the
         frost/diagnostic reads where a stale value is harmless.
         """
         vals = self._shared_climate_temps(stale_min)
@@ -4315,24 +4499,6 @@ class ScoutController:
         """Mean of the shared-zone heaters' readings (the drive's zone average)."""
         vals = self._shared_climate_temps()
         return sum(vals) / len(vals) if vals else None
-
-    def _shared_wants_heat(self) -> bool:
-        """True when the shared zone is genuinely below its comfort target — the
-        shared analog of `_room_wants_heat`.
-
-        Reads the coldest shared heater probe (freshness-gated) against
-        `shared_comfort_temp`, with the same `COLD_BOOKING_RELEASE_BAND` release
-        hysteresis — applied only while the block is already in COMFORT, the
-        preset this decision sets (v1.48.1; the `motion` / `booking_eco` eco
-        rests used to arm it too, see `_room_wants_heat`). An unreadable shared
-        zone errs WARM (heats), like the zone gate — the Rointe governs real
-        firing against its own probe.
-        """
-        room = self._shared_room_temp(stale_min=self._rointe_stale_min())
-        if room is None:
-            return True
-        margin = COLD_BOOKING_RELEASE_BAND if self.applied["shared"] == PRESET_COMFORT else 0.0
-        return room < self.number("shared_comfort_temp") + margin
 
     def _water_actual(self) -> bool | None:
         """The real switch state, or None when unknown."""
@@ -4847,6 +5013,14 @@ class ScoutController:
         self.cal_window[zone] = False
         self._preheat_open_for[zone] = None
         self._cal_refresh_due = True
+        # A room window latched to an event that has already started (or to an
+        # unreadable start) belongs to the session that just ended; the prompt
+        # refresh re-derives the rooms' windows for whatever comes next.
+        for room in self._rooms():
+            latch = self._preheat_open_for.get(room)
+            if latch is None or latch <= self._now():
+                self.cal_window[room] = False
+                self._preheat_open_for[room] = None
         # An ECO-keyword booking leaves an eco tail as long as the motion
         # timeout: whoever is still tripping the PIR is the same low-key
         # visit, not a new session wanting comfort (v1.49.0).
@@ -4894,6 +5068,9 @@ class ScoutController:
             # shortfall can be read against a speed the occupants dropped.
             fan_w_last=self._fan_w_last_seen if zone == ZONE_A else None,
             handover=True if handover else None,
+            # Each room zone's reading as the group arrives (v1.51.0): whether
+            # the kitchen and toilets were warm in time.
+            rooms={room: self._zone_room_temp(room) for room in self._rooms()} or None,
         )
 
     def _refresh_motion_from_states(self) -> None:
@@ -4959,6 +5136,8 @@ class ScoutController:
         shared_held = self._open_held("shared_windows", shared_windows, window_mins)
         was_shared = self.opening_ice["shared"]
         self.opening_ice["shared"] = shared_held
+        for room in ROOMS:
+            self.opening_ice[room] = shared_held
         if shared_held and not was_shared:
             self.audit.record(
                 "opening",
@@ -5054,33 +5233,27 @@ class ScoutController:
             await self._async_land_zone(ZONE_A, self.applied[ZONE_A])
 
     async def _reconcile_shared(self) -> None:
-        desired = self._desired_shared()
-        if desired is None:
+        """Apply each room zone's preset (v1.51.0), through the same path as the
+        hall and office: audited, entry reason stamped, re-sent after a failed
+        write or once an offline heater is back."""
+        rooms = self._rooms()
+        if not rooms:
             return
-        climates = self._as_list(self.config.get(CONF_SHARED_CLIMATES))
-        all_online = bool(climates) and all(self._climate_online(c) for c in climates)
-        # Mirror the zones' offline handling: a preset sent while a shared
-        # heater was unreachable is re-sent once every heater is back, so the
-        # kitchen/toilet radiators (the frost-critical room) cannot sit on a
-        # wrong preset indefinitely after a cloud blip. A *changed* desired is
-        # always sent immediately, exactly like the zones.
-        if desired == self.applied["shared"]:
-            if not (self._shared_offline_apply and all_online):
-                return  # nothing to do, or still waiting for reconnection
-        else:
-            self.audit.record(
-                "preset",
-                self._now(),
-                zone="shared",
-                previous=self.applied["shared"],
-                to=desired,
-                reason=self._preset_reason.get("shared"),
-            )
-        ok = await self._async_apply_climate(climates, desired)
-        self.applied["shared"] = desired
-        # A write that raised did not land either: re-send it on the next tick,
-        # through the same path (v1.50.5, see _async_set_preset).
-        self._shared_offline_apply = not ok or not all_online
+        for room in rooms:
+            desired = self._desired_room(room)
+            if desired is None:
+                continue
+            if self._zone_offline_apply.get(room) and self._all_zone_online(room):
+                await self._async_set_preset(room, desired)
+                continue
+            if desired == self.applied[room]:
+                continue
+            await self._async_set_preset(room, desired)
+        # One word for the block, for the status sensor: the warmest room's.
+        applied = [self.applied.get(room) for room in rooms]
+        self.applied["shared"] = next(
+            (p for p in (PRESET_COMFORT, PRESET_ECO, PRESET_ICE) if p in applied), None
+        )
 
     async def _reconcile_water(self) -> None:
         desired = self._desired_water()
@@ -5252,7 +5425,7 @@ class ScoutController:
     # Applying presets
     # ------------------------------------------------------------------
     async def _async_set_preset(self, zone: str, preset: str, force: bool = False) -> None:
-        climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
+        climates = self._climates_of(zone)
         if not climates:
             return
         if preset != self.applied[zone]:
@@ -5471,8 +5644,9 @@ class ScoutController:
     # controller lives in drive.py; the safety policy lives here.
     # ------------------------------------------------------------------
     def _boosting(self, zone: str) -> bool:
-        """Is this zone currently under a Boost? Shared follows either room's boost."""
-        if zone == "shared":
+        """Is this zone currently under a Boost? The kitchen and toilets follow
+        either the hall's or the office's boost."""
+        if zone == "shared" or zone in ROOMS:
             return self.boost_active(ZONE_A) or self.boost_active(ZONE_B)
         return self.boost_active(zone)
 
@@ -5714,8 +5888,8 @@ class ScoutController:
         outdoor = self._outdoor_temp()
         offset = self.number("drive_max_offset")
         any_capped_short = False
-        for zone, cfg_key in DRIVE_ZONE_CLIMATES.items():
-            climates = self._as_list(self.config.get(cfg_key))
+        for zone in (ZONE_A, ZONE_B, *self._rooms()):
+            climates = self._climates_of(zone)
             if not climates:
                 continue
             # Hands off a zone the user has taken manual control of, or whose
@@ -6153,7 +6327,7 @@ class ScoutController:
         back). Called on unload, and on startup before the first reconcile so a
         crash-left overdrive is undone within seconds of the next boot.
         """
-        for zone, cfg_key in DRIVE_ZONE_CLIMATES.items():
+        for zone in (ZONE_A, ZONE_B, *self._rooms()):
             # Restore the owner's PLAIN comfort setpoint, never a transient Boost
             # or booking-hold bump — the last will exists to undo overdrive.
             target = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
@@ -6161,7 +6335,7 @@ class ScoutController:
             # a zone that is in comfort right now gets the plain target landed
             # too, or the radiator would keep the last overdrive after unload.
             land = self.applied.get(zone) == PRESET_COMFORT
-            for climate in self._as_list(self.config.get(cfg_key)):
+            for climate in self._climates_of(zone):
                 number = self._heater_comfort_number(climate)
                 if number is None:
                     continue
@@ -6569,7 +6743,7 @@ class ScoutController:
         return st is not None and st.state not in ("unavailable", "unknown")
 
     def _all_zone_online(self, zone: str) -> bool:
-        climates = self._as_list(self.config.get(ZONE_CLIMATES[zone]))
+        climates = self._climates_of(zone)
         return bool(climates) and all(self._climate_online(c) for c in climates)
 
     _OFFLINE_ZONE_CLIMATES = {

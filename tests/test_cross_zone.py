@@ -68,12 +68,14 @@ def test_internal_door_alone_does_not_ice():
 
 
 def test_hall_booking_warms_shared():
-    # A booking means the kitchen/toilets get used, so the shared block heats
-    # toward comfort (was capped at eco before the shared unification).
+    # A booking with the group in means the kitchen/toilets get used, so each
+    # room heats toward comfort.
     ctrl, _ = make_controller()
     booking(ctrl, ZA)
+    motion(ctrl, "hall")
     run(ctrl.async_reconcile())
     assert ctrl.applied["shared"] == PRESET_COMFORT
+    assert all(ctrl.applied[r] == PRESET_COMFORT for r in ("kitchen", "gents", "ladies"))
 
 
 def test_kitchen_motion_multi_zone_effect():
@@ -107,4 +109,6 @@ def test_both_bookings_all_zones_active():
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_ECO  # booking, no motion -> booking_quiet
     assert ctrl.applied[ZB] == PRESET_ECO
-    assert ctrl.applied["shared"] == PRESET_COMFORT  # booking warms the shared block
+    # Nobody in the building and no start time to give an arrival grace: the
+    # rooms rest at eco like the hall (v1.51.0, `booking_quiet`).
+    assert ctrl.applied["shared"] == PRESET_ECO

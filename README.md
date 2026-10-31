@@ -311,12 +311,10 @@ this priority (highest wins):
    recent motion, the **occupied-override** switch or a **Night/Home alarm arm**
    hold a booking at comfort, so a **sleepover** of still, sleeping occupants
    isn't demoted to eco and left to cool.
-   Events matching an ECO keyword aim at the lower `eco` setpoint throughout. The
-   shared kitchen/toilets/stores heat toward their own comfort target when the
-   block is in use — a running hall/office booking, or motion in the shared PIRs
-   (kitchen/gents/female) — gated the same way (cold → comfort, warm → `eco`).
-   Motion only in the hall/office keeps the shared block at the lighter `eco`
-   floor, so a cleaner in the hall doesn't warm the toilets to comfort.
+   Events matching an ECO keyword aim at the lower `eco` setpoint throughout.
+   The **kitchen, gents and ladies are three zones of their own** (v1.51.0),
+   each run like the hall on its own heater's reading and its own PIR — see
+   *Kitchen and toilets* below.
 7. **Occupied override or recent motion** → `comfort` on the **same** test as a
    booking: a cold occupied zone heats to comfort, a warm one lands on `ice` for
    the cooling fans. Occupancy and a booking are not different behaviours — a
@@ -446,9 +444,37 @@ a sample teaches. All the learned numbers are visible and adjustable — re-seed
 them after any building change, or set the heat-loss constant to 0 to disable
 the cooling prediction.
 
-The **shared zone** heats toward comfort on a hall/office booking or shared-PIR
-motion (cold → comfort, warm → eco; hall/office-only motion → eco), and the
-**water heater** turns on for its own pre-heat window, kitchen/toilet motion
+**Kitchen and toilets (v1.51.0).** The kitchen, the gents and the ladies are
+three zones, each with its own heater, its own PIR (the ladies' is the `female`
+sensor) and its own learned radiator gain and heat loss (`kitchen_warmup_rate`,
+`gents_heatloss_pct` and so on, seeded at 15 min/°C and 12 %/h so an unlearned
+room arrives early rather than late). Which heater is which room is read from
+its entity id. Each one:
+
+- **pre-heats for the next comfort booking** on either calendar, on its own
+  lead, so a cold toilet starts earlier than a warm kitchen. An eco-keyword
+  booking does not pre-heat them;
+- **holds the booking whatever the alarm says**, as the hall does. Before
+  v1.51.0 the block iced whenever both panels were set and only started when
+  someone disarmed on arrival: in the week of 26 Oct the coldest room was
+  13–16 °C at each evening booking's start and twice never reached 19;
+- heats only while its own reading is below `shared_comfort_temp` (a warm room
+  rests on `ice`, `booking_warm`), and rests at `eco` once a running booking's
+  building is empty past the 30-min arrival grace (`booking_quiet`). The whole
+  building counts, not the room's own PIR, since a toilet is empty most of a
+  session;
+- outside a booking, heats when someone is in it (`motion`; a warm room →
+  `occupied_warm` ice), rests at `eco` when someone is elsewhere in the
+  building (`others_present`) and goes to `ice` when nobody is about or both
+  alarm panels are away;
+- follows a Boost on either the hall or the office, an ECO-keyword booking
+  (`eco`), the eco tail, the shared window contacts and the fire hold.
+
+`booking_start` carries `rooms` (each room's reading as the group arrives), and
+diagnostics show each room's preset, reason, window and last lead under
+`readings.zones.shared.rooms`.
+
+The **water heater** turns on for its own pre-heat window, kitchen/toilet motion
 (within the keep-alive) or the manual override, and off when the building is
 alarmed. The switch is reconciled against its **real state**, not the last
 command — a manual flip or a Shelly reboot is re-asserted on the next tick, so

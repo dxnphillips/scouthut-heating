@@ -571,7 +571,7 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
     run(ctrl._async_refresh_calendars())
 
     assert ctrl.cal_window[ZA] is True  # 30 min gap <= 110 min lead
-    (evt,) = events(ctrl, "preheat_start")
+    (evt,) = [e for e in events(ctrl, "preheat_start") if e["zone"] == ZA]
     assert evt["zone"] == ZA
     assert evt["lead_min"] == 110
     assert evt["gap_min"] == pytest.approx(30, abs=0.1)
@@ -584,7 +584,7 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
 
     # Staying inside the window on the next refresh records nothing new.
     run(ctrl._async_refresh_calendars())
-    assert len(events(ctrl, "preheat_start")) == 1
+    assert len([e for e in events(ctrl, "preheat_start") if e["zone"] == ZA]) == 1
 
 
 def test_note_fan_speed_remembers_the_last_running_tap():
@@ -656,7 +656,7 @@ def test_preheat_start_records_the_rate_key_and_assumed_fan_speed(monkeypatch):
     monkeypatch.setattr(ctrl, "_async_calendar_events", _events)
     run(ctrl._async_refresh_calendars())
 
-    (evt,) = events(ctrl, "preheat_start")
+    (evt,) = [e for e in events(ctrl, "preheat_start") if e["zone"] == ZA]
     assert evt["rate_key"] == "zone_a_warmup_rate_fans"  # the optimistic path
     assert evt["fan_w_last"] == pytest.approx(195.0)
 

@@ -23,7 +23,7 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 745
+  a fully wired controller). Every behaviour change ships with tests. 763
   passing as of 2026-10-31.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
@@ -3023,7 +3023,9 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   `booking` / `preheat` / `booking_warm` / `booking_eco` /
   `booking_quiet` / `preheat_coast` / `booking_coast` for bookings; `motion` /
   `occupied_override` / `sleepover` / `eco_tail` (heating) and `occupied_warm`
-  (warm → ice) for occupancy; the `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
+  (warm → ice) for occupancy; the `lockout_*` tags are gone. **The kitchen, gents
+  and ladies are three zones since v1.51.0 — see the room-zones bullet below; the
+  block description that follows is the history.** **Shared (kitchen/toilets/stores) heats toward
   comfort too now** (2026-08-07): `_desired_shared` warms the block to
   `shared_comfort_temp` (via `_shared_wants_heat`, the shared analog of the gate —
   coldest shared probe below target, err-warm on unreadable) whenever it is
@@ -3435,11 +3437,47 @@ Rointe-integration reload automation (the 7-day token); raise the upstream issue
 identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was given
 2026-09-17; the 12:03Z write-to-all question is resolved under Q25.)
 
+- **The kitchen, gents and ladies are three zones run like the hall (v1.51.0,
+  owner: "they will need 3 individual zones ... and essentially work the same
+  way as the hall").** The field case (week of 2026-10-26): the block iced
+  whenever both alarm panels were set and a booking did not override that, so
+  it only started heating when someone disarmed on arrival. Coldest room at the
+  start of each evening booking: 13.0 (Wed 28, disarm 18:35 for 19:00), 14.0
+  (Thu 29, disarm 18:54), 16.0 (Fri 30, disarm 17:45 for 17:30); 19 reached
+  never, never, and 85 min in. Now: `ROOMS` = kitchen / gents / ladies, matched
+  to the shared heaters by entity id (`_room_climates`, a heater matching none
+  fills an empty room); `_climates_of(zone)` resolves any zone, so the generic
+  helpers (`_zone_climate_temps`, `_room_wants_heat`, `_zone_preheat_minutes`,
+  warm-up/cool-off learning, `_async_set_preset`, the drive) run per room.
+  `_desired_room` is the hall's ladder on the room's own reading and PIR
+  (`ROOM_MOTION_AREA`, ladies = `female`), with three deliberate differences:
+  either calendar's booking counts (warmest wins, eco-keyword → `booking_eco`
+  and no pre-heat); `booking_quiet` judges the whole building, not the room's
+  PIR (a toilet is empty most of a session); and outside a booking both panels
+  away is still what ices them (the office shares them). A booking — running,
+  or the room's own pre-heat window from `_refresh_room_windows` (next non-eco
+  event on either calendar, the room's own lead, the hall's latch and blind
+  rules via the shared `_judge_preheat_window`) — beats the alarm. No coast,
+  cooling hold, booking hold or stale relight for the rooms. New learned
+  entities `{kitchen,gents,ladies}_warmup_rate` (seed 15) and `_heatloss_pct`
+  (seed 12): not the hall's slow 60/25 seeds, which would pin every lead at the
+  240 cap; 15/12 is on the slow side of the block's measured ~11–12 gross on
+  10-29/30, so an unlearned room arrives early. `booking_start.rooms` records
+  each room's reading at the start (the "warm in time?" measure);
+  diagnostics `readings.zones.shared.rooms`; `applied["shared"]` is the warmest
+  room's preset (status sensor). The opening-inferred push stays hall/office
+  only (a room's out-of-family cool-off is audited, not pushed). **Watch:**
+  `booking_start.rooms` should read ≥ 18.5 on evening bookings; the first
+  `warmup_sample` per room (`rate_key` `gents_warmup_rate` etc.) should land
+  near 11–13 gross; preset churn on the toilets outside bookings (each room now
+  flips on its own PIR) — if it is a nuisance, Q22's dwell is the lever.
+
 ## Architecture pointers
 
 - `coordinator.py` — single 30 s reconciler; priority ladder in
   `_desired_zone` (disabled/hold → heating-paused → opening → boost → alarm →
-  booking/pre-heat → override/motion/night-arm → empty). Booking and occupancy both heat
+  booking/pre-heat → override/motion/night-arm → empty), and the same ladder per
+  kitchen/toilet room in `_desired_room` (v1.51.0). Booking and occupancy both heat
   only when `_room_wants_heat(zone, target)` (room below target); a warm room
   lands on ice. No seasonal rung — the season no longer gates heat.
 - `preheat.py` — pure optimum-start maths (learned min/°C rates, Newton

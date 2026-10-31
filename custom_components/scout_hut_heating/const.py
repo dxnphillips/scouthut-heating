@@ -198,6 +198,18 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # disable the prediction.
     "zone_a_heatloss_pct": (0, 50, 0.5, 25, "%/h"),
     "zone_b_heatloss_pct": (0, 50, 0.5, 25, "%/h"),
+    # The kitchen and the two toilets are zones of their own (v1.51.0), each
+    # with its own learned gain and heat loss. Not seeded at the slow hall seed
+    # (60 would pin every lead at the 240-min cap and heat the toilets for four
+    # hours before each booking): measured from the shared block's climbs of
+    # 2026-10-29/30 (coldest room, ~11-12 min/°C gross at a guessed 12 %/h), then
+    # set on the slow side so an unlearned room arrives early, not late.
+    "kitchen_warmup_rate": (5, 60, 0.5, 15, "min/°C"),
+    "gents_warmup_rate": (5, 60, 0.5, 15, "min/°C"),
+    "ladies_warmup_rate": (5, 60, 0.5, 15, "min/°C"),
+    "kitchen_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
+    "gents_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
+    "ladies_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
     "motion_timeout_minutes": (5, 60, 5, 15, "min"),
     "door_ice_minutes": (2, 30, 1, 10, "min"),
     "window_ice_minutes": (5, 60, 5, 10, "min"),
@@ -304,6 +316,12 @@ NUMBER_ICONS: dict[str, str] = {
     "zone_b_warmup_rate": "mdi:chart-line",
     "zone_a_heatloss_pct": "mdi:snowflake-thermometer",
     "zone_b_heatloss_pct": "mdi:snowflake-thermometer",
+    "kitchen_warmup_rate": "mdi:chart-line",
+    "gents_warmup_rate": "mdi:chart-line",
+    "ladies_warmup_rate": "mdi:chart-line",
+    "kitchen_heatloss_pct": "mdi:snowflake-thermometer",
+    "gents_heatloss_pct": "mdi:snowflake-thermometer",
+    "ladies_heatloss_pct": "mdi:snowflake-thermometer",
     "motion_timeout_minutes": "mdi:timer-outline",
     "door_ice_minutes": "mdi:door-open",
     "window_ice_minutes": "mdi:window-open",

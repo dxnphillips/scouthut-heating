@@ -184,8 +184,9 @@ def test_shared_follows_a_hall_booking_regardless_of_season():
     # A booking warms a cold shared zone to comfort (people use the kitchen/
     # toilets during a session), whatever the warm-season flag says.
     ctrl = _cold_hall_booking()
-    assert ctrl._desired_shared() == PRESET_COMFORT
-    assert ctrl._preset_reason["shared"] == "booking"
+    motion(ctrl, "hall")  # the group is in
+    assert ctrl._desired_room("kitchen") == PRESET_COMFORT
+    assert ctrl._preset_reason["kitchen"] == "booking"
 
 
 # --- The hall is judged on its AVERAGE, not its cold end (v1.47.0) -----------
