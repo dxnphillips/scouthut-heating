@@ -41,7 +41,7 @@ def test_fire_forces_everything_off():
     assert ctrl._desired_zone(ZA) == PRESET_ICE
     assert ctrl._preset_reason[ZA] == "fire"
     assert ctrl._desired_zone(ZB) == PRESET_ICE
-    assert ctrl._desired_shared() == PRESET_ICE
+    assert all(ctrl._desired_zone(r) == PRESET_ICE for r in ("kitchen", "gents", "ladies"))
     assert ctrl._desired_water() is False
     assert ctrl._fan_target() == (False, None, "off")
     assert any(e["event"] == "fire" for e in ctrl.audit.to_list())

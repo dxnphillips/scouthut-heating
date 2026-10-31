@@ -132,21 +132,74 @@ def test_every_heater_write_blocks():
     assert all(c["blocking"] for c in heater_calls)
 
 
-def test_hall_eco_apply_lands_the_eco_value_and_the_eco_low_repush():
+def test_hall_eco_apply_lands_the_eco_value():
     _wire_numbers()
     ctrl, hass = make_controller()
-    motion(ctrl, "office")  # someone elsewhere -> hall rests at ordinary eco
+    motion(ctrl, "office")  # someone elsewhere -> hall rests at eco
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_ECO
     eco = ctrl.number("hall_eco_temp")
     assert _landed(hass, HB) == eco and _landed(hass, HF) == eco
-    # A keyword booking starts on an already-eco hall: the backstop re-push of
-    # the eco number must LAND the eco-low value too (a changed number alone
-    # left the radiator at 16 on this hardware).
-    booking(ctrl, ZA, title="test")
+    # A slider change on an already-eco hall is landed too (a changed number
+    # alone never moves the live setpoint on this hardware).
+    ctrl._numbers["hall_eco_temp"].native_value = 15.0
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_ECO
-    assert _landed(hass, HB) == ctrl.number("hall_eco_low_temp")
+    assert _landed(hass, HB) == 15.0
+
+
+# --- One eco temperature in every zone (v1.51.0) --------------------------------
+# Until v1.51.0 the office and the kitchen and toilets rested at whatever eco was
+# stored on each radiator, never written by us. Now eco is the one slider value
+# everywhere: written to each heater's eco number once and landed on the live
+# setpoint on every eco apply.
+OFFICE = "climate.office"
+
+
+def _office_and_rooms_at_eco(ctrl, hass):
+    hass.states.set(OFFICE, "heat", {"current_temperature": 15.0})
+    for room in ("kitchen", "gents", "ladies"):
+        hass.states.set(f"climate.{room}", "heat", {"current_temperature": 15.0})
+    motion(ctrl, "hall")  # someone in the hall: office and rooms rest at eco
+    run(ctrl.async_reconcile())
+
+
+def test_office_and_rooms_rest_at_the_same_eco():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _office_and_rooms_at_eco(ctrl, hass)
+    eco = ctrl.number("hall_eco_temp")
+    for zone, climate in (("zone_b", OFFICE), ("kitchen", "climate.kitchen"),
+                          ("gents", "climate.gents"), ("ladies", "climate.ladies")):
+        assert ctrl.applied[zone] == PRESET_ECO, zone
+        assert _landed(hass, climate) == eco, zone
+        assert _pushed(hass, f"number.{climate.split('.')[1]}_eco_temperature") == eco
+
+
+def test_the_eco_number_is_written_once_not_on_every_eco_apply():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _office_and_rooms_at_eco(ctrl, hass)
+    eco_writes = lambda: [  # noqa: E731
+        c for c in service_calls(hass, "number", "set_value")
+        if "number.office_eco_temperature" in _ids(c)
+    ]
+    assert len(eco_writes()) == 1
+    run(ctrl._async_set_preset("zone_b", PRESET_ICE))
+    run(ctrl._async_set_preset("zone_b", PRESET_ECO))
+    assert len(eco_writes()) == 1  # same value: no second number write
+    assert len(_landings(hass, OFFICE)) == 2  # but the live setpoint is landed
+
+
+def test_an_eco_slider_change_reaches_the_office_and_rooms_already_at_eco():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _office_and_rooms_at_eco(ctrl, hass)
+    ctrl._numbers["hall_eco_temp"].native_value = 15.0
+    run(ctrl.async_reconcile())
+    for climate in (OFFICE, "climate.kitchen", "climate.gents", "climate.ladies"):
+        assert _landed(hass, climate) == 15.0, climate
+    assert _pushed(hass, "number.office_eco_temperature") == 15.0
 
 
 def test_undriven_comfort_lands_the_comfort_value():
@@ -352,23 +405,20 @@ def test_a_target_drop_resets_the_staircase():
     assert drops and drops[-1]["target"] == comfort and drops[-1]["stair"] >= 1.0
 
 
-def test_a_hold_that_rounds_down_mid_session_keeps_a_short_heaters_stair():
+def test_the_booking_hold_never_moves_the_drive_target():
     # 2026-10-21 16:50Z, a Wednesday booking in a hall that started the
-    # afternoon at 11.9: the booking hold sat on the 0.5 rounding line (margin
-    # 0.255 at outdoor 8.0, 0.232 at 9.0 with k 7.15 and gain 11.67), the
-    # weather ticked up a degree, the target rounded 19.5 -> 19.0, and the old
-    # rule reset +2.5-3.0 of overdrive on all four heaters while their probes
-    # sat at 17.5-18.0. The room fell 18.9 -> 17.8 over the next hour.
-    # Since v1.50.6 the hold rounds DOWN, so the line it dithers on is a whole
-    # 0.5 margin rather than 0.25; a leakier hall (k 15) puts it there at the
-    # same outdoor readings (0.53 at 8.0, 0.49 at 9.0).
+    # afternoon at 11.9: the booking hold sat on the 0.5 rounding line, the
+    # weather ticked up a degree, the target fell 19.5 -> 19.0 and the old rule
+    # reset +2.5-3.0 of overdrive on all four heaters (v1.50.4 kept a short
+    # heater's stair). Since v1.51.0 the hold moves the gate only, so the drive
+    # target is comfort at both readings and there is no drop to handle.
     _wire_numbers()
     ctrl, hass = make_controller()
     for key, value in (
         ("hall_comfort_temp", 19.0),
         ("zone_a_heatloss_pct", 15.0),
-        ("zone_a_warmup_rate", 11.67),
-        ("zone_a_warmup_rate_fans", 11.67),
+        ("zone_a_warmup_rate", 16.05),  # 11.67 then, x1.375 since v1.51.0
+        ("zone_a_warmup_rate_fans", 16.05),
         ("booking_hold_cap", 1.5),
     ):
         ctrl._numbers[key].native_value = value
@@ -378,23 +428,12 @@ def test_a_hold_that_rounds_down_mid_session_keeps_a_short_heaters_stair():
     hass.states.set(HB, "heat", {"current_temperature": 18.0})
     hass.states.set(HF, "heat", {"current_temperature": 17.5})
     run(ctrl.async_reconcile())
-    assert ctrl._drive_target[HB] == 19.5  # 19.0 + a hold of 0.53, rounded down
-    # The overdrive the afternoon's climb had committed by then, its last step
-    # just taken (so this tick isolates the drop from the next step).
-    for climate in (HB, HF):
-        ctrl._drive_stair[climate] = 2.5
-        ctrl._drive_step_at[climate] = dt_util.utcnow()
+    assert ctrl._booking_hold_margin(ZA) > 0.5
+    assert ctrl._drive_target[HB] == 19.0
     hass.states.set(E["weather"], "cloudy", {"temperature": 9.0})
     run(ctrl.async_reconcile())
-    assert ctrl._drive_target[HB] == 19.0  # the hold rounded down
-    assert ctrl._drive_stair[HB] == 2.5 and ctrl._drive_stair[HF] == 2.5
-    # The drop lowers it and nothing more: 19.0 + the kept 2.5 + the one-step
-    # heat-loss feedforward a k of 15 earns on a 9 °C night.
-    assert _pushed(hass, _num(HB)) == 22.0
-    drops = _events(ctrl, "drive_target_drop")
-    assert {e["heater"] for e in drops} == {HB, HF}
-    assert all(e["reset"] is False for e in drops)
-    assert next(e for e in drops if e["heater"] == HB)["probe"] == 18.0
+    assert ctrl._drive_target[HB] == 19.0
+    assert not _events(ctrl, "drive_target_drop")
 
 
 def test_a_target_drop_resets_only_the_heater_that_has_reached_it():

@@ -22,7 +22,7 @@ from custom_components.scout_hut_heating.coordinator import (
     DRIVE_COAST_MIN_SURFACE_C,
 )
 from custom_components.scout_hut_heating.drive import STEP, update_drive
-from scout_testkit import E, ZA, make_controller, set_registry
+from scout_testkit import E, ZA, make_controller, motion, set_registry
 
 HB, HF = "climate.hall_back", "climate.hall_front"
 HB_SURFACE = "sensor.hall_back_surface_temperature"
@@ -81,9 +81,11 @@ def test_easing_never_blocks_the_initial_climb():
 
 
 # --- The coordinator's gates -------------------------------------------------
-def _ctrl(panel=None, comfort_temp=19.0):
+def _ctrl(panel=None, comfort_temp=19.0, occupied=True):
     ctrl, hass = make_controller()
     ctrl._numbers["hall_comfort_temp"].native_value = comfort_temp
+    if occupied:
+        motion(ctrl, "hall")  # someone in: the easing's other gates are under test
     if panel is not None:
         set_registry(
             entries_by_device={"dev_hall_back": [HB_SURFACE]},
@@ -108,6 +110,36 @@ def test_hot_panels_and_a_room_on_the_approach_engage_the_coast():
     assert evt["zone"] == ZA
     assert evt["zone_avg"] == 18.75
     assert evt["surface"] == 55.0  # the number DRIVE_COAST_MIN_SURFACE_C is set from
+
+
+# --- Only with someone in, or with the room already there (v1.51.0) -------------
+def test_an_empty_room_still_short_of_target_is_not_eased():
+    # 2026-10-29 18:19Z: an empty pre-heat eased at 18.75 on 71.5 °C panels and
+    # the room sat flat for the whole 20-min box (`rise` 0.0); across October
+    # every empty, still-short easing rose 0-0.25.
+    ctrl, _ = _ctrl(panel=71.5, occupied=False)
+    assert _coast(ctrl, 18.75) == 0.0
+    assert _events(ctrl, "drive_coast_ease") == []
+
+
+def test_an_empty_room_already_at_target_is_eased():
+    # 2026-10-30 17:04Z: an empty pre-heat eased at 19.0 and the panels carried
+    # it +0.62 — the mass tail of a room that has arrived.
+    ctrl, _ = _ctrl(panel=58.0, occupied=False)
+    assert _coast(ctrl, 19.0) == DRIVE_COAST_ALLOWANCE
+
+
+def test_people_arriving_lets_it_engage():
+    ctrl, _ = _ctrl(panel=60.0, occupied=False)
+    assert _coast(ctrl, 18.75) == 0.0
+    motion(ctrl, "hall")
+    assert _coast(ctrl, 18.75) == DRIVE_COAST_ALLOWANCE
+
+
+def test_a_night_arm_counts_as_people_in():
+    ctrl, hass = _ctrl(panel=60.0, occupied=False)
+    hass.states.set(E["alarm_main"], "armed_night")
+    assert _coast(ctrl, 18.75) == DRIVE_COAST_ALLOWANCE
 
 
 def test_cold_panels_never_engage_it():
@@ -299,7 +331,9 @@ def test_the_shared_zone_is_a_driven_zone_too():
     ctrl, hass = make_controller()
     hass.states.set(surface, "55.0")
     assert ctrl._zone_panels_hot("shared", 18.75) is True
-    assert ctrl._drive_coast("shared", 19.0, 18.75, True, ctrl._now()) == DRIVE_COAST_ALLOWANCE
+    # ...and its easing is off (v1.51.0): 21 of its 27 field easings rose 0.0.
+    assert ctrl._drive_coast("shared", 19.0, 18.75, True, ctrl._now()) == 0.0
+    assert not [e for e in ctrl.audit.to_list() if e.get("event") == "drive_coast_ease"]
 
 
 def test_a_full_reconcile_drives_every_zone_without_a_failing_step():

@@ -19,13 +19,24 @@ NAMES: dict[str, str] = {
     "zone_b_warmup_rate": "Office learned radiator gain (min/°C before leak)",
     "zone_a_heatloss_pct": "Hall learned heat loss (% of gap/h)",
     "zone_b_heatloss_pct": "Office learned heat loss (% of gap/h)",
+    "kitchen_warmup_rate": "Kitchen learned radiator gain (min/°C before leak)",
+    "gents_warmup_rate": "Gents toilet learned radiator gain (min/°C before leak)",
+    "ladies_warmup_rate": "Ladies toilet learned radiator gain (min/°C before leak)",
+    "kitchen_heatloss_pct": "Kitchen learned heat loss (% of gap/h)",
+    "gents_heatloss_pct": "Gents toilet learned heat loss (% of gap/h)",
+    "ladies_heatloss_pct": "Ladies toilet learned heat loss (% of gap/h)",
+    "zone_a_warmup_tail": "Hall learned start-up allowance",
+    "zone_a_warmup_tail_fans": "Hall learned start-up allowance (fans running)",
+    "zone_b_warmup_tail": "Office learned start-up allowance",
+    "kitchen_warmup_tail": "Kitchen learned start-up allowance",
+    "gents_warmup_tail": "Gents toilet learned start-up allowance",
+    "ladies_warmup_tail": "Ladies toilet learned start-up allowance",
     "motion_timeout_minutes": "No-motion eco timeout",
     "door_ice_minutes": "Door: drop to ice after",
     "window_ice_minutes": "Window: drop to ice after",
     "seasonal_lockout_temp": "Seasonal lockout: 3-day average threshold",
     "hall_comfort_temp": "Hall comfort temperature",
-    "hall_eco_temp": "Hall eco temperature",
-    "hall_eco_low_temp": "Hall eco-low temperature",
+    "hall_eco_temp": "Eco temperature (all rooms, and ECO bookings)",
     "water_preheat_minutes": "Water heater pre-heat lead time",
     "water_motion_keepalive_minutes": "Water heater keep-on after motion",
     "fan_dt_on": "Fan: ceiling-floor ΔT to start",
@@ -39,12 +50,12 @@ NAMES: dict[str, str] = {
     "fan_recirc_max_floor_temp": "Fan: recirculate until floor reaches",
     "drive_max_offset": "Drive-to-target: max setpoint boost",
     "office_comfort_temp": "Office comfort temperature",
-    "shared_comfort_temp": "Shared comfort temperature",
+    "shared_comfort_temp": "Kitchen & toilets comfort temperature",
     "boost_offset": "Boost temperature offset (above comfort)",
     "booking_hold_cap": "Booking hold: max °C above comfort",
 }
 
-HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp", "hall_eco_low_temp")
+HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp")
 
 
 async def async_setup_entry(

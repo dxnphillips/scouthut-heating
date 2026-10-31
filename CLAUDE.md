@@ -23,8 +23,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 255
-  passing as of 2026-07-12.
+  a fully wired controller). Every behaviour change ships with tests. 793
+  passing as of 2026-10-31.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
   `fans_follow_state`) were removed entirely — **fan direction is now fully
@@ -744,6 +744,26 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    **owner-side, set `zone_a_warmup_rate_fans` to ~14**. Q17 read: the climb
    was still rising ~1.6 °C/h at 18 with elements saturated, so soak, not a
    capacity wall.
+   **The soak case recurred, the key was not raised (2026-10-28, 2026-10-31
+   export).** Wednesday's 19:00Z booking: pre-heat 17:15Z from 13.38 (coldest
+   13.0), outdoor 11.3, lead 111 at gain 11.67, arrived **+0.75 short** (average
+   18.25), and an easing at 19:04Z on the short room took the full box for
+   +0.12. `zone_a_warmup_rate_fans` was still 11.67 (now 11.74 after the 10-29
+   sample folded 11.92). Leads from warmer starts were good: 10-29 from 15.0
+   reached 19.0 at 18:57Z for a 19:00Z booking (lead 98, sample 11.92 accepted);
+   the 10-30 eco pre-heats (12.5 → 16 and 14.5 → 16) landed 3 and 11 min early;
+   10-30 17:30Z from 17.25 was ~30 min early (lead 72 for a 39-min climb, k
+   18.63). Two cold-soaked arrivals in two weeks, both starts ≤ 13.4, both short
+   by 0.75–0.88: the owner-side ~14 still stands, and if it goes short a third
+   time from a soaked start the lead needs a start-temperature term rather than
+   a bigger gain for every climb.
+   **Not a start-temperature term: the fixed tail was the error (v1.51.0, see
+   the learned-allowance bullet under Working conventions).** A straight line
+   through the October hall pre-heats (`rise + leak = gain × hours − tail`)
+   puts the tail at 0.2–0.5, not 2.5: a big tail with a fast gain over-charges a
+   short climb and under-charges a long one, which is exactly early-shallow /
+   late-deep. The tail is now learned per gain key; the owner-side ~14 is
+   superseded by the one-time ×1.375 conversion (11.74 → 16.14).
 4. **Gap-normalised heat-loss constants (`zone_X_heatloss_pct`, seed 25).**
    July measurements: hall ~10 %/h, office ~4.5 %/h. Verify autumn/winter
    `cooloff_sample` events (they carry `gap`) confirm season transfer;
@@ -1319,6 +1339,39 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
     `zone_b` reset), and get hall_left looked at (obstruction first, else
     the Rointe sensor). **Not done:** the drive's own sanity rule
     (`DRIVE_PROBE_SANE_BELOW` on the upper-middle) is unchanged.
+    **Field check on v1.50.9 (2026-10-31 export):** one `probe_implausible`
+    (10-26 01:46Z) and one `probe_plausible` 41 h later (10-27 18:56Z, reading
+    15.5 as the eco booking heated the hall), no flaps and one alert where 1.50.7
+    pushed four a day. hall_left has read in step since (12.5 against 11.5–12.0
+    at the export, its usual warm end). The owner reset `zone_a_heatloss_pct` to
+    13 (the 10-27 samples start from it).
+    **The nightly Rointe blink was costing the overnight cool-offs (v1.51.0,
+    `COOL_DROPOUT_GRACE_MIN` = 5).** Every night of the export the Rointe
+    integration dropped all heaters for one ~30-s poll (`fan_sensor_lost` floor
+    at 06:28, 00:37, 06:01, 04:24, 01:36Z, and a partial one at 04:06Z on
+    10-31). v1.50.9's probe-set guard discarded the running hall AND office
+    sample each time (twice on a partial blink), and the lost reading also reset
+    the settle clock, so the next sample was stamped `settled_min` 20.0 when the
+    zone had been on ice for 3–5 h (10-30 04:18Z hall, 03:58Z office). The
+    overnight samples are the slow ones (6–13 %/h against 24–30 for the
+    post-session ones), so losing one a night pushed k up. A sample now skips
+    the ticks while the same probes are briefly unreadable and waits up to
+    5 min; past that it ends (`cooloff_discarded` `reading_lost`). A
+    plausibility swap still ends it at once (`probes_changed`), heating resuming
+    still ends it, and only heating resets the settle clock. Tests in
+    `tests/test_cooloff_dropout.py`.
+    **The expiry now fixes itself (v1.51.0, owner: "lock those in").** When
+    every heater has been unreachable for `HEATERS_OFFLINE_MINUTES` (10),
+    `_maybe_reload_rointe` calls `homeassistant.reload_config_entry` on the
+    mapped heaters (`rointe_reload`); the outage push waits 10 min after a
+    reload, so a reload that works (`rointe_reload_recovered`) wakes nobody.
+    Three tries an hour apart, then the alert says the reloads did not help
+    (internet or cloud). Nothing in the Rointe integration is touched: it is
+    the same reload the owner does by hand. The owner-side six-day reload
+    automation is no longer needed. **Watch:** the first expiry after the
+    v1.51.0 deploy (168 h after that restart) should show `heaters_offline`
+    absent and a `rointe_reload` / `rointe_reload_recovered` pair ~10–12 min
+    apart.
 19. **Is 19.5 the right comfort target for a low-activity seated group? (No
     data / no measurement yet — 2026-07-27 discussion.)** `hall_comfort_temp`
     = 19.5 is an *air-temperature* setpoint, but what a still, seated group feels
@@ -2003,7 +2056,10 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   and Pause is the only button that stops them — the second fits the 82-s
   timing best. Not built: a separate occupant **Fans off** hold beside Pause
   would let them stop the fans without stopping the heat; the owner's answer
-  from the leaders decides it.
+  from the leaders decides it. **Fifth case (2026-10-30 12:52:53Z, a daytime
+  visitor):** reverse fans started 12:35:15Z at ~55 W, Pause at an average of
+  ~18.5–19 with the ceiling at 20.3; the visitor stayed until the 15:10Z arm
+  with the hall falling to 16.9, and the 16:25Z pre-heat lifted the pause.
 - **A breeze-guard stop respects the minimum-run timer.** A 2-second door
   blip grants the vent pass, starts the fans, and its closure leaves up to
   10 minutes of running fans under an active hold (observed in the field,
@@ -2534,6 +2590,24 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   the 0.62 of 10-07; a positive `booking_start.shortfall` on a cold morning
   with `drive_off` 0 would mean the half-power finish is costing more than the
   lead allows, and the answer is the lead's `APPROACH_TAIL_C`, not the band.
+  **No easing in the shared block (v1.51.0, `DRIVE_COAST_ZONES`).** Read under
+  the pre-agreed rule ("well under the allowance → lower it"): the shared's 27
+  easings from 10-07 to 10-30 rose 0.0 in 21 and +0.08 on average, most of
+  them the full 20-min box, so they only held the kitchen and toilets 0.5
+  under target (10-30 11:30Z: shared comfort lit and 13 s later the easing
+  pushed 18.5 on a 76.5 °C kitchen panel). The hall (31 episodes, mean +0.31,
+  up to +1.0 on an occupied session) and office (2) keep it. **Still open on
+  the hall:** an easing in an EMPTY room still short of target almost never
+  lands (10-29 18:19Z pre-heat 0.0, and every empty pre-heat in October 0–0.25)
+  while occupied ones land 0.5–1.0, and one engaged inside a booking that had
+  arrived short (10-28 19:04Z, +0.75 short, rise 0.12 over the full box).
+  **BUILT (v1.51.0, owner: "lock those in"):** the easing engages only when
+  someone is in the zone (`_zone_occupied`: PIR, override or Night/Home arm) or
+  its average is already at target, judged at engage like the panel line. The
+  10-30 17:04Z empty-at-target case (+0.62) still eases; the 10-29 18:19Z empty
+  pre-heat (0.0) would not. The 10-28 in-booking case had hall motion and still
+  eases. **Watch:** `drive_coast_end.rise` should now cluster 0.4–1.0; zero-rise
+  boxes should be rare.
   **Same export, a second bug: a booking's end re-lit comfort as a phantom
   `preheat` (four times in five days — 09-17 18:16Z, 09-18 10:15Z and 19:30Z,
   09-21 11:00Z; fixed v1.43.1).** `_async_refresh_calendars` holds `cal_window`
@@ -2905,6 +2979,28 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   +0.75 over comfort, no breeze, no complaint. At k 13.44 the radiators are
   lifted at any outdoor ≲ 7.6 °C, not ≲ 3. The lead it sized that afternoon
   (98 min) arrived 0.25 short, so the higher k is not over-leading yet.
+  **The lift is gone; the hold moves the gate only (v1.51.0, 2026-10-31 export,
+  owner: "keep the temperature as stable as possible at the desired values").**
+  k kept climbing on post-session cool-offs (13.0 reset → 16.25 → 11.67 → 14.58
+  → 17.1 → 19.34 → 16.02 → 18.63 → 14.56 in five days: samples anchored 35–65
+  min after the ice edge read 24–30 %/h, overnight ones 6–13), so on Friday
+  10-30 (outdoor 9.9, k 18.63) the margin was 0.55, the radiators' target 19.5
+  and hall_front was pushed 20.0: the 17:30Z booking ran more than 0.5 over for
+  **129 min** (`peak_over` 1.0, average 19.6–20.0). Thursday 10-29 at a similar
+  outdoor (10–11.4, k 13.68, margin 0.39, no lift) held **19.0–19.38** for the
+  whole 90-min slot (`peak_over` 0.5, `minutes_over` 0) and never dipped. Every
+  booking the lift has touched ran warm (10-22 1.62 / 1.12, 10-23 +0.75, 10-30)
+  and none came near a dip, because the gate already keeps a booked hall in
+  comfort (engage and release on comfort + the raw margin) and the drive's
+  staircase cancels the Rointes' droop. So `_drive_comfort_target` now ignores
+  the hold; `_booking_hold_margin` still sets the gate. This reverses the
+  2026-08-07 trade ("a booked hall runs a fraction warm on cold evenings"); the
+  owner can have it back by restoring one line. With the lift gone, a hold
+  dither can no longer drop the drive target, so the v1.50.4 target-drop case
+  is now boost expiry only. **Watch:** a cold evening booking whose average
+  dips below comfort by more than 0.5 with the zone in comfort and the stair
+  at 0 would be the evidence for a lift; the k swing itself is left alone (it
+  moves the gate line and the lead by a few minutes, nothing worse).
 - **Heating is decoupled from the season — one gate, occupancy == booking
   (2026-08-07).** The seasonal lockout no longer blocks heat. Both a booking and
   bare occupancy heat on the **same** self-calibrating test, `_room_wants_heat(zone,
@@ -2952,7 +3048,9 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   `booking` / `preheat` / `booking_warm` / `booking_eco` /
   `booking_quiet` / `preheat_coast` / `booking_coast` for bookings; `motion` /
   `occupied_override` / `sleepover` / `eco_tail` (heating) and `occupied_warm`
-  (warm → ice) for occupancy; the `lockout_*` tags are gone. **Shared (kitchen/toilets/stores) heats toward
+  (warm → ice) for occupancy; the `lockout_*` tags are gone. **The kitchen, gents
+  and ladies are three zones since v1.51.0 — see the room-zones bullet below; the
+  block description that follows is the history.** **Shared (kitchen/toilets/stores) heats toward
   comfort too now** (2026-08-07): `_desired_shared` warms the block to
   `shared_comfort_temp` (via `_shared_wants_heat`, the shared analog of the gate —
   coldest shared probe below target, err-warm on unreadable) whenever it is
@@ -3096,6 +3194,16 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   cleaner finishing up, heating the kitchen and toilets toward 19. With no
   booking running and either zone's tail active, a shared PIR trip now rests
   the block at eco (reason `eco_tail`); after the tail it heats as before.
+  **The tail lasts the visit (v1.51.0, field 2026-10-30).** The 09:45–11:15Z
+  sal-vation clean overran by an hour with the hall PIR never quiet (no fresh
+  `motion` event from 09:32Z to the 12:18Z arm). The 15-min tail ran out at
+  11:30:01Z and the hall and shared went to comfort 19 for the cleaner (hall
+  16.1 → 18.9) until the alarm. `_eco_tail_active` now carries the tail one
+  more motion timeout for each motion anywhere in the building inside it, so
+  it ends only after the building has been quiet for a timeout, and an away
+  arm on the zone's panel ends it at once (someone else arrived at 12:28Z,
+  inside the timeout of the 12:18Z arm, and is a new visit). Tests in
+  `tests/test_eco_tail.py`.
   **Two logging gaps closed in the same release (v1.49.1).** `fan_sensor_lost`
   now carries `ceiling` / `floor` (which input dropped) and `fan_sensor_restored`
   marks the recovery — the ~06:20–06:30Z losses on 2026-10-01 and 10-03 could not
@@ -3310,11 +3418,9 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   a no-op). No-op if the alarm integration is not installed (the event never
   fires). Diagnostics carry `state.fire_hold`.
 
-**Owner-side outstanding** (not code): **at the v1.43.0 deploy, reset
-`zone_a_warmup_rate_fans` 40 → 15** (the entity now holds the GROSS radiator gain,
-min/°C before leak; the 09-16/09-21 cold climbs read 10–14, and 40 in the new units
-would pin every lead at the cap) — leave `zone_a_warmup_rate` (33) and
-`zone_b_warmup_rate` alone, they only err warm and the step cap walks them down.
+**Owner-side outstanding** (not code): (the v1.43.0 `zone_a_warmup_rate_fans`
+reset is long done, and v1.51.0 converts the gains itself — do NOT hand-edit them
+around that deploy: the conversion multiplies whatever it finds by 1.375 once.)
 Set `MIN_RUN_W ≈ 20` in the Shelly
 fan script — the stall threshold must sit *below the lowest running draw*, and
 the **2026-07-14 commissioning measured the lowest forward dial at 40 W** (full
@@ -3354,11 +3460,107 @@ Rointe-integration reload automation (the 7-day token); raise the upstream issue
 identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was given
 2026-09-17; the 12:03Z write-to-all question is resolved under Q25.)
 
+- **The kitchen, gents and ladies are three zones run like the hall (v1.51.0,
+  owner: "they will need 3 individual zones ... and essentially work the same
+  way as the hall").** The field case (week of 2026-10-26): the block iced
+  whenever both alarm panels were set and a booking did not override that, so
+  it only started heating when someone disarmed on arrival. Coldest room at the
+  start of each evening booking: 13.0 (Wed 28, disarm 18:35 for 19:00), 14.0
+  (Thu 29, disarm 18:54), 16.0 (Fri 30, disarm 17:45 for 17:30); 19 reached
+  never, never, and 85 min in. Now: `ROOMS` = kitchen / gents / ladies, matched
+  to the shared heaters by entity id (`_room_climates`, a heater matching none
+  fills an empty room); `_climates_of(zone)` resolves any zone, so the generic
+  helpers (`_zone_climate_temps`, `_room_wants_heat`, `_zone_preheat_minutes`,
+  warm-up/cool-off learning, `_async_set_preset`, the drive) run per room.
+  The rooms run through `_desired_zone` itself (one ladder for all five zones
+  since the follow-up commit; `_desired_room` was a separate copy at first) on
+  the room's own reading and PIR (`ROOM_MOTION_AREA`, ladies = `female`). The
+  deliberate differences live in per-zone helpers: either calendar's booking
+  counts, warmest wins (`_running_calendars`, `_eco_keyword_active`,
+  `_booking_event_running`); `booking_quiet` judges the whole building, not the
+  room's PIR (`_booking_present` — a toilet is empty most of a session; also
+  `_booking_awaiting`); outside a booking both panels away is still what ices
+  them (`_zone_alarm_away` — the office shares them); either booking's eco tail.
+  A booking — running, or the room's own pre-heat window from
+  `_refresh_room_windows` (the earliest event on either calendar, ECO ones
+  included at the eco target, `_room_window_eco`; the room's own lead; the
+  hall's latch and blind rules via the shared `_judge_preheat_window`) — beats
+  the alarm. The rooms get the hall's frozen-reading relight and its hold, and
+  an ECO booking now heats a room only while it is below eco (warm →
+  `booking_warm` ice). No override switch, no sleepover heating, no coast,
+  cooling hold or booking hold for a room (the last three are hall-only inside
+  their own helpers). New learned
+  entities `{kitchen,gents,ladies}_warmup_rate` (seed 15) and `_heatloss_pct`
+  (seed 12): not the hall's slow 60/25 seeds, which would pin every lead at the
+  240 cap; 15/12 is on the slow side of the block's measured ~11–12 gross on
+  10-29/30, so an unlearned room arrives early. `booking_start.rooms` records
+  each room's reading at the start (the "warm in time?" measure);
+  diagnostics `readings.zones.shared.rooms`; `applied["shared"]` is the warmest
+  room's preset (status sensor). The opening-inferred push stays hall/office
+  only (a room's out-of-family cool-off is audited, not pushed). **Watch:**
+  `booking_start.rooms` should read ≥ 18.5 on evening bookings; the first
+  `warmup_sample` per room (`rate_key` `gents_warmup_rate` etc.) should land
+  near 11–13 gross; preset churn on the toilets outside bookings (each room now
+  flips on its own PIR) — if it is a nuisance, Q22's dwell is the lever.
+- **Eco is one temperature in every zone; the eco-low slider is gone (v1.51.0,
+  owner: "they're not cleaners, they're fitness classes and they've worked out
+  that 16 is fine for them so they can just be eco bookings").** The sal-vation
+  bookings are fitness classes, not cleaning. An ECO-keyword booking now heats
+  to `hall_eco_temp` (16) like any eco rest; `hall_eco_low_temp`,
+  `_eco_low_wanted` and `_hall_eco_target` are removed, and the eco tail heats
+  toward the same eco. The office and the three rooms rested at whatever eco
+  was stored on each radiator, never written by us (one reason the office's
+  heat may have been "on a fair bit"): `_async_land_zone` now writes the eco
+  value to each office/room heater's own eco number once per change
+  (`_heater_eco_number`, `_eco_number_pushed`) and lands it on the live
+  setpoint on every eco apply; `_reland_eco` re-lands a slider change on any
+  office/room zone already at eco. Office eco drift is still not judged (a
+  mismatch latches a manual hold at once; whether the device keeps the landed
+  eco through its own syncs is unproven). **Owner-side:** delete the orphaned
+  `hall_eco_low_temp` entity. Tests in `tests/test_write_path.py` and
+  `tests/test_eco_tail.py`.
+- **The pre-heat's start-up allowance is learned, not fixed (v1.51.0; owner:
+  "will it learn correctly rather than just be fixed values based on one half of
+  a season").** The heat-balance lead charged every climb a fixed
+  `APPROACH_TAIL_C` 2.5 on top of the deficit. October said that was wrong in a
+  way no gain could fix: shallow climbs led up to 20 min early, and the two
+  cold-soaked ones (10-21 from 11.9, 10-28 from 13.4) 28–44 min LATE, because a
+  big tail with a fast gain over-charges short climbs and under-charges long
+  ones. A least-squares line through the nine October hall pre-heats, `rise +
+  k × gap × hours = gain × hours − tail`, gives tail 0.2–0.5 and gain 17–19.
+  Now: `{zone}_warmup_tail` per gain key (hall base / hall fans / office /
+  kitchen / gents / ladies), seed `TAIL_SEED_C` 1.0, bounds [0.5, 3.0];
+  `preheat.learned_warmup` keeps the key's last `WARMUP_HISTORY_MAX` (10) usable
+  climbs (persisted, exported as `learned.warmup_history`) and, once
+  `FIT_MIN_SAMPLES` (4) spread ≥ 30 min in length, moves the tail toward the
+  fitted intercept by ≤ 0.5 a climb and re-fits the gain with that tail held
+  (25 % step cap); before that the gain folds by the old EWMA at the current
+  tail. **A pre-heat its booking overtakes is now kept** (`cut_short`), closed
+  at the booking start before the group's heat joins it — the climbs where the
+  lead was short are the ones it most needs; any other early end is still
+  dropped, and no sample opens on a running booking. **One-time conversion:**
+  the first start after the upgrade multiplies the hall/office gains by
+  `TAIL_CONVERSION` (1.375, which keeps a 3 °C climb's lead) and marks the store
+  (`warmup_tail_v`, saved at once; `warmup_gain_converted` in the audit); a
+  fresh install converts nothing; the rooms are new this release and seeded at
+  20 in the new units; `HOLD_WARMUP_REF` 12 → 16.5 with it so the booking hold
+  is unchanged. Replayed through October (7 cold-gated climbs, converted start
+  16.14 / 1.0): the line engages at the 4th climb and settles at gain ~18.0 /
+  tail 0.5 (the floor); lead − actual goes from −44 / −28 (10-21 / 10-28, the
+  late arrivals) to −7 / −2, and every climb lands within −7 … +12. **Watch:**
+  `warmup_sample.method` should read `fit` from the fourth cold pre-heat per key;
+  if the tail pins at the 0.5 floor for weeks, the floor is the next thing to
+  lower (to ~0.2), not the gain; a `booking_start.shortfall` on a cold-soaked
+  start after the line is fitted would mean soak needs its own term after all.
+  Tests in `tests/test_startup_allowance.py` (the fit, the caps, the October
+  replay, the conversion) and `tests/test_learning_conditions.py`.
+
 ## Architecture pointers
 
 - `coordinator.py` — single 30 s reconciler; priority ladder in
   `_desired_zone` (disabled/hold → heating-paused → opening → boost → alarm →
-  booking/pre-heat → override/motion/night-arm → empty). Booking and occupancy both heat
+  booking/pre-heat → override/motion/night-arm → empty), one ladder for the hall,
+  the office and each kitchen/toilet room (v1.51.0). Booking and occupancy both heat
   only when `_room_wants_heat(zone, target)` (room below target); a warm room
   lands on ice. No seasonal rung — the season no longer gates heat.
 - `preheat.py` — pure optimum-start maths (learned min/°C rates, Newton

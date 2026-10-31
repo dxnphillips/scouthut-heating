@@ -5,7 +5,6 @@ from scout_testkit import (
     PRESET_ECO,
     ZA,
     FakeNum,
-    booking,
     make_controller,
     motion,
     run,
@@ -73,7 +72,7 @@ def test_cal_window_persisted_and_restored():
     assert ctrl2.cal_window[ZA] is True
 
 
-# --- Fix 2: eco-low re-pushed when it changes without a preset transition ----
+# --- Fix 2: eco re-pushed when it changes without a preset transition --------
 def _hall_eco_registry():
     set_registry(
         entries_by_device={
@@ -101,7 +100,7 @@ def _last_eco_value(hass):
     return None
 
 
-def test_eco_low_repushed_when_keyword_starts_on_an_already_eco_hall():
+def test_an_eco_slider_change_is_repushed_on_an_already_eco_hall():
     _hall_eco_registry()
     ctrl, hass = make_controller()
     # Hall rests at ordinary eco because someone is elsewhere in the building
@@ -112,12 +111,12 @@ def test_eco_low_repushed_when_keyword_starts_on_an_already_eco_hall():
     assert ctrl.applied[ZA] == PRESET_ECO
     assert _last_eco_value(hass) == ctrl.number("hall_eco_temp")  # 16
 
-    # A keyword ("test") booking now starts while the hall is ALREADY eco, so
-    # the preset does not change and the per-transition push never fires.
-    booking(ctrl, ZA, title="test")
+    # The eco slider moves while the hall is ALREADY eco, so the preset does
+    # not change and the per-transition push never fires.
+    ctrl._numbers["hall_eco_temp"].native_value = 15.0
     run(ctrl.async_reconcile())
-    # The reconcile backstop re-pushed the eco-LOW value (14), not the 16.
-    assert _last_eco_value(hass) == ctrl.number("hall_eco_low_temp")  # 14
+    # The reconcile backstop re-pushed the new value.
+    assert _last_eco_value(hass) == 15.0
 
 
 # --- Fix 4: a swallowed setpoint push is audited, not silent -----------------

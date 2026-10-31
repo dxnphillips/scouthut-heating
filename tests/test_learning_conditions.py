@@ -179,9 +179,12 @@ def test_a_window_opening_on_an_iced_hall_opens_the_sample():
     assert ctrl._warmup_start[ZA] is not None
 
 
-def test_a_pre_heat_that_runs_into_its_booking_keeps_its_sample():
-    # "Read at the START": the booking start moves the live reason to `booking`
-    # but the zone entered comfort for the pre-heat, so the sample runs on.
+def test_a_pre_heat_cut_short_by_its_booking_is_kept_and_closed_at_the_start():
+    # v1.51.0: a pre-heat the booking overtakes is the lead having been too
+    # short, the climb the lead most needs to learn from (2026-10-21 and 10-28
+    # arrived short from cold-soaked starts and were both dropped as "ended
+    # early"). It closes AT the booking start, before the group's own heat joins
+    # it, and folds like a climb that arrived.
     ctrl, hass = make_controller()
     _outdoor(hass, 8.0)
     hall_temp(ctrl, 15.0)
@@ -189,16 +192,24 @@ def test_a_pre_heat_that_runs_into_its_booking_keeps_its_sample():
     run(ctrl.async_reconcile())
     assert ctrl._warmup_start[ZA] is not None
 
-    advance(ctrl, 20)
-    hall_temp(ctrl, 16.0)
+    advance(ctrl, 40)
+    hall_temp(ctrl, 17.5)
     booking(ctrl, ZA)
     motion(ctrl, "hall")  # an attended booking (an empty one parks at eco)
     run(ctrl.async_reconcile())
     _no_step_failed(ctrl)
     assert ctrl.applied[ZA] == PRESET_COMFORT
     assert ctrl._preset_reason[ZA] == "booking"
-    assert ctrl._preset_entry_reason[ZA] == "preheat"
-    assert ctrl._warmup_start[ZA] is not None
+    assert ctrl._warmup_start[ZA] is None
+    (evt,) = [e for e in ctrl.audit.to_list() if e.get("event") == "warmup_sample"]
+    assert evt["cut_short"] is True and evt["reached_target"] is False
+    assert evt["rise"] == pytest.approx(2.5) and evt["accepted"] is True
+
+    # ...and no new sample opens on the running booking.
+    advance(ctrl, 15)
+    hall_temp(ctrl, 18.0)
+    run(ctrl.async_reconcile())
+    assert ctrl._warmup_start[ZA] is None
 
 
 # --- Cool-off: the anchor waits for the panels, not just the clock ------------

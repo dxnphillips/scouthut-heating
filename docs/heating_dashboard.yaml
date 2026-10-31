@@ -116,9 +116,7 @@ views:
           - entity: number.scout_hut_heating_hall_comfort_temperature
             name: Hall comfort
           - entity: number.scout_hut_heating_hall_eco_temperature
-            name: Hall eco
-          - entity: number.scout_hut_heating_hall_eco_low_temperature
-            name: Hall eco-low (ECO bookings)
+            name: Eco (all rooms, ECO bookings)
           - entity: number.scout_hut_heating_seasonal_lockout_3_day_average_threshold
             name: Seasonal lockout threshold
 

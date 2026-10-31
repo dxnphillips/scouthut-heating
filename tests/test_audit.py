@@ -202,10 +202,12 @@ def test_accepted_warmup_sample_is_audited_with_its_inputs():
     assert evt["minutes"] == pytest.approx(120, abs=0.1)
     assert evt["rise"] == pytest.approx(4.0)
     assert evt["avg_gap"] == pytest.approx(15.0)  # (18 + 22) / 2 - 5
-    # Gross gain: (4 + 2.5 tail) / 2 h = 3.25 °C/h -> 18.46 min/°C.
-    assert evt["observed_gain"] == pytest.approx(60 / 3.25, abs=0.01)
+    # Gross gain: (4 + 1.0 allowance) / 2 h = 2.5 °C/h -> 24 min/°C.
+    assert evt["observed_gain"] == pytest.approx(60 / 2.5, abs=0.01)
     assert evt["old_rate"] == 20.0
-    assert evt["new_rate"] == pytest.approx(19.54, abs=0.01)
+    assert evt["new_rate"] == pytest.approx(21.2, abs=0.01)
+    assert evt["old_tail"] == evt["new_tail"] == 1.0  # one climb: no line to fit yet
+    assert evt["method"] == "ewma" and evt["history_n"] == 1
 
 
 def test_rejected_warmup_sample_is_audited_as_rejected():
@@ -248,7 +250,7 @@ def test_warmup_sample_records_the_raw_end_reading_and_the_clamped_rise():
     assert evt["end_temp"] == 24.0
     assert evt["rise"] == pytest.approx(4.0)
     assert evt["accepted"] is True
-    assert evt["new_rate"] == pytest.approx(19.54, abs=0.01)  # same as the honest 18 -> 22
+    assert evt["new_rate"] == pytest.approx(21.2, abs=0.01)  # same as the honest 18 -> 22
 
 
 def test_warmup_sample_records_the_average_fan_wattage():
@@ -315,7 +317,7 @@ def test_warmup_in_cold_weather_is_learned():
     cold = _run_warmup(5.0)
     assert cold["mild"] is False
     assert cold["accepted"] is True
-    assert cold["new_rate"] == pytest.approx(19.54, abs=0.01)
+    assert cold["new_rate"] == pytest.approx(21.2, abs=0.01)
 
 
 def test_warmup_with_no_outdoor_reading_is_not_learned():
@@ -570,10 +572,11 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
     monkeypatch.setattr(ctrl, "_async_calendar_events", _events)
     run(ctrl._async_refresh_calendars())
 
-    assert ctrl.cal_window[ZA] is True  # 30 min gap <= 110 min lead
-    (evt,) = events(ctrl, "preheat_start")
+    assert ctrl.cal_window[ZA] is True  # 30 min gap <= 80 min lead
+    (evt,) = [e for e in events(ctrl, "preheat_start") if e["zone"] == ZA]
     assert evt["zone"] == ZA
-    assert evt["lead_min"] == 110
+    assert evt["lead_min"] == 80  # (3 + the 1.0 allowance) at 3 °C/h
+    assert evt["tail"] == 1.0
     assert evt["gap_min"] == pytest.approx(30, abs=0.1)
     assert evt["rate"] == 20.0
     assert evt["indoor_coldest"] == 19.0
@@ -584,7 +587,7 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
 
     # Staying inside the window on the next refresh records nothing new.
     run(ctrl._async_refresh_calendars())
-    assert len(events(ctrl, "preheat_start")) == 1
+    assert len([e for e in events(ctrl, "preheat_start") if e["zone"] == ZA]) == 1
 
 
 def test_note_fan_speed_remembers_the_last_running_tap():
@@ -656,7 +659,7 @@ def test_preheat_start_records_the_rate_key_and_assumed_fan_speed(monkeypatch):
     monkeypatch.setattr(ctrl, "_async_calendar_events", _events)
     run(ctrl._async_refresh_calendars())
 
-    (evt,) = events(ctrl, "preheat_start")
+    (evt,) = [e for e in events(ctrl, "preheat_start") if e["zone"] == ZA]
     assert evt["rate_key"] == "zone_a_warmup_rate_fans"  # the optimistic path
     assert evt["fan_w_last"] == pytest.approx(195.0)
 
@@ -791,9 +794,9 @@ def test_never_heated_warm_coast_logs_no_overshoot():
 
     ctrl, hass = make_controller()
     ctrl.applied[ZA] = PRESET_ICE  # warm enough already: on ice, not driven
-    _hall_temp(hass, 16)  # well above the eco-low floor
+    _hall_temp(hass, 17.5)  # well above the eco floor (16)
     ctrl._record_booking_edges()  # baseline
-    booking(ctrl, ZA, "test")  # 'test' is a default ECO keyword -> eco-low target
+    booking(ctrl, ZA, "test")  # 'test' is a default ECO keyword -> eco target
     ctrl._record_booking_edges()  # start
     advance(ctrl, 30)
     ctrl._record_booking_edges()
@@ -806,27 +809,28 @@ def test_never_heated_warm_coast_logs_no_overshoot():
 
 
 def test_heated_eco_booking_still_logs_overshoot():
-    # A deep-winter eco booking DRIVEN up from frost toward its eco-low floor can
+    # A deep-winter eco booking DRIVEN up from frost toward its eco floor can
     # overshoot it (Rointe mass) exactly as a comfort booking overshoots 19 — that
     # IS overshoot and must be measured (the fix is not to exclude eco, but to
     # require the room was actually heated toward target).
     from scout_testkit import end_booking
 
     ctrl, hass = make_controller()
-    _hall_temp(hass, 13)  # below the eco-low floor, climbing
+    eco = ctrl.number("hall_eco_temp")  # an ECO booking aims at eco (16)
+    _hall_temp(hass, eco - 3)  # below the eco floor, climbing
     ctrl._record_booking_edges()  # baseline
-    booking(ctrl, ZA, "test")  # eco-low target 14
-    ctrl.applied[ZA] = PRESET_ECO  # being driven toward eco-low
+    booking(ctrl, ZA, "test")
+    ctrl.applied[ZA] = PRESET_ECO  # being driven toward eco
     ctrl._record_booking_edges()  # start (room below target: no overshoot yet)
-    _hall_temp(hass, 15.5)  # overshot the 14 floor
+    _hall_temp(hass, eco + 1.5)  # overshot the eco floor
     over_room = ctrl._zone_room_temp(ZA)
     ctrl._record_booking_edges()
-    _hall_temp(hass, 14)
+    _hall_temp(hass, eco)
     end_booking(ctrl, ZA)
     ctrl._record_booking_edges()  # end
 
     (evt,) = events(ctrl, "booking_end")
-    assert evt["peak_over"] == pytest.approx(over_room - 14)  # driven -> counted
+    assert evt["peak_over"] == pytest.approx(over_room - eco)  # driven -> counted
 
 
 def test_restart_mid_booking_records_no_phantom_start():

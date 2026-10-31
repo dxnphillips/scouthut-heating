@@ -2,7 +2,7 @@
 
 The fix: the winter recirc path harvests stored ceiling heat only toward the
 temperature the hall is actually being driven to (the applied preset's
-setpoint). So an eco-low booking whose room already sits above its low target
+setpoint). So an eco booking whose room already sits above its eco target
 (applied = ice) does NOT get unwanted ceiling heat destratified onto occupants
 who asked for it cool — while a genuine heating goal still runs the fans.
 """
@@ -48,16 +48,16 @@ def test_desired_setpoint_tracks_the_applied_preset():
     ctrl.applied[ZA] = "eco"
     ctrl.cal_title[ZA] = ""  # ordinary eco
     assert ctrl._hall_desired_setpoint() == ctrl.number("hall_eco_temp")  # 16
-    ctrl.cal_title[ZA] = "test"  # ECO-keyword -> eco-low
-    assert ctrl._hall_desired_setpoint() == ctrl.number("hall_eco_low_temp")  # 14
+    ctrl.cal_title[ZA] = "test"  # ECO-keyword: the same eco (v1.51.0)
+    assert ctrl._hall_desired_setpoint() == ctrl.number("hall_eco_temp")
 
 
 # --- The fix: no destrat of unwanted heat ----------------------------------
-def test_eco_low_booking_above_target_does_not_destratify():
-    """The export case: room 16 (above the 14 they asked for), occupied,
+def test_eco_booking_above_target_does_not_destratify():
+    """The export case: room above the eco target they asked for, occupied,
     stratified, but applied ice -> the fans must NOT run."""
     ctrl, _ = _mk()
-    ctrl.applied[ZA] = "ice"  # room already above the eco-low target -> frozen
+    ctrl.applied[ZA] = "ice"  # room already above the eco target -> frozen
     _hall(ctrl, floor=16.0, ceiling=19.0)  # dt 3 > dt_on, floor < the old 24 cap
     motion(ctrl, "hall")  # occupied
     assert ctrl._fan_target() == (False, None, "off")

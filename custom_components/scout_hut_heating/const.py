@@ -198,6 +198,29 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # disable the prediction.
     "zone_a_heatloss_pct": (0, 50, 0.5, 25, "%/h"),
     "zone_b_heatloss_pct": (0, 50, 0.5, 25, "%/h"),
+    # The kitchen and the two toilets are zones of their own (v1.51.0), each
+    # with its own learned gain and heat loss. Not seeded at the slow hall seed
+    # (60 would pin every lead at the 240-min cap and heat the toilets for four
+    # hours before each booking): measured from the shared block's climbs of
+    # 2026-10-29/30 (coldest room, ~11-12 min/°C gross at a guessed 12 %/h), then
+    # set on the slow side so an unlearned room arrives early, not late; in the
+    # learned-allowance units (x1.375 from the fixed-2.5 ones: ~16 measured).
+    "kitchen_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
+    "gents_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
+    "ladies_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
+    "kitchen_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
+    "gents_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
+    "ladies_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
+    # Learned start-up allowance per gain (v1.51.0): the °C-equivalent of time
+    # every climb loses to the oil mass warming and the Rointes throttling near
+    # target, read with the gain off a straight line through the zone's recent
+    # pre-heats (preheat.learned_warmup). Seeded at 1.0 (it was a fixed 2.5).
+    "zone_a_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
+    "zone_a_warmup_tail_fans": (0.5, 3, 0.1, 1.0, "°C"),
+    "zone_b_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
+    "kitchen_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
+    "gents_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
+    "ladies_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
     "motion_timeout_minutes": (5, 60, 5, 15, "min"),
     "door_ice_minutes": (2, 30, 1, 10, "min"),
     "window_ice_minutes": (5, 60, 5, 10, "min"),
@@ -211,12 +234,12 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # 12-16 °C, and the 18 °C classroom floor applies to the most sedentary
     # regulars (crafts, closing circle, parents at the edge). Comfort 19.5
     # serves those; games sessions self-heat well past comfort at that level,
-    # and pure-activity lettings use the eco-low keyword tier (14 °C, inside
-    # the active-sports band). Eco 16 is the occupied-adjacent resting point
-    # (circulation-space territory, an easy recovery to comfort).
+    # and ECO-keyword lettings (the fitness classes, happy at 16) get eco. Eco 16
+    # is also the occupied-adjacent resting point (circulation-space territory,
+    # an easy recovery to comfort). Since v1.51.0 it is ONE eco temperature for
+    # every zone, and the separate eco-low tier is gone.
     "hall_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
     "hall_eco_temp": (10, 18.5, 0.5, 16, "°C"),
-    "hall_eco_low_temp": (8, 18, 0.5, 14, "°C"),
     # The 15 L / 2 kW Speedflow needs ~30 min from cold to reach temperature,
     # so the default matches a full reheat and the range leaves headroom.
     "water_preheat_minutes": (5, 60, 5, 30, "min"),
@@ -304,13 +327,24 @@ NUMBER_ICONS: dict[str, str] = {
     "zone_b_warmup_rate": "mdi:chart-line",
     "zone_a_heatloss_pct": "mdi:snowflake-thermometer",
     "zone_b_heatloss_pct": "mdi:snowflake-thermometer",
+    "kitchen_warmup_rate": "mdi:chart-line",
+    "gents_warmup_rate": "mdi:chart-line",
+    "ladies_warmup_rate": "mdi:chart-line",
+    "kitchen_heatloss_pct": "mdi:snowflake-thermometer",
+    "gents_heatloss_pct": "mdi:snowflake-thermometer",
+    "ladies_heatloss_pct": "mdi:snowflake-thermometer",
+    "zone_a_warmup_tail": "mdi:timer-sand",
+    "zone_a_warmup_tail_fans": "mdi:timer-sand",
+    "zone_b_warmup_tail": "mdi:timer-sand",
+    "kitchen_warmup_tail": "mdi:timer-sand",
+    "gents_warmup_tail": "mdi:timer-sand",
+    "ladies_warmup_tail": "mdi:timer-sand",
     "motion_timeout_minutes": "mdi:timer-outline",
     "door_ice_minutes": "mdi:door-open",
     "window_ice_minutes": "mdi:window-open",
     "seasonal_lockout_temp": "mdi:thermometer-chevron-up",
     "hall_comfort_temp": "mdi:thermometer-high",
     "hall_eco_temp": "mdi:thermometer-low",
-    "hall_eco_low_temp": "mdi:thermometer-minus",
     "water_preheat_minutes": "mdi:water-boiler",
     "water_motion_keepalive_minutes": "mdi:timer-outline",
     "fan_dt_on": "mdi:fan-plus",

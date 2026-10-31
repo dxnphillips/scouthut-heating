@@ -66,8 +66,8 @@ def fan_decision(
             heater cuts out, and heat leaking in from other zones). Gating on the
             desired setpoint — not a fixed cap — means the fans chase the same
             goal the heaters do and harvest nothing when the room is already at
-            or above what is wanted (e.g. an eco-low booking whose room sits
-            above its low target): no unwanted heat is destratified onto people
+            or above what is wanted (e.g. an eco booking whose room sits
+            above its eco target): no unwanted heat is destratified onto people
             who asked for it cool.
         recirc_needs_occupancy: require hall occupancy for the no-demand recirc
             path. An empty, unheated hut still stratifies from warm fabric, and

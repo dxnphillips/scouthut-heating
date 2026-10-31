@@ -89,14 +89,21 @@ entirely, the button fails soft and points at the YAML files:
 
 - **Numbers:** pre-heat lead time (the *maximum* — see optimum start below),
   hall/office learned radiator gains, no-motion eco timeout, door/window ice
-  delays, seasonal-lockout threshold, hall comfort/eco/eco-low temperatures,
+  delays, seasonal-lockout threshold, hall comfort and eco temperatures,
   water pre-heat lead time, water keep-on-after-motion. The hall setpoint
-  defaults (comfort 19.5 °C, eco 16 °C, eco-low 14 °C) are sized for **active**
+  defaults (comfort 19.5 °C, eco 16 °C) are sized for **active**
   hall use per CIBSE Guide A (~17 °C for higher-activity spaces) and
   sports-hall practice (12–16 °C for games), anchored to the 18 °C classroom
   floor for the most sedentary regulars — crafts, closing circle, parents at
   pick-up. Use Boost for a genuinely sedentary cold evening and the ECO
-  keyword tier for pure-activity lettings.
+  keyword for pure-activity lettings. **Eco is one temperature in every zone**
+  (v1.51.0): the hall, the office and the kitchen and toilets all rest at the
+  same eco value, and an ECO-keyword booking simply heats to eco. The separate
+  eco-low slider (14 °C) is gone — the fitness classes it was for found 16 fine
+  — so the orphaned `hall_eco_low_temp` entity can be deleted. Eco is written to
+  each office and room heater's own eco number once and landed on its live
+  setpoint on every eco apply; until v1.51.0 those heaters rested at whatever
+  eco was stored on the radiator, never set by us.
 - **Select:** boost duration (30/60/90 min).
 - **Switches:** hall/office automation enabled, hall/office occupied override,
   water heater manual override.
@@ -173,8 +180,8 @@ before any cooling breeze, so a lost sensor never blows a draught on a guess.)
   out — pushing that already-paid-for warmth back down instead of letting it escape
   through the poorly-insulated roof. Crucially it chases the **same goal the
   heaters have**, so it never pushes stored ceiling heat down onto people who are
-  already warm enough — e.g. an eco-low cleaning slot (14 °C) whose room already
-  sits at 16 gets no unwanted destrat, because the hall's on its anti-frost floor
+  already warm enough — e.g. an ECO booking (16 °C) whose room already sits at
+  17.5 gets no unwanted destrat, because the hall's on its anti-frost floor
   and there's no heating goal to harvest toward. That residual-harvest path
   requires the hall to be **occupied**: an empty,
   unheated hut still stratifies from warm fabric, but the field cool-off samples
@@ -272,18 +279,21 @@ this priority (highest wins):
    comfort setpoint — otherwise pressing it while already at comfort would do
    nothing. Reverts to plain comfort when the boost expires.
 
-   *Booking hold (anticipatory).* During a running booking the hall is held a
-   little **above** comfort so it can't dip below it as the evening cools — the
-   slow radiators would otherwise catch the fall late and undershoot. The margin
+   *Booking hold (anticipatory).* During a running booking the hall's heating
+   comes on, and stays on, a little **above** comfort so it can't dip below it
+   as the evening cools — the slow radiators would otherwise catch the fall late
+   and undershoot. The margin
    is worked out automatically from how fast the hall is losing heat (the learned
    cool-off rate and the outdoor temperature) and how sluggish it is to warm back
    up (the learned radiator gain): bigger on a cold night, near-zero on a mild one.
    Capped by the **Booking hold** slider (default 1.5 °C, set to 0 to switch it
-   off). Hall only, and only while a booking is actually running. The radiators
-   only take half-degree steps, so the margin is rounded **down** onto that grid
-   (v1.50.6): a hold under half a degree changes when the heating comes back on,
-   not how hot the radiators are set. Rounded to nearest, a 0.28 margin became a
-   whole half degree and every hall radiator was set to 20.0 on a comfort of 19.
+   off). Hall only, and only while a booking is actually running. Since v1.51.0
+   the hold changes only when the heating comes on and goes off; the radiators
+   themselves are set to comfort (plus the drive's usual top-up). The radiators
+   take half-degree steps, so any lift was a whole half degree with the drive's
+   half degree on top: every booking it lifted ran warm (2026-10-30: more than
+   0.5 °C over for 129 minutes) and none came near a dip, while the 10-29
+   booking, on the same kind of evening with no lift, held 19.0–19.4 throughout.
 5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
@@ -308,12 +318,10 @@ this priority (highest wins):
    recent motion, the **occupied-override** switch or a **Night/Home alarm arm**
    hold a booking at comfort, so a **sleepover** of still, sleeping occupants
    isn't demoted to eco and left to cool.
-   Events matching an ECO keyword aim at the lower `eco` setpoint throughout. The
-   shared kitchen/toilets/stores heat toward their own comfort target when the
-   block is in use — a running hall/office booking, or motion in the shared PIRs
-   (kitchen/gents/female) — gated the same way (cold → comfort, warm → `eco`).
-   Motion only in the hall/office keeps the shared block at the lighter `eco`
-   floor, so a cleaner in the hall doesn't warm the toilets to comfort.
+   Events matching an ECO keyword aim at the lower `eco` setpoint throughout.
+   The **kitchen, gents and ladies are three zones of their own** (v1.51.0),
+   each run like the hall on its own heater's reading and its own PIR — see
+   *Kitchen and toilets* below.
 7. **Occupied override or recent motion** → `comfort` on the **same** test as a
    booking: a cold occupied zone heats to comfort, a warm one lands on `ice` for
    the cooling fans. Occupancy and a booking are not different behaviours — a
@@ -356,6 +364,15 @@ notification instead (v1.50.3), since that one needs the Rointe integration
 reloaded rather than the radiator power-cycled. Turn the switch off to go back
 to "set the target and trust the heater".
 
+**Every radiator offline at once is fixed automatically (v1.51.0).** That is
+the Rointe integration's sign-in expiring (it lasts 7 days and is never
+renewed). Ten minutes into such an outage the integration asks Home Assistant
+to reload the Rointe integration — what you would do by hand — and only
+alerts you if the radiators are still unreachable 10 minutes later. It tries
+up to three times, an hour apart, then gives up and says so: an outage a
+reload does not fix is the internet or the Rointe cloud. Audited as
+`rointe_reload` and `rointe_reload_recovered`.
+
 **Pause hall heating** (occupant cutout). The hall radiators are locked, so if
 someone finds it too warm mid-session they have no way to turn them down. The
 *Pause hall heating* button — ideally wired to a physical remote — forces the
@@ -389,10 +406,21 @@ out from a small heat balance. The radiators add heat at a **learned gross
 gain** (minutes per °C before any leak); the fabric leaks it away at the
 **learned heat-loss constant** times how far indoors is above outdoors; the
 difference is the net climb rate, and the lead is how long that rate takes to
-cover the deficit *plus a fixed finish* — the Rointes throttle to half power
-inside the last degree and their oil mass lags, so every climb here pays the
-same ~30-minute tail whether it started 1 °C or 5 °C short. A booking matching
-an ECO keyword pre-heats only to the eco-low setpoint, not comfort. The deficit
+cover the deficit *plus a start-up allowance* — the oil mass has to warm
+before the room moves and the Rointes throttle to half power inside the last
+degree, so every climb pays some time that does not depend on how far it has
+to go. The allowance is **learned per zone with the gain** (v1.51.0): each
+zone keeps its last ten pre-heats, and once four of different lengths exist
+the gain and the allowance are read off the straight line through them
+(`rise + leak = gain × hours − allowance`). Until then it sits at its 1.0 °C
+seed and only the gain learns. It was a fixed 2.5 °C before, which made
+shallow climbs start up to 20 minutes early and the two cold-soaked October
+mornings (hall at 11.9 and 13.4 °C) start 30–40 minutes late; replayed
+through the new learning, those two land within 10 minutes. Gains learned
+under the old 2.5 are multiplied by 1.375 once on the first start after the
+upgrade (`warmup_gain_converted` in the audit), the factor that keeps a
+3 °C climb's lead unchanged. A booking matching
+an ECO keyword pre-heats only to the eco setpoint, not comfort. The deficit
 is measured from the **average** of the zone's heater readings — the same
 quantity the heat gate releases on, so the lead brings to target exactly what
 is then judged (the coldest reading is recorded beside it). The result is clamped between 15 minutes and the **Pre-heat lead time
@@ -433,7 +461,10 @@ pull the gain down to the truth over a handful of bookings. Only a genuine
 an occupancy climb or a mid-booking top-up, where people, sun and a hotter
 setpoint do part of the radiators' work, nor a pre-heat window that opens on a
 hall someone's arrival has already lit (an occupancy climb whose start the
-pre-heat never saw) — judged on the zone average's
+pre-heat never saw). A pre-heat its booking overtakes before it arrives is
+kept too, closed at the booking start before the group's own heat joins it:
+those are the climbs where the lead was too short, the ones it most needs to
+learn from. Each is judged on the zone average's
 start and finish (exponentially smoothed and step-capped, so one odd morning
 can only nudge the number, never yank it); a temperature *rise* while unheated
 (July roof sun) is never mistaken for good insulation. The hall keeps **two**
@@ -443,9 +474,45 @@ a sample teaches. All the learned numbers are visible and adjustable — re-seed
 them after any building change, or set the heat-loss constant to 0 to disable
 the cooling prediction.
 
-The **shared zone** heats toward comfort on a hall/office booking or shared-PIR
-motion (cold → comfort, warm → eco; hall/office-only motion → eco), and the
-**water heater** turns on for its own pre-heat window, kitchen/toilet motion
+**Kitchen and toilets (v1.51.0).** The kitchen, the gents and the ladies are
+three zones, each with its own heater, its own PIR (the ladies' is the `female`
+sensor) and its own learned radiator gain and heat loss (`kitchen_warmup_rate`,
+`gents_heatloss_pct` and so on, seeded at 15 min/°C and 12 %/h so an unlearned
+room arrives early rather than late). Which heater is which room is read from
+its entity id. They run through **the same rules as the hall and the office**
+(one ladder, `_desired_zone`): a room differs only where it serves the whole
+building. Each one:
+
+- **pre-heats for the next booking** on either calendar, on its own lead, so a
+  cold toilet starts earlier than a warm kitchen. An ECO-keyword booking
+  pre-heats it to eco, as it does the hall; a comfort booking wins over an eco
+  one;
+- **holds the booking whatever the alarm says**, as the hall does. Before
+  v1.51.0 the block iced whenever both panels were set and only started when
+  someone disarmed on arrival: in the week of 26 Oct the coldest room was
+  13–16 °C at each evening booking's start and twice never reached 19;
+- heats only while its own reading is below `shared_comfort_temp` (a warm room
+  rests on `ice`, `booking_warm`), and rests at `eco` once a running booking's
+  building is empty past the 30-min arrival grace (`booking_quiet`). The whole
+  building counts, not the room's own PIR, since a toilet is empty most of a
+  session;
+- outside a booking, heats when someone is in it (`motion`; a warm room →
+  `occupied_warm` ice), rests at `eco` when someone is elsewhere in the
+  building (`others_present`) and goes to `ice` when nobody is about or both
+  alarm panels are away;
+- follows a Boost on either the hall or the office, an ECO-keyword booking
+  (heats to eco only while below it, as the hall does), either booking's eco
+  tail, the shared window contacts and the fire hold;
+- is relit if it waits on `ice` "warm enough" while its reading has stopped
+  moving (the hall's frozen-probe relight, `preheat_stale` / `booking_stale` /
+  `occupied_stale`). It has no occupied-override switch and does not heat for a
+  Night/Home arm: a room warms for a sleepover when someone actually goes in.
+
+`booking_start` carries `rooms` (each room's reading as the group arrives), and
+diagnostics show each room's preset, reason, window and last lead under
+`readings.zones.shared.rooms`.
+
+The **water heater** turns on for its own pre-heat window, kitchen/toilet motion
 (within the keep-alive) or the manual override, and off when the building is
 alarmed. The switch is reconciled against its **real state**, not the last
 command — a manual flip or a Shelly reboot is re-asserted on the next tick, so
@@ -475,7 +542,9 @@ restarts) of everything it decides and learns:
   or rejected, with the raw inputs (duration, temperature change, the average
   indoor–outdoor gap, fan assistance and wattage, old and new value; warm-up
   samples add `observed_gain` — the gross radiator gain the climb implied —
-  and `reached_target`; cool-off samples add `max_tick_drop` — the largest
+  `reached_target`, `cut_short` (its booking started first), `old_tail` /
+  `new_tail` (the start-up allowance), `method` (`ewma` until there are enough
+  climbs for a line, then `fit`) and `history_n`; cool-off samples add `max_tick_drop` — the largest
   single-tick fall, on which a discontinuity (an unmonitored opening or a
   probe unfreezing) is rejected rather than learned as fabric loss, and
   `settled_min` — how long after the heating→ice edge the sample anchored; an
@@ -509,7 +578,11 @@ restarts) of everything it decides and learns:
   and a reading its own idle panel agrees with (within 3 °C) is kept as the
   cold end of the hall rather than reported. A cool-off sample in flight when
   a probe joins or leaves the hall reading is dropped (`cooloff_discarded`,
-  reason `probes_changed`): the swap moves the reading, not the room.
+  reason `probes_changed`): the swap moves the reading, not the room. A probe
+  that is merely unreadable for a moment is not a swap (v1.51.0): the Rointe
+  integration drops every heater for one poll most nights, and the sample now
+  waits up to 5 minutes for the same probes (reason `reading_lost` past that), and the
+  settle clock is not restarted by a lost reading.
 - **Nothing "nudges" a silent heater any more (v1.46.0).** From v1.44.0 to
   v1.45.3 a stale heater in an attended zone was sent a no-op write (its own
   comfort number, then its own setpoint) to make it upload a fresh reading,
@@ -577,7 +650,7 @@ restarts) of everything it decides and learns:
   decided them: `booking`, `preheat`, `booking_warm`, `booking_eco`,
   `booking_quiet`, `preheat_coast`, `booking_coast`, `motion`, `eco_tail`
   (occupancy inside the motion timeout after an ECO-keyword booking ended,
-  heating toward that booking's eco-low target rather than comfort; the shared
+  heating toward eco rather than comfort; the shared
   kitchen/toilets follow it too since v1.50.7, resting at eco on a kitchen or
   toilet trip rather than going to comfort),
   `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `opening`,
