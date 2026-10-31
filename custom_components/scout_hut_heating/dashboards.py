@@ -110,6 +110,8 @@ _OPTIMUM_START = [
     ("zone_a_warmup_rate", "Hall radiator gain (min/°C before leak)"),
     ("zone_a_warmup_rate_fans", "Hall radiator gain (fans running)"),
     ("zone_b_warmup_rate", "Office radiator gain (min/°C before leak)"),
+    ("zone_a_warmup_tail_fans", "Hall start-up allowance (°C)"),
+    ("zone_b_warmup_tail", "Office start-up allowance (°C)"),
     ("zone_a_heatloss_pct", "Hall heat loss %/h"),
     ("zone_b_heatloss_pct", "Office heat loss %/h"),
 ]

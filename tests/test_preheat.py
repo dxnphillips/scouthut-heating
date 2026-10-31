@@ -15,7 +15,8 @@ from datetime import timedelta
 import pytest
 
 from custom_components.scout_hut_heating.preheat import (
-    APPROACH_TAIL_C,
+    TAIL_CONVERSION,
+    TAIL_SEED_C,
     MIN_LEAD,
     MIN_SAMPLE_RISE,
     net_gain_c_per_h,
@@ -48,7 +49,7 @@ def test_lead_is_deficit_plus_finish_over_net_gain():
     # 60 and was under-leading exactly this kind of top-up.)
     assert required_lead_minutes(
         rate=20, indoor=19, target=22, outdoor=15, max_minutes=240
-    ) == pytest.approx(60 * (3 + APPROACH_TAIL_C) / 3)
+    ) == pytest.approx(60 * (3 + TAIL_SEED_C) / 3)
 
 
 def test_lead_is_capped_by_the_slider():
@@ -80,7 +81,7 @@ def test_cold_weather_margin_comes_from_the_measured_leak():
         rate=20, indoor=19, target=22, outdoor=5, max_minutes=600, cool_k=0.10
     )
     assert cold > mild
-    assert cold == pytest.approx(60 * 5.5 / (3 - 0.10 * (20.5 - 5)))
+    assert cold == pytest.approx(60 * (3 + TAIL_SEED_C) / (3 - 0.10 * (20.5 - 5)))
 
 
 def test_a_leak_that_eats_the_gain_pins_the_cap():
@@ -110,9 +111,12 @@ def test_net_gain_and_prediction_helpers():
 # --- Pure model: the learning ------------------------------------------------------
 
 def test_rate_update_moves_toward_the_observation():
-    # 4 °C in 195 min: with the 2.5 °C finish added back that is 6.5 °C over
+    # 4 °C in 195 min: with a 2.5 °C allowance added back that is 6.5 °C over
     # 3.25 h = 2 °C/h gross = 30 min/°C. EWMA (alpha 0.3) from 20 -> 23.
-    assert updated_rate(20, 195, 4) == pytest.approx(23)
+    assert updated_rate(20, 195, 4, tail=2.5) == pytest.approx(23)
+    # At the 1.0 seed: 5 °C over 3.25 h = 39 min/°C; alpha says 25.7, the 25 %
+    # step cap holds it to 25.
+    assert updated_rate(20, 195, 4) == pytest.approx(25)
 
 
 def test_rate_update_ignores_small_rises():
@@ -136,7 +140,7 @@ def test_rate_update_adds_the_leak_back():
     no_leak = warmup_observed_rate(120, 4, avg_gap=0.0, cool_k=0.0)
     leaky = warmup_observed_rate(120, 4, avg_gap=15.0, cool_k=0.10)
     assert leaky < no_leak
-    assert leaky == pytest.approx(60 / (6.5 / 2 + 1.5))
+    assert leaky == pytest.approx(60 / ((4 + TAIL_SEED_C) / 2 + 1.5))
 
 
 def test_warmup_single_sample_cannot_yank_the_rate():
@@ -160,26 +164,30 @@ def test_a_lead_sized_from_a_folded_rate_reproduces_the_climb():
 
 def test_the_field_climbs_read_as_one_family_of_gains():
     # The two real cold pre-heats on record (2026-09-17 pre-dawn, 2026-09-21),
-    # as the zone average recorded them, land in 10-13 min/°C gross once the
-    # finish and the leak are taken out — despite reading 21.4 and 19.2 plain
-    # min/°C. The 09-16 BOOST (setpoint +2, elements never throttle) would read
-    # ~7, out of family: that is why only `preheat` climbs are sampled.
+    # as the zone average recorded them, land within a few percent of each
+    # other once the allowance and the leak are taken out — despite reading 21.4
+    # and 19.2 plain min/°C (10-13 at the old 2.5 allowance, 13-15 at the 1.0
+    # seed). The 09-16 BOOST (setpoint +2, elements never throttle) reads well
+    # faster, out of family: that is why only `preheat` climbs are sampled.
     k = 0.0985
     predawn = warmup_observed_rate(77.5, 3.62, (15.38 + 19.0) / 2 - 13.5, k)
     today = warmup_observed_rate(79.1, 4.12, (14.88 + 19.0) / 2 - 9.34, k)
     boost = warmup_observed_rate(47.4, 3.87, (15.38 + 19.25) / 2 - 10.9, k)
-    assert 10 <= predawn <= 13
-    assert 10 <= today <= 13
-    assert boost < 8
+    assert 12 <= predawn <= 16
+    assert 12 <= today <= 16
+    assert abs(predawn - today) < 0.2 * today
+    assert boost < 0.7 * min(predawn, today)
 
 
 def test_small_deficits_are_never_led_shorter_than_before():
-    # At the day-one reset (15) with the hall's k, a top-up gets a LONGER lead
-    # than the old 40 min/°C × 1 %/°C formula for every deficit up to ~2 °C —
-    # the finish is charged — so no near-target arrival is colder than today.
+    # At the day-one reset (15, converted to the learned-allowance units) with
+    # the hall's k, a top-up gets a LONGER lead than the old 40 min/°C × 1 %/°C
+    # formula for every deficit up to ~2 °C — the allowance is charged — so no
+    # near-target arrival is colder than under the linear model.
     for deficit in (0.5, 1.0, 1.5):
         new = required_lead_minutes(
-            rate=15, indoor=19 - deficit, target=19, outdoor=10, max_minutes=600, cool_k=0.0985
+            rate=15 * TAIL_CONVERSION, indoor=19 - deficit, target=19, outdoor=10,
+            max_minutes=600, cool_k=0.0985,
         )
         old = 40 * deficit * (1 + (15 - 10) * 0.01)
         assert new >= old
@@ -189,7 +197,8 @@ def test_deep_cold_pins_the_cap_at_the_reset_rate():
     # Nothing below the fitted range (outdoor < 9, rise > 4.5) is measured, so
     # on day one those mornings behave exactly as the cap-pinned design did.
     assert required_lead_minutes(
-        rate=15, indoor=10, target=19, outdoor=3, max_minutes=240, cool_k=0.0985
+        rate=15 * TAIL_CONVERSION, indoor=10, target=19, outdoor=3, max_minutes=240,
+        cool_k=0.0985,
     ) == 240
 
 
@@ -216,7 +225,7 @@ def test_zone_lead_uses_room_and_weather():
     _set_rate(ctrl, "zone_a_heatloss_pct", 0)  # isolate the deficit term
     _hall_temp(hass, 19)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
-    assert ctrl._zone_preheat_minutes(ZA) == 110  # (3 + 2.5) / (3 °C/h)
+    assert ctrl._zone_preheat_minutes(ZA) == round(60 * (3 + TAIL_SEED_C) / 3)  # 80
 
 
 def test_zone_lead_audits_its_heat_balance_terms():
@@ -253,9 +262,9 @@ def test_eco_booking_aims_at_the_eco_target():
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
     _hall_temp(hass, 14)
     # Comfort target (19.5) -> 5.5 °C deficit -> capped at 120. ECO target is
-    # the eco slider (16) -> 2 °C deficit + 2.5 finish at 3 °C/h -> 90 min.
+    # the eco slider (16) -> 2 °C deficit + the 1.0 allowance at 3 °C/h -> 60.
     assert ctrl._zone_preheat_minutes(ZA) == 120
-    assert ctrl._zone_preheat_minutes(ZA, eco=True) == 90
+    assert ctrl._zone_preheat_minutes(ZA, eco=True) == 60
 
 
 def test_far_off_booking_adds_predicted_cooling():
@@ -269,7 +278,7 @@ def test_far_off_booking_adds_predicted_cooling():
     # away: the room will keep cooling until the pre-heat starts, so the lead grows.
     near = ctrl._zone_preheat_minutes(ZA, gap_hours=0)
     far = ctrl._zone_preheat_minutes(ZA, gap_hours=6)
-    assert near == round(60 * 5.5 / (6 - 0.05 * 5.5))
+    assert near == round(60 * (3 + TAIL_SEED_C) / (6 - 0.05 * 5.5))
     assert far > near
 
 
@@ -288,8 +297,8 @@ def test_completed_preheat_updates_the_learned_gain():
         _hall_temp(hass, t)
         ctrl._update_warmup_learning()
     assert ctrl._warmup_start[ZA] is None
-    # 4 °C + 2.5 finish over 2 h = 3.25 °C/h -> 18.46 min/°C; 20 + 0.3 * (18.46 - 20).
-    assert ctrl.number("zone_a_warmup_rate") == pytest.approx(19.54, abs=0.01)
+    # 4 °C + the 1.0 allowance over 2 h = 2.5 °C/h -> 24 min/°C; 20 + 0.3 * 4.
+    assert ctrl.number("zone_a_warmup_rate") == pytest.approx(21.2, abs=0.01)
 
 
 def test_a_boost_or_occupancy_climb_is_not_sampled():
@@ -364,7 +373,9 @@ def test_a_climb_released_on_the_tick_it_arrives_still_counts_as_reached():
     assert evt["accepted"] is True
     assert evt["rise"] == pytest.approx(3.5)  # clamped to the 19 target
     assert evt["minutes"] == pytest.approx(43, abs=0.1)
-    assert evt["observed_gain"] == pytest.approx(60 / (6.0 / (43 / 60)), abs=0.05)
+    assert evt["observed_gain"] == pytest.approx(
+        60 / ((3.5 + TAIL_SEED_C) / (43 / 60)), abs=0.05
+    )
     # Folded under the 25 % step cap: 15 -> no lower than 11.25.
     assert 11.25 <= ctrl.number("zone_a_warmup_rate") < 15
 
@@ -561,7 +572,7 @@ def test_cooling_prediction_decays_toward_outdoor_not_below():
         rate=20, indoor=19, target=22, outdoor=15, max_minutes=600,
         gap_hours=1000, cool_k=0.25,
     )
-    assert lead == pytest.approx(60 * (7 + APPROACH_TAIL_C) / (3 - 0.25 * 3.5))
+    assert lead == pytest.approx(60 * (7 + TAIL_SEED_C) / (3 - 0.25 * 3.5))
 
 
 # --- Lateral spread: coldest-reading pre-heat + the spread diagnostic -----------
@@ -582,9 +593,9 @@ def test_preheat_sizes_for_the_hall_average_and_records_the_cold_end():
     _set_rate(ctrl, "preheat_minutes", 240)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
     _both_hall_temps(hass, 21, 18)
-    # Average 19.5 -> 2.5 °C deficit + finish at 3 °C/h -> 100 min (the coldest,
-    # 18, would give 130).
-    assert ctrl._zone_preheat_minutes(ZA) == 100
+    # Average 19.5 -> 2.5 °C deficit + the allowance at 3 °C/h -> 70 min (the
+    # coldest, 18, would give 100).
+    assert ctrl._zone_preheat_minutes(ZA) == round(60 * (2.5 + TAIL_SEED_C) / 3)
     calc = ctrl._last_lead_calc[ZA]
     assert calc["indoor"] == 19.5 and calc["indoor_coldest"] == 18.0
 
@@ -616,7 +627,7 @@ def test_clamped_cooling_prediction_uses_the_full_floor_deficit():
         rate=8, indoor=19, target=22, outdoor=-5, max_minutes=600,
         gap_hours=48, cool_k=0.25,
     )
-    assert lead == pytest.approx(60 * (15 + APPROACH_TAIL_C) / (7.5 - 0.25 * 19.5))
+    assert lead == pytest.approx(60 * (15 + TAIL_SEED_C) / (7.5 - 0.25 * 19.5))
 
 
 def test_fast_heat_loss_is_learnable():
@@ -667,9 +678,9 @@ def test_prediction_falls_back_until_the_fans_rate_is_trained():
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
     _hall_temp(hass, 19)
     # Fans-rate still at its fail-safe seed (60): predict with the base rate.
-    assert ctrl._zone_preheat_minutes(ZA) == 110
+    assert ctrl._zone_preheat_minutes(ZA) == round(60 * (3 + TAIL_SEED_C) / 3)
     _set_rate(ctrl, "zone_a_warmup_rate_fans", 15)  # now trained: 4 °C/h gross
-    assert ctrl._zone_preheat_minutes(ZA) == round(60 * 5.5 / 4)
+    assert ctrl._zone_preheat_minutes(ZA) == round(60 * (3 + TAIL_SEED_C) / 4)
 
 
 def test_learning_lands_in_the_key_the_lead_predicts_with():
@@ -693,7 +704,7 @@ def test_learning_lands_in_the_key_the_lead_predicts_with():
     (evt,) = [e for e in ctrl.audit.to_list() if e.get("event") == "warmup_sample"]
     assert evt["rate_key"] == "zone_a_warmup_rate_fans"
     assert evt["fan_ticks"] == 0
-    assert ctrl.number("zone_a_warmup_rate_fans") == pytest.approx(19.54, abs=0.01)
+    assert ctrl.number("zone_a_warmup_rate_fans") == pytest.approx(21.2, abs=0.01)
 
 
 def test_all_day_event_start_parses_to_an_aware_midnight():

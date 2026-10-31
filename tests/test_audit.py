@@ -202,10 +202,12 @@ def test_accepted_warmup_sample_is_audited_with_its_inputs():
     assert evt["minutes"] == pytest.approx(120, abs=0.1)
     assert evt["rise"] == pytest.approx(4.0)
     assert evt["avg_gap"] == pytest.approx(15.0)  # (18 + 22) / 2 - 5
-    # Gross gain: (4 + 2.5 tail) / 2 h = 3.25 °C/h -> 18.46 min/°C.
-    assert evt["observed_gain"] == pytest.approx(60 / 3.25, abs=0.01)
+    # Gross gain: (4 + 1.0 allowance) / 2 h = 2.5 °C/h -> 24 min/°C.
+    assert evt["observed_gain"] == pytest.approx(60 / 2.5, abs=0.01)
     assert evt["old_rate"] == 20.0
-    assert evt["new_rate"] == pytest.approx(19.54, abs=0.01)
+    assert evt["new_rate"] == pytest.approx(21.2, abs=0.01)
+    assert evt["old_tail"] == evt["new_tail"] == 1.0  # one climb: no line to fit yet
+    assert evt["method"] == "ewma" and evt["history_n"] == 1
 
 
 def test_rejected_warmup_sample_is_audited_as_rejected():
@@ -248,7 +250,7 @@ def test_warmup_sample_records_the_raw_end_reading_and_the_clamped_rise():
     assert evt["end_temp"] == 24.0
     assert evt["rise"] == pytest.approx(4.0)
     assert evt["accepted"] is True
-    assert evt["new_rate"] == pytest.approx(19.54, abs=0.01)  # same as the honest 18 -> 22
+    assert evt["new_rate"] == pytest.approx(21.2, abs=0.01)  # same as the honest 18 -> 22
 
 
 def test_warmup_sample_records_the_average_fan_wattage():
@@ -315,7 +317,7 @@ def test_warmup_in_cold_weather_is_learned():
     cold = _run_warmup(5.0)
     assert cold["mild"] is False
     assert cold["accepted"] is True
-    assert cold["new_rate"] == pytest.approx(19.54, abs=0.01)
+    assert cold["new_rate"] == pytest.approx(21.2, abs=0.01)
 
 
 def test_warmup_with_no_outdoor_reading_is_not_learned():
@@ -570,10 +572,11 @@ def test_preheat_window_opening_records_the_decision_inputs(monkeypatch):
     monkeypatch.setattr(ctrl, "_async_calendar_events", _events)
     run(ctrl._async_refresh_calendars())
 
-    assert ctrl.cal_window[ZA] is True  # 30 min gap <= 110 min lead
+    assert ctrl.cal_window[ZA] is True  # 30 min gap <= 80 min lead
     (evt,) = [e for e in events(ctrl, "preheat_start") if e["zone"] == ZA]
     assert evt["zone"] == ZA
-    assert evt["lead_min"] == 110
+    assert evt["lead_min"] == 80  # (3 + the 1.0 allowance) at 3 °C/h
+    assert evt["tail"] == 1.0
     assert evt["gap_min"] == pytest.approx(30, abs=0.1)
     assert evt["rate"] == 20.0
     assert evt["indoor_coldest"] == 19.0

@@ -23,7 +23,7 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 781
+  a fully wired controller). Every behaviour change ships with tests. 793
   passing as of 2026-10-31.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
@@ -757,6 +757,13 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
    by 0.75–0.88: the owner-side ~14 still stands, and if it goes short a third
    time from a soaked start the lead needs a start-temperature term rather than
    a bigger gain for every climb.
+   **Not a start-temperature term: the fixed tail was the error (v1.51.0, see
+   the learned-allowance bullet under Working conventions).** A straight line
+   through the October hall pre-heats (`rise + leak = gain × hours − tail`)
+   puts the tail at 0.2–0.5, not 2.5: a big tail with a fast gain over-charges a
+   short climb and under-charges a long one, which is exactly early-shallow /
+   late-deep. The tail is now learned per gain key; the owner-side ~14 is
+   superseded by the one-time ×1.375 conversion (11.74 → 16.14).
 4. **Gap-normalised heat-loss constants (`zone_X_heatloss_pct`, seed 25).**
    July measurements: hall ~10 %/h, office ~4.5 %/h. Verify autumn/winter
    `cooloff_sample` events (they carry `gap`) confirm season transfer;
@@ -3411,11 +3418,9 @@ Winter 2026/27 — read the first cold-fortnight diagnostics export against:
   a no-op). No-op if the alarm integration is not installed (the event never
   fires). Diagnostics carry `state.fire_hold`.
 
-**Owner-side outstanding** (not code): **at the v1.43.0 deploy, reset
-`zone_a_warmup_rate_fans` 40 → 15** (the entity now holds the GROSS radiator gain,
-min/°C before leak; the 09-16/09-21 cold climbs read 10–14, and 40 in the new units
-would pin every lead at the cap) — leave `zone_a_warmup_rate` (33) and
-`zone_b_warmup_rate` alone, they only err warm and the step cap walks them down.
+**Owner-side outstanding** (not code): (the v1.43.0 `zone_a_warmup_rate_fans`
+reset is long done, and v1.51.0 converts the gains itself — do NOT hand-edit them
+around that deploy: the conversion multiplies whatever it finds by 1.375 once.)
 Set `MIN_RUN_W ≈ 20` in the Shelly
 fan script — the stall threshold must sit *below the lowest running draw*, and
 the **2026-07-14 commissioning measured the lowest forward dial at 40 W** (full
@@ -3514,6 +3519,41 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   eco through its own syncs is unproven). **Owner-side:** delete the orphaned
   `hall_eco_low_temp` entity. Tests in `tests/test_write_path.py` and
   `tests/test_eco_tail.py`.
+- **The pre-heat's start-up allowance is learned, not fixed (v1.51.0; owner:
+  "will it learn correctly rather than just be fixed values based on one half of
+  a season").** The heat-balance lead charged every climb a fixed
+  `APPROACH_TAIL_C` 2.5 on top of the deficit. October said that was wrong in a
+  way no gain could fix: shallow climbs led up to 20 min early, and the two
+  cold-soaked ones (10-21 from 11.9, 10-28 from 13.4) 28–44 min LATE, because a
+  big tail with a fast gain over-charges short climbs and under-charges long
+  ones. A least-squares line through the nine October hall pre-heats, `rise +
+  k × gap × hours = gain × hours − tail`, gives tail 0.2–0.5 and gain 17–19.
+  Now: `{zone}_warmup_tail` per gain key (hall base / hall fans / office /
+  kitchen / gents / ladies), seed `TAIL_SEED_C` 1.0, bounds [0.5, 3.0];
+  `preheat.learned_warmup` keeps the key's last `WARMUP_HISTORY_MAX` (10) usable
+  climbs (persisted, exported as `learned.warmup_history`) and, once
+  `FIT_MIN_SAMPLES` (4) spread ≥ 30 min in length, moves the tail toward the
+  fitted intercept by ≤ 0.5 a climb and re-fits the gain with that tail held
+  (25 % step cap); before that the gain folds by the old EWMA at the current
+  tail. **A pre-heat its booking overtakes is now kept** (`cut_short`), closed
+  at the booking start before the group's heat joins it — the climbs where the
+  lead was short are the ones it most needs; any other early end is still
+  dropped, and no sample opens on a running booking. **One-time conversion:**
+  the first start after the upgrade multiplies the hall/office gains by
+  `TAIL_CONVERSION` (1.375, which keeps a 3 °C climb's lead) and marks the store
+  (`warmup_tail_v`, saved at once; `warmup_gain_converted` in the audit); a
+  fresh install converts nothing; the rooms are new this release and seeded at
+  20 in the new units; `HOLD_WARMUP_REF` 12 → 16.5 with it so the booking hold
+  is unchanged. Replayed through October (7 cold-gated climbs, converted start
+  16.14 / 1.0): the line engages at the 4th climb and settles at gain ~18.0 /
+  tail 0.5 (the floor); lead − actual goes from −44 / −28 (10-21 / 10-28, the
+  late arrivals) to −7 / −2, and every climb lands within −7 … +12. **Watch:**
+  `warmup_sample.method` should read `fit` from the fourth cold pre-heat per key;
+  if the tail pins at the 0.5 floor for weeks, the floor is the next thing to
+  lower (to ~0.2), not the gain; a `booking_start.shortfall` on a cold-soaked
+  start after the line is fitted would mean soak needs its own term after all.
+  Tests in `tests/test_startup_allowance.py` (the fit, the caps, the October
+  replay, the conversion) and `tests/test_learning_conditions.py`.
 
 ## Architecture pointers
 

@@ -246,10 +246,11 @@ def _cold_evening(hass):
 
 
 def test_each_room_opens_its_pre_heat_on_its_own_lead(monkeypatch):
-    # 90 min out at outdoor 11: the gents at 13 needs ~155 min, the ladies at 16
-    # ~115, the kitchen at 18.5 ~80 — only the two cold rooms start.
+    # 90 min out at outdoor 11: the gents at 13 needs ~180 min, the ladies at 16
+    # ~125, the kitchen at 18.5 ~75 — only the two cold rooms start.
     ctrl, hass = make_controller()
     ctrl._numbers["shared_comfort_temp"].native_value = 19.0
+    ctrl._numbers["preheat_minutes"].native_value = 240
     _cold_evening(hass)
     _room_temps(hass, 18.5, 13.0, 16.0)
     start = _upcoming(ctrl, monkeypatch, 90)
@@ -371,8 +372,8 @@ def test_a_room_pre_heat_teaches_that_rooms_gain():
     (sample,) = [e for e in _events(ctrl, "warmup_sample") if e["zone"] == "gents"]
     assert sample["rate_key"] == "gents_warmup_rate"
     assert sample["accepted"] is True
-    assert ctrl.number("gents_warmup_rate") != 15.0
-    assert ctrl.number("kitchen_warmup_rate") == 15.0
+    assert ctrl.number("gents_warmup_rate") != 20.0
+    assert ctrl.number("kitchen_warmup_rate") == 20.0  # the seed, untouched
 
 
 def test_a_room_cool_off_teaches_that_rooms_heat_loss():

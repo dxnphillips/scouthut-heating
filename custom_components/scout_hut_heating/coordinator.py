@@ -58,17 +58,19 @@ from .preheat import (
     MIN_COOL_SAMPLE_DROP,
     MIN_COOL_SAMPLE_GAP,
     MIN_COOL_SAMPLE_HOURS,
-    MIN_SAMPLE_MINUTES,
-    MIN_SAMPLE_RISE,
+    MIN_RATE,
+    TAIL_CONVERSION,
+    WARMUP_HISTORY_MAX,
     cooling_observed_k,
     cooling_sample_is_outlier,
     hold_margin,
+    learned_warmup,
     net_gain_c_per_h,
     predicted_room_temp,
     required_lead_minutes,
     updated_cooling_k,
-    updated_rate,
     warmup_observed_rate,
+    warmup_sample_usable,
 )
 from .const import (
     COOLING_RELEASE_FLOOR,
@@ -1091,6 +1093,10 @@ class ScoutController:
         # judges the sample's conditions, not the last tick's, and the fabric
         # leak is charged at the sample's own average gap.
         self._warmup_outdoor: dict[str, list[float]] = {}
+        # The last WARMUP_HISTORY_MAX usable climbs per learned rate key, as
+        # (minutes, rise, avg_gap, cool_k), persisted: the straight line the
+        # start-up allowance and the gain are read off (v1.51.0).
+        self._warmup_history: dict[str, list[tuple[float, float, float, float]]] = {}
         self._drive_reject_notified = False
         self._opening_notified: set[str] = set()
         # Fire fallback latch: on a panel fire the fans are hardware-cut, but this
@@ -2192,6 +2198,7 @@ class ScoutController:
         """
         target = self.number("hall_eco_temp") if eco else self._zone_target(zone)
         rate, rate_key = self._prediction_rate(zone)
+        tail = self.number(self._tail_key(rate_key))
         # Size the pre-heat for the AVERAGE reading — the quantity the heat
         # gate releases on, so the lead brings to target exactly what the gate
         # then judges (v1.47.0; it sized the coldest end until then). Reject a
@@ -2208,6 +2215,7 @@ class ScoutController:
             max_minutes=self.number("preheat_minutes"),
             gap_hours=gap_hours,
             cool_k=loss_pct / 100,
+            tail=tail,
         )
         lead = int(round(minutes))
         # Stash the inputs so the caller can audit the computation that
@@ -2223,6 +2231,7 @@ class ScoutController:
             # verifiable once the Shelly turns on. Paired with fan_w_last, this
             # is what a cold-arrival shortfall gets read against.
             "rate_key": rate_key,
+            "tail": tail,
             "fan_w_last": self._fan_w_last_seen if zone == ZONE_A else None,
             "indoor": indoor,
             "indoor_coldest": self._zone_room_temp(
@@ -2260,6 +2269,11 @@ class ScoutController:
             if base < rate:
                 rate, key = base, "zone_a_warmup_rate"
         return rate, key
+
+    @staticmethod
+    def _tail_key(rate_key: str) -> str:
+        """The learned start-up allowance that pairs with a learned gain."""
+        return rate_key.replace("warmup_rate", "warmup_tail")
 
     def _warmup_rate_key(self, zone: str) -> str:
         """Which learned warm-up gain applies to a zone — to predict with AND to
@@ -2355,8 +2369,15 @@ class ScoutController:
           sample would open on an already-heating room: the one fast-bias route
           the rise clamp cannot see. That morning's sample is lost, not learned
           wrong.
-        * **Folded only if it REACHED target.** Under the tail model a truncated
-          climb has not paid the finish and reads fast by construction.
+        * **Folded if it reached target, or if its booking started first**
+          (v1.51.0). A climb the booking cut short is the lead having been too
+          short — the very climbs the lead most needs to learn from (the
+          cold-soaked 2026-10-21 and 10-28 arrivals were both dropped as
+          "ended early"). Under the learned start-up allowance the room rises
+          on the same line at any point past the start-up, so a cut-short
+          climb still sits on it. The sample closes AT the booking start, so
+          the group's own heat never counts. Every other early end (an opening,
+          a Pause, the alarm, automation off) is still dropped.
         * **The rise is clamped at target** (``min(temp, target) − start``): a
           probe unfreezing PAST target on the closing tick cannot inflate it. A
           mid-climb freeze with honest endpoints (today's +3.24 in one tick)
@@ -2367,9 +2388,11 @@ class ScoutController:
           next-coldest probe; a dropout at the open only under-states the rise.
 
         Then the cold gate (average outdoor over the climb ≤
-        ``WARMUP_COLD_MAX_OUTDOOR``) and `updated_rate`'s clamps and 25 % step
-        cap — the one guard kept from before, because it bounds the dangerous
-        direction without needing a baseline to be out-of-family against.
+        ``WARMUP_COLD_MAX_OUTDOOR``), and `learned_warmup`: the climb joins the
+        key's last ``WARMUP_HISTORY_MAX`` and, once there are enough of them,
+        the start-up allowance and the gain are read off the straight line
+        through them (each bounded and step-capped); before that the gain alone
+        folds as it always has.
         """
         now = self._now()
         stale = self._rointe_stale_min()
@@ -2402,6 +2425,7 @@ class ScoutController:
                     and temp is not None
                     and temp < target - 0.5
                     and self._preset_entry_reason.get(zone) == "preheat"
+                    and not self._booking_event_running(zone)
                     and not self._within_startup_grace(now)
                 ):
                     fans = 1 if self._fans_running() else 0
@@ -2435,7 +2459,16 @@ class ScoutController:
                 and temp >= target
                 and readable >= n_probes
             )
-            if comfort and not done:
+            # The booking started before the room got there: close the sample
+            # here, before the group's own heat joins it, and keep it.
+            cut_short = (
+                comfort
+                and not done
+                and self._booking_event_running(zone)
+                and temp is not None
+                and readable >= n_probes
+            )
+            if comfort and not done and not cut_short:
                 # Still warming (or a reading lost: wait). Keep tallying whether
                 # the fans are assisting and how hard (the O1 wattage encodes the
                 # manual dial tap), and the outdoor for the cold gate + the leak.
@@ -2454,8 +2487,9 @@ class ScoutController:
                 )
                 continue
 
-            # Warm-up finished (target reached) or ended early (preset left
-            # comfort): fold the observation into the gain the lead predicts with.
+            # Warm-up finished (target reached), cut short by its booking, or
+            # ended early (preset left comfort): fold the first two into the
+            # gain and start-up allowance the lead predicts with.
             self._warmup_start[zone] = None
             if temp is None:
                 self._warmup_outdoor.pop(zone, None)
@@ -2471,7 +2505,9 @@ class ScoutController:
             end_temp = min(temp, target)
             rise = end_temp - start_temp
             rate_key = self._warmup_rate_key(zone)
+            tail_key = self._tail_key(rate_key)
             old_rate = self.number(rate_key)
+            old_tail = self.number(tail_key)
             # Judge the cold gate on the AVERAGE outdoor over the climb (a
             # pre-dawn sample must not be thrown away because the sun was up by
             # the time it closed — 2026-09-17), closing tick included; the same
@@ -2485,16 +2521,16 @@ class ScoutController:
             mild = outdoor is None or outdoor > WARMUP_COLD_MAX_OUTDOOR
             avg_gap = 0.0 if outdoor is None else (start_temp + end_temp) / 2.0 - outdoor
             cool_k = self.number(f"{zone}_heatloss_pct") / 100
-            quality = (
-                done
-                and not mild
-                and rise >= MIN_SAMPLE_RISE
-                and minutes >= MIN_SAMPLE_MINUTES
+            quality = (done or cut_short) and not mild and warmup_sample_usable(minutes, rise)
+            observed = (
+                warmup_observed_rate(minutes, rise, avg_gap, cool_k, old_tail) if quality else None
             )
-            observed = warmup_observed_rate(minutes, rise, avg_gap, cool_k) if quality else None
-            new_rate = (
-                updated_rate(old_rate, minutes, rise, avg_gap, cool_k) if quality else old_rate
-            )
+            new_rate, new_tail, method = old_rate, old_tail, None
+            history = self._warmup_history.setdefault(rate_key, [])
+            if quality:
+                history.append((minutes, rise, max(avg_gap, 0.0), cool_k))
+                del history[:-WARMUP_HISTORY_MAX]
+                new_rate, new_tail, method = learned_warmup(old_rate, old_tail, history)
             self.audit.record(
                 "warmup_sample",
                 now,
@@ -2511,15 +2547,20 @@ class ScoutController:
                 avg_gap=round(avg_gap, 2),
                 mild=mild,
                 reached_target=done,
+                cut_short=cut_short,
                 accepted=observed is not None,
                 observed_gain=observed,
                 old_rate=old_rate,
                 new_rate=new_rate,
+                old_tail=old_tail,
+                new_tail=new_tail,
+                method=method,
+                history_n=len(history),
             )
-            entity = self._numbers.get(rate_key)
-            write = getattr(entity, "write_value", None)
-            if write is not None and new_rate != old_rate:
-                write(new_rate)
+            for key, old, new in ((rate_key, old_rate, new_rate), (tail_key, old_tail, new_tail)):
+                write = getattr(self._numbers.get(key), "write_value", None)
+                if write is not None and new != old:
+                    write(new)
 
     def _drive_coast(
         self,
@@ -3378,9 +3419,41 @@ class ScoutController:
             "seasonal_lockout": self.seasonal_lockout,
             "fan_last_on": self.fan_last_on.isoformat() if self.fan_last_on else None,
             "fan_last_off": self.fan_last_off.isoformat() if self.fan_last_off else None,
+            # The climbs the start-up allowance and gain are fitted through, and
+            # the marker that the gains are already in the learned-tail units.
+            "warmup_history": {k: [list(c) for c in v] for k, v in self._warmup_history.items()},
+            "warmup_tail_v": 1,
             "audit": self.audit.to_list(),
             "trace": self.trace.to_list(),
         }
+
+    async def _async_convert_warmup_gains(self) -> None:
+        """Carry gains learned under the fixed 2.5 °C tail onto the learned one
+        (v1.51.0), once, on the first start after the upgrade.
+
+        Each learned gain is multiplied by ``TAIL_CONVERSION`` (1.375) and its
+        start-up allowance starts at the 1.0 seed: a 3 °C climb keeps the lead
+        it had, a shallow one starts later and a deep one earlier — the
+        direction October's arrivals asked for (hall 11.74 → 16.1; a straight
+        line through the nine October climbs gives 17–19). Only keys that held
+        a learned value before the upgrade; the kitchen and toilets are new in
+        this release and seeded in the new units. Audited
+        (`warmup_gain_converted`), and saved at once so a restart cannot apply
+        it twice.
+        """
+        changed: dict[str, list[float]] = {}
+        for key in ("zone_a_warmup_rate", "zone_a_warmup_rate_fans", "zone_b_warmup_rate"):
+            entity = self._numbers.get(key)
+            write = getattr(entity, "write_value", None)
+            if write is None:
+                continue
+            old = self.number(key)
+            new = round(max(MIN_RATE, min(MAX_RATE, old * TAIL_CONVERSION)), 2)
+            if new != old:
+                write(new)
+                changed[key] = [old, new]
+        self.audit.record("warmup_gain_converted", self._now(), factor=TAIL_CONVERSION, **changed)
+        await self._store.async_save(self._state_snapshot())
 
     async def _async_restore_state(self) -> None:
         try:
@@ -3424,6 +3497,15 @@ class ScoutController:
         self.fan_last_off = _dt(data.get("fan_last_off"))
         self.audit.load(data.get("audit"))
         self.trace.load(data.get("trace"))
+        for key, climbs in (data.get("warmup_history") or {}).items():
+            try:
+                self._warmup_history[key] = [
+                    (float(m), float(r), float(g), float(k)) for m, r, g, k in climbs
+                ][-WARMUP_HISTORY_MAX:]
+            except (TypeError, ValueError):
+                continue
+        if not data.get("warmup_tail_v"):
+            await self._async_convert_warmup_gains()
 
     def _heater_detail(self, climate: str) -> dict[str, Any]:
         """The full per-heater snapshot for the diagnostics export.
@@ -3595,6 +3677,12 @@ class ScoutController:
                 },
                 "opening_inferred": dict(self._opening_inferred),
                 "last_lead_calc": self._last_lead_calc,
+                # The climbs each gain and start-up allowance are fitted through:
+                # [minutes, rise, avg_gap, cool_k], oldest first (v1.51.0).
+                "warmup_history": {
+                    key: [[round(v, 3) for v in climb] for climb in climbs]
+                    for key, climbs in self._warmup_history.items()
+                },
             },
             "state": {
                 "applied": dict(self.applied),

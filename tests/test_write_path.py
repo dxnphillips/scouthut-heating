@@ -417,8 +417,8 @@ def test_the_booking_hold_never_moves_the_drive_target():
     for key, value in (
         ("hall_comfort_temp", 19.0),
         ("zone_a_heatloss_pct", 15.0),
-        ("zone_a_warmup_rate", 11.67),
-        ("zone_a_warmup_rate_fans", 11.67),
+        ("zone_a_warmup_rate", 16.05),  # 11.67 then, x1.375 since v1.51.0
+        ("zone_a_warmup_rate_fans", 16.05),
         ("booking_hold_cap", 1.5),
     ):
         ctrl._numbers[key].native_value = value

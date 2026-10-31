@@ -98,7 +98,7 @@ def test_a_steady_climb_on_every_probe_still_teaches():
         ctrl._update_warmup_learning()
     (evt,) = _events(ctrl, "warmup_sample")
     assert evt["accepted"] is True
-    assert evt["observed_gain"] == pytest.approx(60 / ((4 + 2.5) / 2), abs=0.01)
+    assert evt["observed_gain"] == pytest.approx(60 / ((4 + 1.0) / 2), abs=0.01)
 
 
 # --- Cool-off: a long flat spell before an out-of-family drop is a freeze ----

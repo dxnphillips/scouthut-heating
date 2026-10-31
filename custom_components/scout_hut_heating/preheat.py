@@ -18,17 +18,27 @@ holds:
 
     net gain (°C/h) = radiator gain − fabric leak
                     = 60 / rate − cool_k × (mid-climb indoor − outdoor)
-    lead (min)      = 60 × (deficit + APPROACH_TAIL_C) / net gain
+    lead (min)      = 60 × (deficit + tail) / net gain
 
 ``rate`` is the learned GROSS radiator gain (min/°C before leak — the same
-entities, learned from real pre-heats that reached target), ``cool_k`` is the
-heat-loss constant the cool-off learning already measures (which replaces the
-old guessed 1 %/°C cold-weather multiplier with a measured one), and the tail
-is the fixed finish. With the finish charged separately, cold-start and
-near-target climbs read as ONE family of gross gains, so there is no fast/slow
-family left for an out-of-family gate to police — that gate, and the two
-single-tick jump guards, are gone; the rise clamp and the sample-selection
-rules in the coordinator do their job.
+entities, learned from real pre-heats), ``cool_k`` is the heat-loss constant
+the cool-off learning already measures (which replaces the old guessed 1 %/°C
+cold-weather multiplier with a measured one), and ``tail`` is the start-up
+allowance: the degrees' worth of time every climb loses to the oil mass
+warming up and the Rointes throttling near target. With it charged
+separately, cold-start and near-target climbs read as ONE family of gross
+gains, so there is no fast/slow family left for an out-of-family gate to
+police — that gate, and the two single-tick jump guards, are gone; the rise
+clamp and the sample-selection rules in the coordinator do their job.
+
+The tail was a fixed 2.5 °C until v1.51.0. October 2026 showed it too big: the
+lead came out 4–23 min early on shallow climbs and 24–38 min LATE on the two
+cold-soaked ones (2026-10-21 from 11.9, 10-28 from 13.4), because a big tail
+with a fast gain over-charges a short climb and under-charges a long one. A
+straight line through the nine October hall climbs, ``rise + leak = gain ×
+hours − tail``, puts the tail near 0.2–0.5 and the gross gain near 17–19
+min/°C. So the tail is now LEARNED per zone, together with the gain, from the
+same line (``learned_warmup``), seeded at 1.0.
 """
 
 from __future__ import annotations
@@ -56,23 +66,34 @@ ALPHA = 0.3
 # cold arrival); a slow sample is fail-safe and folds at full weight.
 MAX_RATE_STEP_FRAC = 0.25
 
-# The fixed finish every climb pays, in °C-equivalent at the bulk gain: the
-# Rointes throttle to half power (`maintaining`) inside the last degree and
-# their oil mass lags the element, so the room's last stretch is not on the
-# bulk slope at all. Fitted from the intercept of the honest (rise, minutes)
-# pairs on record — 26-31 min at a 10-13 min/°C slope, i.e. 2.0-2.6 °C — and
-# set at the top of that range. Charged on EVERY lead (a 1 °C top-up is mostly
-# finish: 66 min at gain 15, against the old formula's 42, so no small deficit
-# arrives colder than it did) and removed from every sample before its gain is
-# read, which is what makes a 4 °C cold climb and a 1 °C top-up read as the
-# same gross gain. If near-target arrivals (deficit < 1.5) ever go short with
-# the lead well under the cap, this is the constant to raise, not the rate.
-APPROACH_TAIL_C = 2.5
+# The start-up allowance ("tail"), in °C-equivalent at the bulk gain: the time
+# every climb loses before and after the bulk slope (the oil mass warming up,
+# the Rointes throttling to half power inside the last degree). Charged on
+# EVERY lead and removed from every sample before its gain is read, which is
+# what makes a 4 °C cold climb and a 1 °C top-up read as the same gross gain.
+# Learned per zone since v1.51.0 (``learned_warmup``); this is the seed, and
+# the bounds and per-sample step keep one odd climb from yanking it.
+TAIL_SEED_C = 1.0
+MIN_TAIL_C = 0.5
+MAX_TAIL_C = 3.0
+MAX_TAIL_STEP_C = 0.5
 
-# Ignore warm-up samples with less rise than this (°C). Under the tail model a
-# 1 °C climb is ~70 % finish, so its implied gain swings ±15 % on a ±0.5 tail
-# error and teaches nothing about the slope; only bulk climbs carry the slope,
-# and every bulk climb on record is ≥ 3.6 °C. (Was 1.0 under the linear model.)
+# The tail and the gain are read off a straight line through the zone's recent
+# climbs, which needs enough of them and enough spread in their lengths to tell
+# the intercept from the slope. Until then only the gain is learned (the EWMA,
+# with the tail held where it is).
+FIT_MIN_SAMPLES = 4
+FIT_MIN_SPREAD_MIN = 30.0
+WARMUP_HISTORY_MAX = 10
+
+# The one-time conversion of a gain learned under the fixed 2.5 tail onto the
+# 1.0 seed: (3 + 2.5) / (3 + 1), the factor that keeps a 3 °C climb's lead
+# unchanged, so shorter climbs start later and longer ones earlier.
+TAIL_CONVERSION = (3.0 + 2.5) / (3.0 + TAIL_SEED_C)
+
+# Ignore warm-up samples with less rise than this (°C): a 1 °C climb is mostly
+# tail, so its implied gain swings on a small tail error and teaches little
+# about the slope. (Was 1.0 under the linear model.)
 MIN_SAMPLE_RISE = 2.0
 
 # ...and with less duration than this (minutes): a cloud-lagged reading that
@@ -93,12 +114,13 @@ MIN_PREDICT_TEMP = 7.0
 # brisk one via the learned gain against this reference. 20 min ~= one-to-two
 # of the drive's 15-min staircase steps — enough head-start for the slow loop
 # to arrest a fall. The reference was 30 when the rate meant net min/°C (family
-# ~40); it is 12 now that the rate means gross gain (family ~12-15) — a UNIT
-# conversion that preserves the field response lead (26.7 min → 25 at a gain
-# of 15), deliberately NOT coupled to APPROACH_TAIL_C so the hold and the
-# pre-heat finish stay separately tunable.
+# ~40); it was 12 when the gross gain carried the fixed 2.5 tail (family
+# ~12-15), and 16.5 since v1.51.0 converted the gains by TAIL_CONVERSION onto
+# the learned tail — UNIT conversions both, preserving the field response lead,
+# deliberately NOT coupled to the tail so the hold and the pre-heat stay
+# separately tunable.
 HOLD_LEAD_BASE_MIN = 20.0
-HOLD_WARMUP_REF = 12.0
+HOLD_WARMUP_REF = 16.5
 
 # Learned heat-loss constant k: the FRACTION of the indoor-outdoor gap lost
 # per hour (Newton cooling, dT/dt = -k·(indoor - outdoor)). Gap-normalising
@@ -175,6 +197,7 @@ def required_lead_minutes(
     max_minutes: float,
     gap_hours: float | None = None,
     cool_k: float = 0.0,
+    tail: float = TAIL_SEED_C,
 ) -> float:
     """Minutes of pre-heat needed to bring the room up to ``target``.
 
@@ -197,7 +220,7 @@ def required_lead_minutes(
     climb (``cool_k`` × the mid-climb indoor-outdoor gap — the same measured
     constant the Newton term uses, so a cold night earns its margin from data
     rather than from a guessed per-degree multiplier), spread over the deficit
-    plus the fixed radiator finish (``APPROACH_TAIL_C``). A leak that eats the
+    plus the learned start-up allowance (``tail``). A leak that eats the
     whole gain means the room cannot reach target at this outdoor: the cap,
     which is warm.
     """
@@ -210,7 +233,7 @@ def required_lead_minutes(
     net = net_gain_c_per_h(rate, predicted, target, outdoor, cool_k)
     if net <= 0:
         return max_minutes
-    lead = 60.0 * (deficit + APPROACH_TAIL_C) / net
+    lead = 60.0 * (deficit + tail) / net
     return max(min(lead, max_minutes), min(MIN_LEAD, max_minutes))
 
 
@@ -309,6 +332,7 @@ def updated_rate(
     temp_rise: float,
     avg_gap: float = 0.0,
     cool_k: float = 0.0,
+    tail: float = TAIL_SEED_C,
 ) -> float:
     """Fold one observed warm-up into the learned gross gain (EWMA).
 
@@ -323,7 +347,7 @@ def updated_rate(
     baseline to be out-of-family against. Which samples reach here at all is the
     coordinator's job (a real pre-heat that reached target, in cold conditions).
     """
-    observed = warmup_observed_rate(minutes_elapsed, temp_rise, avg_gap, cool_k)
+    observed = warmup_observed_rate(minutes_elapsed, temp_rise, avg_gap, cool_k, tail)
     if observed is None:
         return rate
     new = rate + ALPHA * (observed - rate)
@@ -337,11 +361,12 @@ def warmup_observed_rate(
     temp_rise: float,
     avg_gap: float = 0.0,
     cool_k: float = 0.0,
+    tail: float = TAIL_SEED_C,
 ) -> float | None:
     """The gross radiator gain (min/°C before leak) one warm-up implies, clamped,
     or None if the sample is too small to use.
 
-    ``(temp_rise + APPROACH_TAIL_C)`` over the hours is the net gain the room
+    ``(temp_rise + tail)`` over the hours is the net gain the room
     showed; adding the leak the fabric took over the same hours
     (``cool_k × avg_gap``) gives what the radiators actually delivered. Exactly
     what ``required_lead_minutes`` assumes, so a lead sized from a folded rate
@@ -350,10 +375,73 @@ def warmup_observed_rate(
     if temp_rise < MIN_SAMPLE_RISE or minutes_elapsed < MIN_SAMPLE_MINUTES:
         return None
     hours = minutes_elapsed / 60.0
-    gross = (temp_rise + APPROACH_TAIL_C) / hours + cool_k * max(avg_gap, 0.0)
+    gross = (temp_rise + tail) / hours + cool_k * max(avg_gap, 0.0)
     if gross <= 0:
         return None
     return max(MIN_RATE, min(MAX_RATE, 60.0 / gross))
+
+
+def warmup_sample_usable(minutes_elapsed: float, temp_rise: float) -> bool:
+    """Big enough to learn from (the same floor the gain has always used)."""
+    return temp_rise >= MIN_SAMPLE_RISE and minutes_elapsed >= MIN_SAMPLE_MINUTES
+
+
+def fitted_tail(history: list[tuple[float, float, float, float]]) -> float | None:
+    """The start-up allowance a zone's recent climbs imply, or None.
+
+    Each climb is ``(minutes, rise, avg_gap, cool_k)``. Under the lead model the
+    room rises at the net gain after losing ``tail`` degrees' worth of time, so
+    ``rise + cool_k × avg_gap × hours = gain × hours − tail`` — a straight line
+    in the hours whose intercept is minus the tail. Fitted by least squares
+    once there are ``FIT_MIN_SAMPLES`` climbs whose lengths spread at least
+    ``FIT_MIN_SPREAD_MIN`` (a slope and an intercept cannot be told apart from
+    climbs that all took the same time). Unclamped: ``learned_warmup`` bounds it.
+    """
+    if len(history) < FIT_MIN_SAMPLES:
+        return None
+    xs = [m / 60.0 for m, _, _, _ in history]
+    if (max(xs) - min(xs)) * 60.0 < FIT_MIN_SPREAD_MIN:
+        return None
+    ys = [r + k * max(g, 0.0) * x for (_, r, g, k), x in zip(history, xs)]
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx <= 0:
+        return None
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+    if slope <= 0:
+        return None
+    return -(my - slope * mx)
+
+
+def learned_warmup(
+    rate: float, tail: float, history: list[tuple[float, float, float, float]]
+) -> tuple[float, float, str]:
+    """Fold the newest climb (the last in ``history``) into the zone's gain and
+    start-up allowance: ``(new_rate, new_tail, method)``.
+
+    ``"fit"`` once the history can carry a straight line (``fitted_tail``):
+    the tail moves toward the fitted intercept by at most ``MAX_TAIL_STEP_C``,
+    bounded to ``[MIN_TAIL_C, MAX_TAIL_C]``, and the gain is then re-fitted
+    with that tail held (least squares through the same climbs), so the pair
+    the lead uses is always consistent; the gain moves at most
+    ``MAX_RATE_STEP_FRAC`` per climb. ``"ewma"`` before that: the tail stays
+    and the newest climb folds into the gain as it always has.
+    """
+    minutes, rise, avg_gap, cool_k = history[-1]
+    fit = fitted_tail(history)
+    if fit is None:
+        return updated_rate(rate, minutes, rise, avg_gap, cool_k, tail), tail, "ewma"
+    new_tail = max(tail - MAX_TAIL_STEP_C, min(tail + MAX_TAIL_STEP_C, fit))
+    new_tail = max(MIN_TAIL_C, min(MAX_TAIL_C, new_tail))
+    xs = [m / 60.0 for m, _, _, _ in history]
+    ys = [r + k * max(g, 0.0) * x for (_, r, g, k), x in zip(history, xs)]
+    gain = sum(x * (y + new_tail) for x, y in zip(xs, ys)) / sum(x * x for x in xs)
+    if gain <= 0:
+        return updated_rate(rate, minutes, rise, avg_gap, cool_k, tail), tail, "ewma"
+    observed = max(MIN_RATE, min(MAX_RATE, 60.0 / gain))
+    new = max(rate * (1 - MAX_RATE_STEP_FRAC), min(rate * (1 + MAX_RATE_STEP_FRAC), observed))
+    return max(MIN_RATE, min(MAX_RATE, new)), new_tail, "fit"
 
 
 def updated_cooling_k(

@@ -16,13 +16,14 @@ from scout_testkit import PRESET_COMFORT, PRESET_ICE, ZA, ZB, booking, hall_temp
 
 # --- Pure maths -------------------------------------------------------------
 def _m(**kw):
-    base = dict(comfort=19.5, outdoor=5.0, cool_k=0.10, warmup_rate=15.0, cap=1.5)
+    # 20.625 = the old 15 in the learned-allowance units (x1.375, v1.51.0).
+    base = dict(comfort=19.5, outdoor=5.0, cool_k=0.10, warmup_rate=20.625, cap=1.5)
     base.update(kw)
     return hold_margin(**base)
 
 
 def test_cold_night_earns_a_positive_margin():
-    # gap 14.5, cool 1.45/h, lead 20*15/12=25 min -> 0.604 C
+    # gap 14.5, cool 1.45/h, lead 20*20.625/16.5=25 min -> 0.604 C
     assert round(_m(), 3) == 0.604
 
 
@@ -62,8 +63,8 @@ def _cold_evening_booking():
     ctrl, hass = make_controller()
     hass.states.set("weather.forecast", "cloudy", {"temperature": 5.0})  # cold night
     ctrl._numbers["zone_a_heatloss_pct"].native_value = 10.0
-    ctrl._numbers["zone_a_warmup_rate"].native_value = 15.0
-    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 15.0
+    ctrl._numbers["zone_a_warmup_rate"].native_value = 20.625
+    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 20.625
     booking(ctrl, ZA)
     return ctrl, hass
 
@@ -81,8 +82,9 @@ def _hold_evening(outdoor):
     hass.states.set("weather.forecast", "cloudy", {"temperature": outdoor})
     ctrl._numbers["hall_comfort_temp"].native_value = 19.0
     ctrl._numbers["zone_a_heatloss_pct"].native_value = 9.65
-    ctrl._numbers["zone_a_warmup_rate"].native_value = 11.67
-    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 11.67
+    # 11.67 in the units of the day (fixed 2.5 allowance), x1.375 since v1.51.0.
+    ctrl._numbers["zone_a_warmup_rate"].native_value = 16.05
+    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 16.05
     booking(ctrl, ZA)
     return ctrl, hass
 
@@ -103,8 +105,8 @@ def test_no_hold_reaches_the_radiators():
     # 20.0 and the Friday booking ran more than 0.5 over for 129 min (v1.51.0).
     ctrl, _ = _hold_evening(9.9)
     ctrl._numbers["zone_a_heatloss_pct"].native_value = 18.63
-    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 11.74
-    ctrl._numbers["zone_a_warmup_rate"].native_value = 11.74
+    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 16.14
+    ctrl._numbers["zone_a_warmup_rate"].native_value = 16.14
     assert ctrl._booking_hold_margin(ZA) > 0.5
     assert ctrl._drive_comfort_target(ZA) == 19.0
     # The gate still holds the zone in comfort above bare comfort.

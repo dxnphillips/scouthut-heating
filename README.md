@@ -406,9 +406,20 @@ out from a small heat balance. The radiators add heat at a **learned gross
 gain** (minutes per °C before any leak); the fabric leaks it away at the
 **learned heat-loss constant** times how far indoors is above outdoors; the
 difference is the net climb rate, and the lead is how long that rate takes to
-cover the deficit *plus a fixed finish* — the Rointes throttle to half power
-inside the last degree and their oil mass lags, so every climb here pays the
-same ~30-minute tail whether it started 1 °C or 5 °C short. A booking matching
+cover the deficit *plus a start-up allowance* — the oil mass has to warm
+before the room moves and the Rointes throttle to half power inside the last
+degree, so every climb pays some time that does not depend on how far it has
+to go. The allowance is **learned per zone with the gain** (v1.51.0): each
+zone keeps its last ten pre-heats, and once four of different lengths exist
+the gain and the allowance are read off the straight line through them
+(`rise + leak = gain × hours − allowance`). Until then it sits at its 1.0 °C
+seed and only the gain learns. It was a fixed 2.5 °C before, which made
+shallow climbs start up to 20 minutes early and the two cold-soaked October
+mornings (hall at 11.9 and 13.4 °C) start 30–40 minutes late; replayed
+through the new learning, those two land within 10 minutes. Gains learned
+under the old 2.5 are multiplied by 1.375 once on the first start after the
+upgrade (`warmup_gain_converted` in the audit), the factor that keeps a
+3 °C climb's lead unchanged. A booking matching
 an ECO keyword pre-heats only to the eco setpoint, not comfort. The deficit
 is measured from the **average** of the zone's heater readings — the same
 quantity the heat gate releases on, so the lead brings to target exactly what
@@ -450,7 +461,10 @@ pull the gain down to the truth over a handful of bookings. Only a genuine
 an occupancy climb or a mid-booking top-up, where people, sun and a hotter
 setpoint do part of the radiators' work, nor a pre-heat window that opens on a
 hall someone's arrival has already lit (an occupancy climb whose start the
-pre-heat never saw) — judged on the zone average's
+pre-heat never saw). A pre-heat its booking overtakes before it arrives is
+kept too, closed at the booking start before the group's own heat joins it:
+those are the climbs where the lead was too short, the ones it most needs to
+learn from. Each is judged on the zone average's
 start and finish (exponentially smoothed and step-capped, so one odd morning
 can only nudge the number, never yank it); a temperature *rise* while unheated
 (July roof sun) is never mistaken for good insulation. The hall keeps **two**
@@ -528,7 +542,9 @@ restarts) of everything it decides and learns:
   or rejected, with the raw inputs (duration, temperature change, the average
   indoor–outdoor gap, fan assistance and wattage, old and new value; warm-up
   samples add `observed_gain` — the gross radiator gain the climb implied —
-  and `reached_target`; cool-off samples add `max_tick_drop` — the largest
+  `reached_target`, `cut_short` (its booking started first), `old_tail` /
+  `new_tail` (the start-up allowance), `method` (`ewma` until there are enough
+  climbs for a line, then `fit`) and `history_n`; cool-off samples add `max_tick_drop` — the largest
   single-tick fall, on which a discontinuity (an unmonitored opening or a
   probe unfreezing) is rejected rather than learned as fabric loss, and
   `settled_min` — how long after the heating→ice edge the sample anchored; an

@@ -203,13 +203,24 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # (60 would pin every lead at the 240-min cap and heat the toilets for four
     # hours before each booking): measured from the shared block's climbs of
     # 2026-10-29/30 (coldest room, ~11-12 min/°C gross at a guessed 12 %/h), then
-    # set on the slow side so an unlearned room arrives early, not late.
-    "kitchen_warmup_rate": (5, 60, 0.5, 15, "min/°C"),
-    "gents_warmup_rate": (5, 60, 0.5, 15, "min/°C"),
-    "ladies_warmup_rate": (5, 60, 0.5, 15, "min/°C"),
+    # set on the slow side so an unlearned room arrives early, not late; in the
+    # learned-allowance units (x1.375 from the fixed-2.5 ones: ~16 measured).
+    "kitchen_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
+    "gents_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
+    "ladies_warmup_rate": (5, 60, 0.5, 20, "min/°C"),
     "kitchen_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
     "gents_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
     "ladies_heatloss_pct": (0, 50, 0.5, 12, "%/h"),
+    # Learned start-up allowance per gain (v1.51.0): the °C-equivalent of time
+    # every climb loses to the oil mass warming and the Rointes throttling near
+    # target, read with the gain off a straight line through the zone's recent
+    # pre-heats (preheat.learned_warmup). Seeded at 1.0 (it was a fixed 2.5).
+    "zone_a_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
+    "zone_a_warmup_tail_fans": (0.5, 3, 0.1, 1.0, "°C"),
+    "zone_b_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
+    "kitchen_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
+    "gents_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
+    "ladies_warmup_tail": (0.5, 3, 0.1, 1.0, "°C"),
     "motion_timeout_minutes": (5, 60, 5, 15, "min"),
     "door_ice_minutes": (2, 30, 1, 10, "min"),
     "window_ice_minutes": (5, 60, 5, 10, "min"),
@@ -322,6 +333,12 @@ NUMBER_ICONS: dict[str, str] = {
     "kitchen_heatloss_pct": "mdi:snowflake-thermometer",
     "gents_heatloss_pct": "mdi:snowflake-thermometer",
     "ladies_heatloss_pct": "mdi:snowflake-thermometer",
+    "zone_a_warmup_tail": "mdi:timer-sand",
+    "zone_a_warmup_tail_fans": "mdi:timer-sand",
+    "zone_b_warmup_tail": "mdi:timer-sand",
+    "kitchen_warmup_tail": "mdi:timer-sand",
+    "gents_warmup_tail": "mdi:timer-sand",
+    "ladies_warmup_tail": "mdi:timer-sand",
     "motion_timeout_minutes": "mdi:timer-outline",
     "door_ice_minutes": "mdi:door-open",
     "window_ice_minutes": "mdi:window-open",
