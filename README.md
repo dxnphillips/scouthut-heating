@@ -272,18 +272,21 @@ this priority (highest wins):
    comfort setpoint — otherwise pressing it while already at comfort would do
    nothing. Reverts to plain comfort when the boost expires.
 
-   *Booking hold (anticipatory).* During a running booking the hall is held a
-   little **above** comfort so it can't dip below it as the evening cools — the
-   slow radiators would otherwise catch the fall late and undershoot. The margin
+   *Booking hold (anticipatory).* During a running booking the hall's heating
+   comes on, and stays on, a little **above** comfort so it can't dip below it
+   as the evening cools — the slow radiators would otherwise catch the fall late
+   and undershoot. The margin
    is worked out automatically from how fast the hall is losing heat (the learned
    cool-off rate and the outdoor temperature) and how sluggish it is to warm back
    up (the learned radiator gain): bigger on a cold night, near-zero on a mild one.
    Capped by the **Booking hold** slider (default 1.5 °C, set to 0 to switch it
-   off). Hall only, and only while a booking is actually running. The radiators
-   only take half-degree steps, so the margin is rounded **down** onto that grid
-   (v1.50.6): a hold under half a degree changes when the heating comes back on,
-   not how hot the radiators are set. Rounded to nearest, a 0.28 margin became a
-   whole half degree and every hall radiator was set to 20.0 on a comfort of 19.
+   off). Hall only, and only while a booking is actually running. Since v1.51.0
+   the hold changes only when the heating comes on and goes off; the radiators
+   themselves are set to comfort (plus the drive's usual top-up). The radiators
+   take half-degree steps, so any lift was a whole half degree with the drive's
+   half degree on top: every booking it lifted ran warm (2026-10-30: more than
+   0.5 °C over for 129 minutes) and none came near a dip, while the 10-29
+   booking, on the same kind of evening with no lift, held 19.0–19.4 throughout.
 5. **Alarm armed _away_ with no booking** → `ice` and clears the occupied
    override. `armed_away`/`armed_vacation` mean the building is empty; an
    `armed_night`/`armed_home` arm keeps heating (people are inside — e.g. a
@@ -509,7 +512,11 @@ restarts) of everything it decides and learns:
   and a reading its own idle panel agrees with (within 3 °C) is kept as the
   cold end of the hall rather than reported. A cool-off sample in flight when
   a probe joins or leaves the hall reading is dropped (`cooloff_discarded`,
-  reason `probes_changed`): the swap moves the reading, not the room.
+  reason `probes_changed`): the swap moves the reading, not the room. A probe
+  that is merely unreadable for a moment is not a swap (v1.51.0): the Rointe
+  integration drops every heater for one poll most nights, and the sample now
+  waits up to 5 minutes for the same probes (reason `reading_lost` past that), and the
+  settle clock is not restarted by a lost reading.
 - **Nothing "nudges" a silent heater any more (v1.46.0).** From v1.44.0 to
   v1.45.3 a stale heater in an attended zone was sent a no-op write (its own
   comfort number, then its own setpoint) to make it upload a fresh reading,

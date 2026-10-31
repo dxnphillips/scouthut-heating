@@ -299,7 +299,9 @@ def test_the_shared_zone_is_a_driven_zone_too():
     ctrl, hass = make_controller()
     hass.states.set(surface, "55.0")
     assert ctrl._zone_panels_hot("shared", 18.75) is True
-    assert ctrl._drive_coast("shared", 19.0, 18.75, True, ctrl._now()) == DRIVE_COAST_ALLOWANCE
+    # ...and its easing is off (v1.51.0): 21 of its 27 field easings rose 0.0.
+    assert ctrl._drive_coast("shared", 19.0, 18.75, True, ctrl._now()) == 0.0
+    assert not [e for e in ctrl.audit.to_list() if e.get("event") == "drive_coast_ease"]
 
 
 def test_a_full_reconcile_drives_every_zone_without_a_failing_step():

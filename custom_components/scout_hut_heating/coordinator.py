@@ -395,6 +395,14 @@ DRIVE_APPROACH_BAND = DRIVE_STEP  # avg within this of target → hold, don't es
 # it twice (the same discipline as the learned rates).
 DRIVE_COAST_ALLOWANCE = 0.5
 DRIVE_COAST_MAX_MINUTES = 20.0
+# The zones whose panels have been measured to land the allowance (v1.51.0). The
+# shared block (kitchen and two toilets, one heater each) has not: of its 27
+# easings from 2026-10-07 to 10-30, 21 rose 0.0 and the mean was +0.08 against
+# the 0.5 allowance, most of them running the full 20-min box. So the toilets and
+# kitchen were simply held half a degree under target for 20 min of most comfort
+# spells. The hall's tail (31 episodes, up to +1.0 on an occupied session) and the
+# office's (2, one +1.0) stay.
+DRIVE_COAST_ZONES = (ZONE_A, ZONE_B)
 # ...and one more gate, because the FIRST genuinely cold morning found the hole
 # (field 2026-09-21, outdoor 9-10 °C, a 4.5 °C deficit on a 240-min lead): the
 # Rointe probes freeze-then-jump, and this gate reads the zone average, so a
@@ -619,6 +627,16 @@ COOL_FREEZE_FLAT_MINUTES = 90.0
 # two hours after a session is audited, not pushed — the hall has contacts, and
 # the office's standing fix is a contact (Q19).
 COOL_ALARM_SETTLE_MIN = 120.0
+# A reading that blinks out is not the room changing (v1.51.0). The Rointe
+# integration drops every heater for one poll most nights (2026-10-26 → 10-31: six
+# ~30-s losses at 06:28, 00:37, 06:01, 04:24, 01:36 and 04:06Z, all mid-cool-off).
+# v1.50.9 discarded the running sample whenever its set of probes changed, which a
+# blink does twice, and a lost reading also reset the settle clock, so the next
+# sample was stamped as anchored 20 min after icing when it was hours. That cost
+# one overnight sample per night per zone, and the overnight samples are the slow,
+# honest ones. A sample now waits up to this long for the same probes to come back;
+# longer than that it ends as before. A plausibility swap still ends it at once.
+COOL_DROPOUT_GRACE_MIN = 5.0
 # Cold-conditions gate on warm-up learning (2026-09-11, field). A warm-up timed
 # in mild weather reads implausibly fast because solar gain on the big uninsulated
 # roof (plus occupancy) does much of the work the radiators are credited with.
@@ -826,6 +844,9 @@ class ScoutController:
         # Which probes made up the zone's reading when its cool-off sample
         # anchored: a sample never spans a change in that set (v1.50.9).
         self._cooloff_members: dict[str, frozenset[str]] = {}
+        # When the running sample's reading blinked out (v1.51.0), so a brief
+        # Rointe dropout holds the sample instead of ending it.
+        self._cooloff_dropout_since: dict[str, datetime] = {}
         self._zone_comfort_target: dict[str, float | None] = {ZONE_A: None, ZONE_B: None}
         # Last good room reading per zone (time, temp), so a transient Rointe
         # drop-out holds the recent truth instead of erring warm on a blip.
@@ -1583,6 +1604,27 @@ class ScoutController:
                 continue
             members.add(climate)
         return frozenset(members)
+
+    def _probe_readable(self, climate: str) -> bool:
+        st = self.hass.states.get(climate)
+        return (
+            st is not None
+            and st.state not in ("unavailable", "unknown")
+            and st.attributes.get("current_temperature") is not None
+        )
+
+    def _cooloff_reading_blinked(
+        self, members: frozenset[str], anchored: frozenset[str], temp: float | None
+    ) -> bool:
+        """Has the cool-off sample's reading only blinked out (v1.51.0)?
+
+        True when the room reading is gone, or some of the probes it anchored on
+        have dropped out, and every missing probe is merely unreadable. A probe
+        that is readable but has been left out as implausible, or a probe joining,
+        is a real change to the reading, not a blink."""
+        if not (temp is None or members < anchored):
+            return False
+        return all(not self._probe_readable(c) for c in anchored - members)
 
     def _hall_implausible_probes(self) -> set[str]:
         """Hall heaters whose reading cannot be the room (v1.50.6).
@@ -2353,7 +2395,12 @@ class ScoutController:
         for a while afterwards its approach rate — the thing the easing's premise
         rests on — is unknowable. See `DRIVE_COAST_MAX_JUMP`. Withholding the
         easing restores full drive, so this only ever errs warm.
+
+        Only the zones in ``DRIVE_COAST_ZONES``: the shared block's panels have
+        never landed the allowance.
         """
+        if zone not in DRIVE_COAST_ZONES:
+            return 0.0
         jumped = self._note_coast_jump(zone, zone_avg, now)
         hottest = self._zone_hottest_panel(zone)
         ready = (
@@ -2578,9 +2625,26 @@ class ScoutController:
             # average, and a 0.5-h sample that ended on the swap read 1.33 C,
             # walking k 21.01 -> 26.26. Discard and start again on the new set.
             members = self._room_reading_members(zone)
-            if sample is not None and members != self._cooloff_members.get(zone):
-                self.audit.record("cooloff_discarded", now, zone=zone, reason="probes_changed")
-                self._cooloff_start[zone] = sample = None
+            if sample is not None:
+                anchored = self._cooloff_members.get(zone, frozenset())
+                blinked = self._cooloff_reading_blinked(members, anchored, temp)
+                if cooling and blinked:
+                    # The same probes, briefly unreadable: wait for them rather
+                    # than end the sample (v1.51.0, COOL_DROPOUT_GRACE_MIN).
+                    lost_at = self._cooloff_dropout_since.setdefault(zone, now)
+                    if (now - lost_at).total_seconds() / 60 <= COOL_DROPOUT_GRACE_MIN:
+                        continue
+                else:
+                    self._cooloff_dropout_since.pop(zone, None)
+                if members != anchored:
+                    self.audit.record(
+                        "cooloff_discarded",
+                        now,
+                        zone=zone,
+                        reason="reading_lost" if blinked else "probes_changed",
+                    )
+                    self._cooloff_start[zone] = sample = None
+                    self._cooloff_dropout_since.pop(zone, None)
 
             def _anchor(anchor_temp: float) -> tuple[Any, ...]:
                 w = self._o1_watts() if zone == ZONE_A else None
@@ -2613,8 +2677,11 @@ class ScoutController:
                     ):
                         self._cooloff_start[zone] = _anchor(temp)
                         self._cooloff_members[zone] = members
-                else:
-                    # Heating (or reading lost): a later cool-off re-settles.
+                elif not cooling:
+                    # Heating: a later cool-off re-settles. A lost reading does
+                    # not reset the clock (v1.51.0): the zone has been on ice all
+                    # along, and resetting it stamped a sample anchored hours after
+                    # icing as anchored at 20 min.
                     self._cooloff_cooling_since[zone] = None
                 continue
 
@@ -3679,10 +3746,30 @@ class ScoutController:
         Set on the booking's end edge for one motion timeout (v1.49.0). While it
         runs, bare occupancy heats toward the eco-low target the booking had
         rather than full comfort. Cleared by the next booking start.
+
+        It lasts the visit, not a fixed 15 min (v1.51.0): motion anywhere in the
+        building while the tail runs carries it one more motion timeout, so it
+        ends only when the building has been quiet that long, or the zone's alarm
+        is set away. Field 2026-10-30: the 09:45–11:15Z sal-vation clean overran
+        by an hour with the hall PIR never quiet, the 15-min tail ran out at
+        11:30Z and the hall and the shared block went to comfort 19 for the
+        cleaner until the alarm at 12:18Z. A gap longer than the timeout, or an
+        away arm, makes the next person a new visit (someone arrived ten minutes
+        after that 12:18Z arm).
         """
         until = self._eco_tail_until.get(zone)
         if until is None:
             return False
+        if self._alarm_armed(self.config.get(ZONE_ALARM[zone])):
+            self._eco_tail_until[zone] = None
+            return False
+        last = max(
+            (ts for ts in (self.last_motion.get(a) for a in MOTION_AREAS) if ts is not None),
+            default=None,
+        )
+        if last is not None and last <= until:
+            until = max(until, last + timedelta(minutes=self.number("motion_timeout_minutes")))
+            self._eco_tail_until[zone] = until
         if self._now() >= until:
             self._eco_tail_until[zone] = None
             return False
@@ -5416,32 +5503,30 @@ class ScoutController:
         )
 
     def _drive_comfort_target(self, zone: str) -> float:
-        """The temperature the drive aims the room at — comfort, plus any upward
-        nudge from a Boost or a booking "hold".
+        """The temperature the drive aims the room at — comfort, or comfort plus
+        the boost offset while a Boost runs.
 
         A Boost is an occupant saying "still too cold", so it aims ABOVE comfort
-        (without it, boosting a room already at comfort would be a no-op). A
-        booking hold anticipates a cooling evening, holding the hall a little
-        above comfort so the slow drive does not undershoot. Both only ever aim
-        warmer; take the larger (they do not stack) and clamp to the Rointe max.
+        (without it, boosting a room already at comfort would be a no-op). It
+        only ever aims warmer and is clamped to the Rointe max.
 
-        Quantised to the Rointe's 0.5 °C setpoint grid: the booking-hold margin is
-        a continuous number (e.g. 0.72 °C), but the radiators only accept 0.5 steps
-        — an off-grid target is silently rounded by the device (and would wobble
-        the setpoint read-back self-check), so it is placed on the grid here.
+        The booking hold no longer lifts the radiators (v1.51.0). It still moves
+        the heating gate (``_desired_zone`` engages and releases a running
+        booking on comfort + the raw margin, so a cooling hall relights early and
+        stays in comfort through the slot), but the drive aims at comfort itself.
+        The lift was 0 or a whole 0.5 at the radiators (their grid), and with the
+        overdrive's 0.5 on top it set the hall to 20.0 on a comfort of 19. Every
+        booking it touched ran warm and none came near a dip: 2026-10-22 peaked
+        at 20.62 and 20.12, 10-23 sat at +0.75, and 10-30 (k 18.63, margin 0.55)
+        ran more than 0.5 over for 129 min. 10-29, at the same outdoor with a
+        margin of 0.39 and so no lift, held 19.0–19.38 for the whole session.
+        The gate keeps the zone in comfort and the drive's staircase cancels the
+        Rointes' own droop, which is what keeps the room off its floor.
 
-        Rounded DOWN, not to nearest (v1.50.6). The comfort, eco and boost values
-        are already on the grid, so only the hold is affected. To nearest, a
-        0.28 margin became a whole 0.5 at the radiators, and the overdrive's 0.5
-        sat on top of it: on 2026-10-22 every hall radiator was set to 20.0 on a
-        comfort of 19, and the two evening bookings peaked at 20.62 and 20.12
-        without ever coming near the dip the hold exists for. Rounded down, a
-        margin under 0.5 adds nothing at the radiators; the heating still
-        engages and releases on the raw margin (``_desired_zone``), so the hold
-        still relights a cooling hall early."""
+        Floored to the Rointe's 0.5 °C setpoint grid (the comfort and boost
+        values are on it already; this only guards an odd slider value)."""
         base = self.number(DRIVE_COMFORT_TARGET_KEY[zone])
         bump = self.number("boost_offset") if self._boosting(zone) else 0.0
-        bump = max(bump, self._booking_hold_margin(zone))
         target = min(base + bump, ROINTE_COMFORT_MAX)
         return math.floor(target / DRIVE_STEP + 1e-6) * DRIVE_STEP
 

@@ -3,10 +3,11 @@ comfort as the evening cools.
 
 The drive is slow and reactive (fires only below target), so on a falling evening
 it catches the room at comfort and then lags, undershooting. During a booking we
-know comfort is wanted for the whole slot, so the drive holds the hall a little
-ABOVE comfort — a margin sized from the learned cool-off and warm-up rates, so it
-is exactly the head-start the fall warrants (bigger on a cold night, ~zero on a
-mild one), and self-zeroing/off when unlearned or capped to 0.
+know comfort is wanted for the whole slot, so the heating gate engages and
+releases a little ABOVE comfort — a margin sized from the learned cool-off and
+warm-up rates, so it is exactly the head-start the fall warrants (bigger on a
+cold night, ~zero on a mild one), and self-zeroing/off when unlearned or capped
+to 0. Since v1.51.0 the margin moves the gate only; the radiators aim at comfort.
 """
 
 from custom_components.scout_hut_heating.preheat import hold_margin
@@ -70,17 +71,8 @@ def _cold_evening_booking():
 def test_running_cold_booking_has_a_hold_margin():
     ctrl, _ = _cold_evening_booking()
     assert ctrl._booking_hold_margin(ZA) > 0.0
-    # and the drive aims that far above comfort
-    assert ctrl._drive_comfort_target(ZA) > ctrl.number("hall_comfort_temp")
-
-
-def test_drive_target_stays_on_the_rointe_half_degree_grid():
-    # The Rointes only accept 0.5 °C setpoints; the continuous hold margin (e.g.
-    # 0.72 °C) must not push an off-grid target to the hardware.
-    ctrl, _ = _cold_evening_booking()
-    assert ctrl._booking_hold_margin(ZA) % 0.5 != 0  # the raw margin IS off-grid
-    target = ctrl._drive_comfort_target(ZA)
-    assert round(target * 2) / 2 == target  # ...but the driven target is not
+    # ...which the gate uses, but the radiators aim at comfort (v1.51.0).
+    assert ctrl._drive_comfort_target(ZA) == ctrl.number("hall_comfort_temp")
 
 
 def _hold_evening(outdoor):
@@ -103,6 +95,22 @@ def test_a_hold_under_half_a_degree_adds_nothing_at_the_radiators():
         ctrl, _ = _hold_evening(outdoor)
         assert 0.25 < ctrl._booking_hold_margin(ZA) < 0.5
         assert ctrl._drive_comfort_target(ZA) == 19.0
+
+
+def test_no_hold_reaches_the_radiators():
+    # 2026-10-30: k 18.63 after two post-session cool-offs, outdoor 9.9, margin
+    # 0.55. Rounded down it was still a whole 0.5, the hall radiators went to
+    # 20.0 and the Friday booking ran more than 0.5 over for 129 min (v1.51.0).
+    ctrl, _ = _hold_evening(9.9)
+    ctrl._numbers["zone_a_heatloss_pct"].native_value = 18.63
+    ctrl._numbers["zone_a_warmup_rate_fans"].native_value = 11.74
+    ctrl._numbers["zone_a_warmup_rate"].native_value = 11.74
+    assert ctrl._booking_hold_margin(ZA) > 0.5
+    assert ctrl._drive_comfort_target(ZA) == 19.0
+    # The gate still holds the zone in comfort above bare comfort.
+    motion(ctrl, "hall")
+    hall_temp(ctrl, 19.5)
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
 
 
 def test_the_heating_still_engages_on_the_raw_hold():

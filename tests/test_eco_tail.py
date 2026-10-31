@@ -11,6 +11,7 @@ zone heats toward the eco-low target it was given, not comfort.
 """
 
 from scout_testkit import (
+    E,
     PRESET_COMFORT,
     PRESET_ECO,
     PRESET_ICE,
@@ -117,3 +118,63 @@ def test_after_the_tail_a_kitchen_trip_heats_the_shared_as_before():
     motion(ctrl, "kitchen")
     assert ctrl._desired_shared() == PRESET_COMFORT
     assert ctrl._preset_reason["shared"] == "shared_motion"
+
+
+# --- The tail lasts the visit (v1.51.0) ----------------------------------------
+# Field 2026-10-30: the 09:45-11:15Z sal-vation clean overran by an hour with the
+# hall PIR never quiet. The 15-min tail ran out at 11:30Z and the hall and the
+# shared block went to comfort 19 for the cleaner until the alarm at 12:18Z.
+def test_a_cleaner_who_overruns_stays_on_the_eco_low_target():
+    ctrl = _ended_eco_booking(12.0)
+    for _ in range(6):  # an hour, never quiet for a whole motion timeout
+        motion(ctrl, "hall")
+        assert ctrl._desired_zone(ZA) == PRESET_ECO
+        assert ctrl._preset_reason[ZA] == "eco_tail"
+        advance(ctrl, 10)
+    motion(ctrl, "hall")
+    assert ctrl._desired_zone(ZA) == PRESET_ECO
+    assert ctrl._eco_low_wanted(ZA) is True
+
+
+def test_motion_anywhere_in_the_building_carries_the_tail():
+    ctrl = _ended_eco_booking(12.0)
+    motion(ctrl, "hall")
+    for _ in range(4):
+        advance(ctrl, 10)
+        motion(ctrl, "female")  # cleaning the toilets
+        assert ctrl._eco_tail_active(ZA) is True
+    motion(ctrl, "hall")
+    assert ctrl._desired_zone(ZA) == PRESET_ECO
+
+
+def test_an_away_arm_ends_the_visit():
+    # 12:18Z armed and gone; someone else arrived at 12:28Z, inside the timeout.
+    ctrl = _ended_eco_booking(12.0)
+    motion(ctrl, "hall")
+    advance(ctrl, 10)
+    ctrl.hass.states.set(E["alarm_main"], "armed_away")
+    assert ctrl._eco_tail_active(ZA) is False
+    ctrl.hass.states.set(E["alarm_main"], "disarmed")
+    advance(ctrl, 10)
+    motion(ctrl, "hall")
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+    assert ctrl._preset_reason[ZA] == "motion"
+
+
+def test_a_quiet_spell_is_not_bridged_by_a_later_arrival():
+    ctrl = _ended_eco_booking(12.0)
+    motion(ctrl, "hall")
+    advance(ctrl, ctrl.number("motion_timeout_minutes") + 5)
+    motion(ctrl, "hall")  # after the building had gone quiet
+    assert ctrl._eco_tail_active(ZA) is False
+    assert ctrl._desired_zone(ZA) == PRESET_COMFORT
+
+
+def test_the_shared_block_stays_at_eco_while_the_cleaner_is_still_there():
+    ctrl = _ended_eco_booking(15.5)
+    shared_temp(ctrl, 18.0)
+    for _ in range(5):
+        motion(ctrl, "kitchen")
+        assert ctrl._desired_shared() == PRESET_ECO
+        assert ctrl._preset_reason["shared"] == "eco_tail"
+        advance(ctrl, 10)
