@@ -42,7 +42,7 @@ def _room_temps(hass, kitchen, gents, ladies):
 
 
 def _desired(ctrl):
-    return {room: ctrl._desired_room(room) for room in ROOMS}
+    return {room: ctrl._desired_zone(room) for room in ROOMS}
 
 
 def _armed(hass):
@@ -83,7 +83,7 @@ def test_a_heater_with_an_unknown_name_still_gets_a_room():
 def test_no_shared_heaters_means_no_rooms():
     ctrl, _ = make_controller({CONF_SHARED_CLIMATES: []})
     assert ctrl._rooms() == []
-    assert ctrl._desired_room("kitchen") is None
+    assert ctrl._desired_zone("kitchen") is None
 
 
 # --- Nobody, somebody ------------------------------------------------------------
@@ -107,7 +107,7 @@ def test_the_ladies_pir_is_the_female_sensor():
     ctrl, hass = make_controller()
     _room_temps(hass, 15.0, 15.0, 15.0)
     motion(ctrl, "female")
-    assert ctrl._desired_room("ladies") == PRESET_COMFORT
+    assert ctrl._desired_zone("ladies") == PRESET_COMFORT
 
 
 def test_a_warm_occupied_room_rests_on_ice():
@@ -115,7 +115,7 @@ def test_a_warm_occupied_room_rests_on_ice():
     ctrl._numbers["shared_comfort_temp"].native_value = 19.0
     _room_temps(hass, 20.0, 15.0, 15.0)
     motion(ctrl, "kitchen")
-    assert ctrl._desired_room("kitchen") == PRESET_ICE
+    assert ctrl._desired_zone("kitchen") == PRESET_ICE
     assert ctrl._preset_reason["kitchen"] == "occupied_warm"
 
 
@@ -163,8 +163,8 @@ def test_a_heating_room_holds_comfort_through_the_release_band():
     motion(ctrl, "hall")
     _room_temps(hass, 19.25, 19.25, 19.25)
     ctrl.applied["gents"] = PRESET_COMFORT
-    assert ctrl._desired_room("gents") == PRESET_COMFORT  # still under 19.5
-    assert ctrl._desired_room("kitchen") == PRESET_ICE  # not heating: judged bare
+    assert ctrl._desired_zone("gents") == PRESET_COMFORT  # still under 19.5
+    assert ctrl._desired_zone("kitchen") == PRESET_ICE  # not heating: judged bare
 
 
 def test_a_booking_holds_the_rooms_whatever_the_alarm_says():
@@ -193,7 +193,7 @@ def test_a_group_in_any_room_keeps_every_room_at_comfort():
     _room_temps(hass, 15.0, 15.0, 15.0)
     booking(ctrl, ZA)
     motion(ctrl, "kitchen")
-    assert ctrl._desired_room("gents") == PRESET_COMFORT
+    assert ctrl._desired_zone("gents") == PRESET_COMFORT
 
 
 def test_the_arrival_grace_keeps_the_rooms_heating():
@@ -203,10 +203,10 @@ def test_the_arrival_grace_keeps_the_rooms_heating():
     cal = E["cal_hall"]
     start = ctrl._now() - timedelta(minutes=10)
     hass.states.set(cal, "on", {"message": "", "start_time": start.strftime("%Y-%m-%d %H:%M:%S")})
-    assert ctrl._desired_room("kitchen") == PRESET_COMFORT
+    assert ctrl._desired_zone("kitchen") == PRESET_COMFORT
     start = ctrl._now() - timedelta(minutes=40)
     hass.states.set(cal, "on", {"message": "", "start_time": start.strftime("%Y-%m-%d %H:%M:%S")})
-    assert ctrl._desired_room("kitchen") == PRESET_ECO
+    assert ctrl._desired_zone("kitchen") == PRESET_ECO
 
 
 def test_an_eco_keyword_booking_rests_them_at_eco():
@@ -270,18 +270,42 @@ def test_the_pre_heat_runs_with_the_alarm_set(monkeypatch):
     _room_temps(hass, 18.5, 13.0, 16.0)
     _armed(hass)
     _upcoming(ctrl, monkeypatch, 90)
-    assert ctrl._desired_room("gents") == PRESET_COMFORT
+    assert ctrl._desired_zone("gents") == PRESET_COMFORT
     assert ctrl._preset_reason["gents"] == "preheat"
-    assert ctrl._desired_room("kitchen") == PRESET_ICE  # its window is not open yet
+    assert ctrl._desired_zone("kitchen") == PRESET_ICE  # its window is not open yet
     assert ctrl._preset_reason["kitchen"] == "alarm"
 
 
-def test_an_eco_keyword_booking_does_not_pre_heat_them(monkeypatch):
+def test_an_eco_keyword_booking_pre_heats_them_to_eco(monkeypatch):
+    # One ladder for every zone: an ECO booking pre-heats the rooms toward eco,
+    # as it does the hall, on each room's own lead to the eco target.
+    ctrl, hass = make_controller()
+    _cold_evening(hass)
+    _room_temps(hass, 13.0, 13.0, 17.0)
+    _upcoming(ctrl, monkeypatch, 30, "sal-vation fitness")
+    assert ctrl.cal_window["gents"] is True and ctrl._room_window_eco["gents"] is True
+    assert ctrl._desired_zone("gents") == PRESET_ECO
+    assert ctrl._preset_reason["gents"] == "booking_eco"  # as the hall's eco pre-heat
+    started = {e["zone"]: e for e in _events(ctrl, "preheat_start")}
+    assert started["gents"]["target"] == ctrl.number("hall_eco_temp")
+    # The ladies at 17 are already above eco: no window.
+    assert ctrl.cal_window["ladies"] is False
+
+
+def test_a_comfort_booking_beats_an_eco_one_starting_together(monkeypatch):
     ctrl, hass = make_controller()
     _cold_evening(hass)
     _room_temps(hass, 13.0, 13.0, 13.0)
-    _upcoming(ctrl, monkeypatch, 30, "sal-vation fitness")
-    assert not any(ctrl.cal_window[r] for r in ROOMS)
+    start = dt_util.now() + timedelta(minutes=60)
+
+    async def _calendar(cal, _minutes):
+        title = "sal-vation" if cal == E["cal_hall"] else "Cubs"
+        return [{"start": start.isoformat(), "summary": title}]
+
+    monkeypatch.setattr(ctrl, "_async_calendar_events", _calendar)
+    run(ctrl._async_refresh_calendars())
+    assert ctrl._room_window_eco["gents"] is False
+    assert ctrl._desired_zone("gents") == PRESET_COMFORT
 
 
 def test_no_booking_ahead_closes_the_windows(monkeypatch):
@@ -449,7 +473,7 @@ def test_one_alarm_does_not():
     on(hass, E["alarm_main"])
     _room_temps(hass, 15.0, 15.0, 15.0)
     motion(ctrl, "kitchen")
-    assert ctrl._desired_room("kitchen") == PRESET_COMFORT
+    assert ctrl._desired_zone("kitchen") == PRESET_COMFORT
 
 
 @pytest.mark.parametrize("zone", [ZA, ZB])
@@ -477,3 +501,42 @@ def test_the_season_does_not_matter():
     booking(ctrl, ZA)
     motion(ctrl, "hall")
     assert set(_desired(ctrl).values()) == {PRESET_COMFORT}
+
+
+# --- One ladder for every zone (v1.51.0) ----------------------------------------
+# The rooms run through `_desired_zone` itself, so what the hall learned the hard
+# way applies to them too.
+def test_a_room_frozen_at_target_is_relit_like_the_hall():
+    # A heater whose reading has not moved for the relight line while the room
+    # waits on ice "warm enough" is relit: a frozen probe never falls below target.
+    from custom_components.scout_hut_heating.coordinator import BOOKING_RELIGHT_STALE_MIN
+
+    ctrl, hass = make_controller()
+    ctrl._numbers["shared_comfort_temp"].native_value = 19.0
+    _cold_evening(hass)
+    _room_temps(hass, 19.0, 19.0, 19.0)
+    ctrl.cal_window["gents"] = True
+    ctrl._track_probe_changes()
+    advance(ctrl, BOOKING_RELIGHT_STALE_MIN + 1)
+    ctrl.applied["gents"] = PRESET_ICE
+    ctrl._preset_reason["gents"] = "booking_warm"
+    assert ctrl._desired_zone("gents") == PRESET_COMFORT
+    assert ctrl._preset_reason["gents"] == "preheat_stale"
+
+
+def test_an_eco_booking_heats_only_the_rooms_below_eco():
+    # Before v1.51.0 every room went to eco for an ECO booking whatever its
+    # reading; now a room already above eco rests on ice, as the hall does.
+    ctrl, hass = make_controller()
+    _room_temps(hass, 17.0, 15.0, 17.0)
+    booking(ctrl, ZA, "sal-vation")
+    motion(ctrl, "hall")
+    assert _desired(ctrl) == {"kitchen": PRESET_ICE, "gents": PRESET_ECO, "ladies": PRESET_ICE}
+    assert ctrl._preset_reason["kitchen"] == "booking_warm"
+    assert ctrl._preset_reason["gents"] == "booking_eco"
+
+
+def test_a_room_with_no_heater_has_no_preset():
+    ctrl, _ = make_controller()
+    ctrl.config[CONF_SHARED_CLIMATES] = [KITCHEN, GENTS]
+    assert ctrl._desired_zone("ladies") is None

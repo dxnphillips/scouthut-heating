@@ -882,15 +882,19 @@ def test_a_window_opened_blind_is_rejudged_when_the_reading_returns(monkeypatch)
     run(ctrl._async_refresh_calendars())
     # Unreadable: the lead falls back to the cap, the window opens (err warm).
     assert ctrl.cal_window[ZA] is True
-    (opened,) = [e for e in ctrl.audit.to_list() if e["event"] == "preheat_start"]
+    (opened,) = [
+        e for e in ctrl.audit.to_list() if e["event"] == "preheat_start" and e["zone"] == ZA
+    ]
     assert opened["lead_min"] == 240 and opened.get("indoor") is None
 
-    # Five minutes later the probes are back: a 14 target from 13.4 needs about
+    # Five minutes later the probes are back: an eco target from 13.4 needs about
     # an hour, not 200 minutes, so the window closes instead of holding latched.
     _hall_reads(hass, 13.4)
     run(ctrl._async_refresh_calendars())
     assert ctrl.cal_window[ZA] is False
-    (withdrawn,) = [e for e in ctrl.audit.to_list() if e["event"] == "preheat_withdrawn"]
+    (withdrawn,) = [
+        e for e in ctrl.audit.to_list() if e["event"] == "preheat_withdrawn" and e["zone"] == ZA
+    ]
     assert withdrawn["reason"] == "reading_back" and withdrawn["indoor"] == 13.4
     assert withdrawn["lead_min"] < 200
 

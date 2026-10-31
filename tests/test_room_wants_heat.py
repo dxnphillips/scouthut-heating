@@ -185,7 +185,7 @@ def test_shared_follows_a_hall_booking_regardless_of_season():
     # toilets during a session), whatever the warm-season flag says.
     ctrl = _cold_hall_booking()
     motion(ctrl, "hall")  # the group is in
-    assert ctrl._desired_room("kitchen") == PRESET_COMFORT
+    assert ctrl._desired_zone("kitchen") == PRESET_COMFORT
     assert ctrl._preset_reason["kitchen"] == "booking"
 
 

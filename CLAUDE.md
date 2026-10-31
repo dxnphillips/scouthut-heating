@@ -23,7 +23,7 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 776
+  a fully wired controller). Every behaviour change ships with tests. 781
   passing as of 2026-10-31.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
@@ -3467,16 +3467,24 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   fills an empty room); `_climates_of(zone)` resolves any zone, so the generic
   helpers (`_zone_climate_temps`, `_room_wants_heat`, `_zone_preheat_minutes`,
   warm-up/cool-off learning, `_async_set_preset`, the drive) run per room.
-  `_desired_room` is the hall's ladder on the room's own reading and PIR
-  (`ROOM_MOTION_AREA`, ladies = `female`), with three deliberate differences:
-  either calendar's booking counts (warmest wins, eco-keyword → `booking_eco`
-  and no pre-heat); `booking_quiet` judges the whole building, not the room's
-  PIR (a toilet is empty most of a session); and outside a booking both panels
-  away is still what ices them (the office shares them). A booking — running,
-  or the room's own pre-heat window from `_refresh_room_windows` (next non-eco
-  event on either calendar, the room's own lead, the hall's latch and blind
-  rules via the shared `_judge_preheat_window`) — beats the alarm. No coast,
-  cooling hold, booking hold or stale relight for the rooms. New learned
+  The rooms run through `_desired_zone` itself (one ladder for all five zones
+  since the follow-up commit; `_desired_room` was a separate copy at first) on
+  the room's own reading and PIR (`ROOM_MOTION_AREA`, ladies = `female`). The
+  deliberate differences live in per-zone helpers: either calendar's booking
+  counts, warmest wins (`_running_calendars`, `_eco_keyword_active`,
+  `_booking_event_running`); `booking_quiet` judges the whole building, not the
+  room's PIR (`_booking_present` — a toilet is empty most of a session; also
+  `_booking_awaiting`); outside a booking both panels away is still what ices
+  them (`_zone_alarm_away` — the office shares them); either booking's eco tail.
+  A booking — running, or the room's own pre-heat window from
+  `_refresh_room_windows` (the earliest event on either calendar, ECO ones
+  included at the eco target, `_room_window_eco`; the room's own lead; the
+  hall's latch and blind rules via the shared `_judge_preheat_window`) — beats
+  the alarm. The rooms get the hall's frozen-reading relight and its hold, and
+  an ECO booking now heats a room only while it is below eco (warm →
+  `booking_warm` ice). No override switch, no sleepover heating, no coast,
+  cooling hold or booking hold for a room (the last three are hall-only inside
+  their own helpers). New learned
   entities `{kitchen,gents,ladies}_warmup_rate` (seed 15) and `_heatloss_pct`
   (seed 12): not the hall's slow 60/25 seeds, which would pin every lead at the
   240 cap; 15/12 is on the slow side of the block's measured ~11–12 gross on
@@ -3511,8 +3519,8 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
 
 - `coordinator.py` — single 30 s reconciler; priority ladder in
   `_desired_zone` (disabled/hold → heating-paused → opening → boost → alarm →
-  booking/pre-heat → override/motion/night-arm → empty), and the same ladder per
-  kitchen/toilet room in `_desired_room` (v1.51.0). Booking and occupancy both heat
+  booking/pre-heat → override/motion/night-arm → empty), one ladder for the hall,
+  the office and each kitchen/toilet room (v1.51.0). Booking and occupancy both heat
   only when `_room_wants_heat(zone, target)` (room below target); a warm room
   lands on ice. No seasonal rung — the season no longer gates heat.
 - `preheat.py` — pure optimum-start maths (learned min/°C rates, Newton

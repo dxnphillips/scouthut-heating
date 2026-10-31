@@ -106,10 +106,19 @@ def test_someone_in_the_kitchen_after_the_booking_keeps_it_at_eco():
     # 2026-10-23 10:15:01Z: the second sal-vation booking ended and the shared
     # went eco -> comfort on a kitchen trip 13 minutes old.
     ctrl = _ended_eco_booking(15.5)
-    shared_temp(ctrl, 18.0)  # under shared comfort: an ordinary trip would heat
+    shared_temp(ctrl, 15.0)  # under eco: heats, but toward eco, not comfort
     motion(ctrl, "kitchen")
-    assert ctrl._desired_room("kitchen") == PRESET_ECO
+    assert ctrl._desired_zone("kitchen") == PRESET_ECO
     assert ctrl._preset_reason["kitchen"] == "eco_tail"
+
+
+def test_a_kitchen_already_above_eco_in_the_tail_rests_on_ice():
+    # One ladder (v1.51.0): a warm occupied room lands on ice, as the hall does.
+    ctrl = _ended_eco_booking(15.5)
+    shared_temp(ctrl, 18.0)
+    motion(ctrl, "kitchen")
+    assert ctrl._desired_zone("kitchen") == PRESET_ICE
+    assert ctrl._preset_reason["kitchen"] == "occupied_warm"
 
 
 def test_after_the_tail_a_kitchen_trip_heats_the_shared_as_before():
@@ -117,7 +126,7 @@ def test_after_the_tail_a_kitchen_trip_heats_the_shared_as_before():
     shared_temp(ctrl, 18.0)
     advance(ctrl, ctrl.number("motion_timeout_minutes") + 1)
     motion(ctrl, "kitchen")
-    assert ctrl._desired_room("kitchen") == PRESET_COMFORT
+    assert ctrl._desired_zone("kitchen") == PRESET_COMFORT
     assert ctrl._preset_reason["kitchen"] == "motion"
 
 
@@ -173,9 +182,9 @@ def test_a_quiet_spell_is_not_bridged_by_a_later_arrival():
 
 def test_the_kitchen_stays_at_eco_while_the_class_is_still_there():
     ctrl = _ended_eco_booking(15.5)
-    shared_temp(ctrl, 18.0)
+    shared_temp(ctrl, 15.0)
     for _ in range(5):
         motion(ctrl, "kitchen")
-        assert ctrl._desired_room("kitchen") == PRESET_ECO
+        assert ctrl._desired_zone("kitchen") == PRESET_ECO
         assert ctrl._preset_reason["kitchen"] == "eco_tail"
         advance(ctrl, 10)

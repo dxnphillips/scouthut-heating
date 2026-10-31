@@ -465,11 +465,14 @@ three zones, each with its own heater, its own PIR (the ladies' is the `female`
 sensor) and its own learned radiator gain and heat loss (`kitchen_warmup_rate`,
 `gents_heatloss_pct` and so on, seeded at 15 min/°C and 12 %/h so an unlearned
 room arrives early rather than late). Which heater is which room is read from
-its entity id. Each one:
+its entity id. They run through **the same rules as the hall and the office**
+(one ladder, `_desired_zone`): a room differs only where it serves the whole
+building. Each one:
 
-- **pre-heats for the next comfort booking** on either calendar, on its own
-  lead, so a cold toilet starts earlier than a warm kitchen. An eco-keyword
-  booking does not pre-heat them;
+- **pre-heats for the next booking** on either calendar, on its own lead, so a
+  cold toilet starts earlier than a warm kitchen. An ECO-keyword booking
+  pre-heats it to eco, as it does the hall; a comfort booking wins over an eco
+  one;
 - **holds the booking whatever the alarm says**, as the hall does. Before
   v1.51.0 the block iced whenever both panels were set and only started when
   someone disarmed on arrival: in the week of 26 Oct the coldest room was
@@ -484,7 +487,12 @@ its entity id. Each one:
   building (`others_present`) and goes to `ice` when nobody is about or both
   alarm panels are away;
 - follows a Boost on either the hall or the office, an ECO-keyword booking
-  (`eco`), the eco tail, the shared window contacts and the fire hold.
+  (heats to eco only while below it, as the hall does), either booking's eco
+  tail, the shared window contacts and the fire hold;
+- is relit if it waits on `ice` "warm enough" while its reading has stopped
+  moving (the hall's frozen-probe relight, `preheat_stale` / `booking_stale` /
+  `occupied_stale`). It has no occupied-override switch and does not heat for a
+  Night/Home arm: a room warms for a sleepover when someone actually goes in.
 
 `booking_start` carries `rooms` (each room's reading as the group arrives), and
 diagnostics show each room's preset, reason, window and last lead under

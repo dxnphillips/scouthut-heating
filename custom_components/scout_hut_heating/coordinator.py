@@ -830,6 +830,9 @@ class ScoutController:
         # back to the cap) is not latched, so the next refresh re-judges it on a
         # real reading (v1.50.6).
         self._preheat_blind: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
+        # Whether the event a room zone's pre-heat window is open for is an
+        # ECO-keyword one (the rooms have no calendar title of their own).
+        self._room_window_eco: dict[str, bool] = {}
         self.water_window = False
         # The (comfort, eco) setpoint pair last written to the hall heaters, so
         # the reconciler can re-assert them when a slider changes WITHOUT a
@@ -915,6 +918,7 @@ class ScoutController:
             self.cal_window[room] = False
             self._preheat_open_for[room] = None
             self._preheat_blind[room] = False
+            self._room_window_eco[room] = False
             self._warmup_start[room] = None
             self._cooloff_start[room] = None
             self._cooloff_cooling_since[room] = None
@@ -1445,9 +1449,9 @@ class ScoutController:
         water_preheat = int(self.number("water_preheat_minutes"))
         cap = int(round(self.number("preheat_minutes")))
         now = dt_util.now()
-        # The next COMFORT booking on either calendar, for the room zones'
-        # pre-heat: (start, minutes until it) per calendar that has one.
-        room_next: list[tuple[datetime | None, float | None]] = []
+        # The next booking on either calendar, for the room zones' pre-heat:
+        # (start, minutes until it, ECO keyword?) per calendar that has one.
+        room_next: list[tuple[datetime | None, float | None, bool]] = []
         calendar_blip = False
         for zone in (ZONE_A, ZONE_B):
             cal = self.config.get(ZONE_CALENDAR[zone])
@@ -1481,17 +1485,12 @@ class ScoutController:
                 self._coasting[zone] = False
                 self._preheat_open_for[zone] = None
                 continue
-            for event in events:
-                title = (event.get("summary", "") or "").lower()
-                if not any(kw in title for kw in self.eco_keywords()):
-                    ev_start = self._parse_event_start(event.get("start"))
-                    room_next.append((ev_start, self._minutes_until(ev_start, now)))
-                    break
             first = events[0]
             start = self._parse_event_start(first.get("start"))
             self.cal_title[zone] = (first.get("summary", "") or "").lower()
             eco = any(kw in self.cal_title[zone] for kw in self.eco_keywords())
             gap_min = self._minutes_until(start, now)
+            room_next.append((start, gap_min, eco))
             if gap_min is None:
                 # The event is inside the cap window but its start could not
                 # be read: err on the warm side and pre-heat now.
@@ -1584,25 +1583,28 @@ class ScoutController:
         self._preheat_blind[zone] = window and not latched and blind
 
     def _refresh_room_windows(
-        self, room_next: list[tuple[datetime | None, float | None]]
+        self, room_next: list[tuple[datetime | None, float | None, bool]]
     ) -> None:
-        """Each room zone's pre-heat window for the next comfort booking on
-        either calendar, on that room's own lead (v1.51.0).
+        """Each room zone's pre-heat window for the next booking on either
+        calendar, on that room's own lead (v1.51.0).
 
-        An eco-keyword booking does not pre-heat them (it gets eco once the
-        booking runs, as before). A booking whose start cannot be read opens
-        the window at once, as it does for the hall (err warm).
+        The earliest event wins (a comfort one on a tie); an ECO-keyword event
+        pre-heats to eco, as the hall's does. A booking whose start cannot be
+        read opens the window at once, as it does for the hall (err warm).
         """
         if room_next:
-            start, gap_min = min(
-                room_next, key=lambda item: -1.0 if item[1] is None else item[1]
+            start, gap_min, eco = min(
+                room_next,
+                key=lambda item: (-1.0 if item[1] is None else item[1], item[2]),
             )
         for room in self._rooms():
             if not room_next:
                 self.cal_window[room] = False
                 self._preheat_open_for[room] = None
                 self._preheat_blind[room] = False
+                self._room_window_eco[room] = False
                 continue
+            self._room_window_eco[room] = eco
             if gap_min is None:
                 if not self.cal_window[room]:
                     self.audit.record(
@@ -1610,7 +1612,7 @@ class ScoutController:
                     )
                 self.cal_window[room] = True
                 continue
-            self._judge_preheat_window(room, start, gap_min, eco=False)
+            self._judge_preheat_window(room, start, gap_min, eco=eco)
 
     async def _async_calendar_events(self, cal: str, minutes: int) -> list[dict] | None:
         """Events on a calendar within the next `minutes`; None on error."""
@@ -3899,12 +3901,83 @@ class ScoutController:
     # ------------------------------------------------------------------
     # Desired-state computation
     # ------------------------------------------------------------------
+    # Where a room zone differs from the hall and office, it is because the
+    # kitchen and toilets serve the whole building (v1.51.0): either calendar's
+    # booking counts (the warmest wins), the presence that keeps a running
+    # booking out of `booking_quiet` is the whole building's, and with no
+    # booking it takes both alarm panels away to ice them. Everything else is
+    # the one ladder in `_desired_zone`.
+    def _running_calendars(self, zone: str) -> list[str]:
+        """The calendar zones with a booking running that this zone serves."""
+        zones = (ZONE_A, ZONE_B) if zone in ROOMS else (zone,)
+        return [z for z in zones if self._is_on(self.config.get(ZONE_CALENDAR[z]))]
+
     def _eco_keyword_active(self, zone: str) -> bool:
+        """Is this zone's booking an ECO-keyword one? For a room: only if every
+        running booking it serves, and the event its pre-heat window is open
+        for, is (a comfort booking anywhere wins)."""
+        if zone in ROOMS:
+            flags = [self._eco_keyword_active(z) for z in self._running_calendars(zone)]
+            if self.cal_window.get(zone):
+                flags.append(self._room_window_eco.get(zone, False))
+            return bool(flags) and all(flags)
         title = self.cal_title.get(zone, "")
         return any(kw in title for kw in self.eco_keywords())
 
     def _cal_active(self, zone: str) -> bool:
-        return self._is_on(self.config.get(ZONE_CALENDAR[zone])) or self.cal_window[zone]
+        return bool(self._running_calendars(zone)) or self.cal_window.get(zone, False)
+
+    def _booking_event_running(self, zone: str) -> bool:
+        """Has the booking this zone is heating for started? For a room heating
+        for a comfort event, a running ECO booking elsewhere does not count (its
+        comfort target comes from the pre-heat window, not the running event)."""
+        running = self._running_calendars(zone)
+        if zone not in ROOMS or self._eco_keyword_active(zone):
+            return bool(running)
+        return any(not self._eco_keyword_active(z) for z in running)
+
+    def _zone_alarm_away(self, zone: str) -> bool:
+        """Is this zone's building empty by the alarm (away-armed)? A room needs
+        both panels away: the office's users share it."""
+        if zone in ROOMS:
+            return self._alarm_armed(self.config.get(CONF_ALARM_MAIN)) and self._alarm_armed(
+                self.config.get(CONF_ALARM_OFFICE)
+            )
+        return self._alarm_armed(self.config.get(ZONE_ALARM[zone]))
+
+    def _zone_motion_area(self, zone: str) -> str | None:
+        return ROOM_MOTION_AREA.get(zone) if zone in ROOMS else ZONE_MOTION_AREA[zone]
+
+    def _booking_present(self, zone: str, timeout: float) -> bool:
+        """Is anyone at a running booking? Counts the presence a PIR cannot see:
+        the occupied override and a Night/Home arm (a sleepover). A room asks it
+        of the whole building — a toilet is empty most of a session."""
+        if zone in ROOMS:
+            return (
+                self._motion_recent_any(timeout)
+                or any(self.switch_on(f"{z}_occupied_override") for z in (ZONE_A, ZONE_B))
+                or self._alarm_present(self.config.get(CONF_ALARM_MAIN))
+                or self._alarm_present(self.config.get(CONF_ALARM_OFFICE))
+            )
+        area = ZONE_MOTION_AREA[zone]
+        return (
+            self._motion_recent(area, timeout)
+            or self.switch_on(f"{zone}_occupied_override")
+            or self._alarm_present(self.config.get(ZONE_ALARM[zone]))
+        )
+
+    def _booking_awaiting(self, zone: str) -> bool:
+        """Is a running comfort booking this zone serves still inside its arrival
+        grace (`BOOKING_ARRIVAL_GRACE_MIN`, v1.50.9)? An empty room at the start
+        is a group on its way. Unknown start -> no grace; not after a handover
+        (no pre-heat climb to finish)."""
+        for z in self._running_calendars(zone):
+            if self._booking_handover[z] or (zone in ROOMS and self._eco_keyword_active(z)):
+                continue
+            minutes = self._booking_running_minutes(z)
+            if minutes is not None and minutes < BOOKING_ARRIVAL_GRACE_MIN:
+                return True
+        return False
 
     def _booking_running_minutes(self, zone: str) -> float | None:
         """How long this zone's running booking has been running, or None.
@@ -3933,7 +4006,8 @@ class ScoutController:
         """Is this zone inside the eco tail an ECO-keyword booking left behind?
 
         Set on the booking's end edge for one motion timeout (v1.49.0). While it
-        runs, bare occupancy heats toward eco rather than full comfort. Cleared by the next booking start.
+        runs, bare occupancy heats toward eco rather than full comfort. Cleared
+        by the next booking start. A room follows either booking's tail.
 
         It lasts the visit, not a fixed 15 min (v1.51.0): motion anywhere in the
         building while the tail runs carries it one more motion timeout, so it
@@ -3945,6 +4019,8 @@ class ScoutController:
         away arm, makes the next person a new visit (someone arrived ten minutes
         after that 12:18Z arm).
         """
+        if zone in ROOMS:  # either booking's tail: the rooms serve both
+            return self._eco_tail_active(ZONE_A) or self._eco_tail_active(ZONE_B)
         until = self._eco_tail_until.get(zone)
         if until is None:
             return False
@@ -4188,6 +4264,11 @@ class ScoutController:
         return preset
 
     def _desired_zone(self, zone: str) -> str | None:
+        """The preset for any zone: the hall, the office, or one of the kitchen,
+        gents and ladies (one ladder for all five since v1.51.0; the rooms'
+        differences live in the per-zone helpers above `_desired_zone`)."""
+        if zone in ROOMS and not self._climates_of(zone):
+            return None
         # Fire fallback beats everything, including automation-disabled and a
         # manual hold: on a signalled fire the whole hut goes to frost-protect ice
         # and stays there until a person clears the hold.
@@ -4196,20 +4277,20 @@ class ScoutController:
         enabled_key = f"{zone}_automation_enabled"
         if not self.switch_on(enabled_key, default=True):
             return None
-        if self.manual_hold[zone]:
+        if self.manual_hold.get(zone):
             return None
         # Occupant "too warm" cutout (hall only): beats boost and bookings, but
         # still lands on ice, so frost protection holds. It only clears on a
         # deliberate action or a fresh session out of an idle gap.
         if zone == ZONE_A and self.hall_heating_paused:
             return self._reason(zone, "heating_paused", PRESET_ICE)
-        if self.opening_ice[zone]:
+        if self.opening_ice.get(zone):
             return self._reason(zone, "opening", PRESET_ICE)
-        if self.boost_active(zone):
+        if self._boosting(zone):  # a room follows either room's Boost
             return self._reason(zone, "boost", PRESET_COMFORT)
 
         cal_on = self._cal_active(zone)
-        alarm_on = self._alarm_armed(self.config.get(ZONE_ALARM[zone]))
+        alarm_on = self._zone_alarm_away(zone)
         if alarm_on and not cal_on:
             # Arming the alarm with no booking also cancels a lingering
             # occupied override (original A33/A34), or a switch left on weeks
@@ -4221,7 +4302,7 @@ class ScoutController:
             return self._reason(zone, "alarm", PRESET_ICE)
 
         timeout = self.number("motion_timeout_minutes")
-        area = ZONE_MOTION_AREA[zone]
+        area = self._zone_motion_area(zone)
 
         # --- Booking / pre-heat ------------------------------------------------
         # A booking is occupancy we know about IN ADVANCE, so it gets the two
@@ -4233,18 +4314,15 @@ class ScoutController:
         # booking lands on ice, freeing the cooling fans if the hall is hot.
         if cal_on:
             base = PRESET_ECO if self._eco_keyword_active(zone) else PRESET_COMFORT
-            event_running = self._is_on(self.config.get(ZONE_CALENDAR[zone]))
+            event_running = self._booking_event_running(zone)
             # "Occupied" for a running booking counts positive presence signals the
             # PIR can't see, so a booking is not demoted to eco (`booking_quiet`)
             # while people are present but STILL — a sleepover. Recent hall motion,
             # the manual occupied-override switch, or a Night/Home alarm arm (people
             # sleeping inside) all hold comfort; a genuinely empty booking (no
-            # motion, no override, not night-armed) still drops to eco.
-            occupied = (
-                self._motion_recent(area, timeout)
-                or self.switch_on(f"{zone}_occupied_override")
-                or self._alarm_present(self.config.get(ZONE_ALARM[zone]))
-            )
+            # motion, no override, not night-armed) still drops to eco. A room asks
+            # it of the whole building.
+            occupied = self._booking_present(zone, timeout)
             # In its first BOOKING_ARRIVAL_GRACE_MIN an empty running booking is a
             # group on its way, so `booking_quiet` below may not cut the heat yet.
             # Unknown start -> no grace, the behaviour before v1.50.9. Not after a
@@ -4254,12 +4332,7 @@ class ScoutController:
             # An away-armed alarm does NOT end a running booking: if it is booked,
             # the group is expected back (owner, 2026-10-24), so an empty armed
             # booking rests at eco like any other empty one, ready for the return.
-            running_min = self._booking_running_minutes(zone) if event_running else None
-            awaiting = (
-                running_min is not None
-                and running_min < BOOKING_ARRIVAL_GRACE_MIN
-                and not self._booking_handover[zone]
-            )
+            awaiting = event_running and self._booking_awaiting(zone)
             # A running comfort booking holds the room a little ABOVE comfort (the
             # booking hold) so a cooling evening cannot drop it below comfort while
             # the slow drive catches up. The gate engages at that raised target so
@@ -4358,9 +4431,13 @@ class ScoutController:
         # sleepers). It heats only while presence is confirmed (no advance, no
         # hold once they leave) and only when the room is genuinely below comfort;
         # a warm occupied hall lands on ice so the cooling fans run.
+        # A room has no override switch and does not heat for a sleepover: it
+        # warms when someone actually goes in.
         occupied_override = self.switch_on(f"{zone}_occupied_override")
-        motion = self._motion_recent(area, timeout)
-        alarm_present = self._alarm_present(self.config.get(ZONE_ALARM[zone]))
+        motion = area is not None and self._motion_recent(area, timeout)
+        alarm_present = zone not in ROOMS and self._alarm_present(
+            self.config.get(ZONE_ALARM[zone])
+        )
         if occupied_override or motion or alarm_present:
             # Inside the eco tail of an ECO-keyword booking that has just ended,
             # the occupant is still that booking's low-key visit, so the zone
@@ -4399,106 +4476,6 @@ class ScoutController:
         # than leaving a stale comfort preset running (e.g. the hall after a
         # booking ends while someone is still in the kitchen).
         return self._reason(zone, "others_present", PRESET_ECO)
-
-    def _desired_room(self, room: str) -> str | None:
-        """The preset for one room zone: the kitchen, the gents or the ladies
-        (v1.51.0).
-
-        Run the way the hall is, on the room's own heater reading and its own
-        PIR: frost protection under fire or an open window; comfort on a Boost
-        (either the hall's or the office's); a booking pre-heats it on its own
-        lead (`cal_window[room]`) and holds it through the session whatever the
-        alarm says, heating only while the room is below target (warm → ice,
-        `booking_warm`); bare presence heats a cold room (`motion`), a warm one
-        lands on ice (`occupied_warm`); someone elsewhere in the building rests
-        it at eco (`others_present`); nobody → ice. Where it differs from the
-        hall, it is because these rooms serve the whole building:
-
-        * Either calendar's booking counts. The warmest active booking wins: an
-          ECO-keyword booking rests it at eco (`booking_eco`) and does not
-          pre-heat it, unless a comfort booking is also on.
-        * `booking_quiet` looks at the WHOLE building, not the room's PIR: a
-          toilet is empty most of a session, and the group being in the hut is
-          what should keep it warm. With nobody anywhere (after the arrival
-          grace, as for the hall) a running booking rests it at eco.
-        * Away-armed with no booking needs BOTH panels away, as before: the
-          office's users share these rooms.
-        * No coast predictor, cooling hold, booking hold or stale relight; those
-          are about the hall's fans and its four-probe reading.
-        """
-        if not self._climates_of(room):
-            return None
-        if self._fire_hold:
-            return self._reason(room, "fire", PRESET_ICE)
-        if self.opening_ice.get(room):
-            return self._reason(room, "opening", PRESET_ICE)
-        if self.boost_active(ZONE_A) or self.boost_active(ZONE_B):
-            return self._reason(room, "boost", PRESET_COMFORT)
-        running = {
-            zone: self._is_on(self.config.get(ZONE_CALENDAR[zone])) for zone in (ZONE_A, ZONE_B)
-        }
-        comfort_running = any(
-            on and not self._eco_keyword_active(zone) for zone, on in running.items()
-        )
-        eco_running = any(running.values()) and not comfort_running
-        window = self.cal_window.get(room, False)
-        booked = comfort_running or eco_running or window
-        if (
-            not booked
-            and self._alarm_armed(self.config.get(CONF_ALARM_MAIN))
-            and self._alarm_armed(self.config.get(CONF_ALARM_OFFICE))
-        ):
-            return self._reason(room, "alarm", PRESET_ICE)
-        timeout = self.number("motion_timeout_minutes")
-        area = ROOM_MOTION_AREA.get(room)
-        here = area is not None and self._motion_recent(area, timeout)
-        goal = self._zone_target(room)
-
-        if comfort_running or window:
-            if not self._room_wants_heat(room, goal, PRESET_COMFORT):
-                return self._reason(room, "booking_warm", PRESET_ICE)
-            if comfort_running:
-                present = (
-                    self._motion_recent_any(timeout)
-                    or self.switch_on(f"{ZONE_A}_occupied_override")
-                    or self.switch_on(f"{ZONE_B}_occupied_override")
-                    or self._alarm_present(self.config.get(CONF_ALARM_MAIN))
-                    or self._alarm_present(self.config.get(CONF_ALARM_OFFICE))
-                )
-                if not present and not self._rooms_awaiting_arrival(running):
-                    return self._reason(room, "booking_quiet", PRESET_ECO)
-                return self._reason(room, "booking", PRESET_COMFORT)
-            return self._reason(room, "preheat", PRESET_COMFORT)
-        if eco_running:
-            # Low-key session: rest at eco, which the Rointe idles at once warm
-            # enough.
-            return self._reason(room, "booking_eco", PRESET_ECO)
-        if here:
-            # Whoever is in here just after an ECO booking is that booking's
-            # visit (the eco tail, v1.50.7 for the block, v1.51.0 here).
-            if self._eco_tail_active(ZONE_A) or self._eco_tail_active(ZONE_B):
-                return self._reason(room, "eco_tail", PRESET_ECO)
-            if self._room_wants_heat(room, goal, PRESET_COMFORT):
-                return self._reason(room, "motion", PRESET_COMFORT)
-            return self._reason(room, "occupied_warm", PRESET_ICE)
-        if self._motion_recent_any(timeout):
-            return self._reason(room, "others_present", PRESET_ECO)
-        return self._reason(room, "building_empty", PRESET_ICE)
-
-    def _rooms_awaiting_arrival(self, running: dict[str, bool]) -> bool:
-        """Is a running comfort booking still inside its arrival grace?
-
-        The rooms' version of the hall's `awaiting`: an empty building in the
-        first `BOOKING_ARRIVAL_GRACE_MIN` of a booking is a group on its way,
-        except at a handover (no pre-heat climb to finish).
-        """
-        for zone, on in running.items():
-            if not on or self._eco_keyword_active(zone) or self._booking_handover[zone]:
-                continue
-            minutes = self._booking_running_minutes(zone)
-            if minutes is not None and minutes < BOOKING_ARRIVAL_GRACE_MIN:
-                return True
-        return False
 
     def _shared_room_temp(self, stale_min: float | None = None) -> float | None:
         """Coldest reported room temperature around the water heater.
@@ -5262,7 +5239,7 @@ class ScoutController:
         if not rooms:
             return
         for room in rooms:
-            desired = self._desired_room(room)
+            desired = self._desired_zone(room)
             if desired is None:
                 continue
             if self._zone_offline_apply.get(room) and self._all_zone_online(room):

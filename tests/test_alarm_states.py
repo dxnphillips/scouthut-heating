@@ -116,7 +116,7 @@ def test_both_away_ices_shared():
     _set(hass, E["alarm_main"], "armed_away")
     _set(hass, E["alarm_office"], "armed_away")
     motion(ctrl, "kitchen")
-    assert ctrl._desired_room("kitchen") == PRESET_ICE
+    assert ctrl._desired_zone("kitchen") == PRESET_ICE
 
 
 def test_both_night_keeps_shared_heating():
@@ -124,7 +124,7 @@ def test_both_night_keeps_shared_heating():
     _set(hass, E["alarm_main"], "armed_night")
     _set(hass, E["alarm_office"], "armed_night")
     motion(ctrl, "kitchen")  # someone in the kitchen -> heats (not iced by night)
-    assert ctrl._desired_room("kitchen") == PRESET_COMFORT
+    assert ctrl._desired_zone("kitchen") == PRESET_COMFORT
 
 
 def test_one_away_one_night_does_not_ice_shared():
@@ -132,7 +132,7 @@ def test_one_away_one_night_does_not_ice_shared():
     _set(hass, E["alarm_main"], "armed_away")
     _set(hass, E["alarm_office"], "armed_night")
     motion(ctrl, "kitchen")  # not both-away, so not iced -> heats
-    assert ctrl._desired_room("kitchen") == PRESET_COMFORT
+    assert ctrl._desired_zone("kitchen") == PRESET_COMFORT
 
 
 # --- Water heater (needs BOTH panels away to suppress motion) ---------------
