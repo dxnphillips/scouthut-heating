@@ -246,14 +246,14 @@ def test_zone_lead_without_room_reading_is_the_cap():
     assert ctrl._zone_preheat_minutes(ZA) == 120
 
 
-def test_eco_booking_aims_at_the_eco_low_target():
+def test_eco_booking_aims_at_the_eco_target():
     ctrl, hass = make_controller()
     _set_rate(ctrl, "zone_a_warmup_rate", 20)
     _set_rate(ctrl, "zone_a_heatloss_pct", 0)
     hass.states.set(E["weather"], "cloudy", {"temperature": 15})
-    _hall_temp(hass, 12)
-    # Comfort target (19.5) -> 7.5 °C deficit -> capped at 120. ECO target is
-    # the eco-low slider (14) -> 2 °C deficit + 2.5 finish at 3 °C/h -> 90 min.
+    _hall_temp(hass, 14)
+    # Comfort target (19.5) -> 5.5 °C deficit -> capped at 120. ECO target is
+    # the eco slider (16) -> 2 °C deficit + 2.5 finish at 3 °C/h -> 90 min.
     assert ctrl._zone_preheat_minutes(ZA) == 120
     assert ctrl._zone_preheat_minutes(ZA, eco=True) == 90
 

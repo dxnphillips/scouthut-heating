@@ -90,20 +90,20 @@ def test_cold_preheat_window_heats():
     assert ctrl._preset_reason[ZA] == "preheat"
 
 
-# --- ECO-keyword bookings judged against the eco-low target -----------------
-def test_cold_eco_booking_uses_eco_low_target():
+# --- ECO-keyword bookings judged against the eco target ---------------------
+def test_cold_eco_booking_uses_eco_target():
     ctrl, _ = make_controller()
     ctrl.seasonal_lockout = True
     booking(ctrl, ZA, "Test event")  # 'test' is a default ECO keyword
-    hall_temp(ctrl, 12.0)  # below eco-low (14)
+    hall_temp(ctrl, 12.0)  # below eco (16)
     assert ctrl._desired_zone(ZA) == PRESET_ECO
     assert ctrl._preset_reason[ZA] == "booking_eco"
 
 
-def test_eco_booking_at_eco_low_target_ices():
+def test_eco_booking_at_eco_target_ices():
     ctrl, _ = make_controller()
     booking(ctrl, ZA, "Test event")
-    hall_temp(ctrl, 15.0)  # above eco-low (14) — no heat needed
+    hall_temp(ctrl, 17.0)  # above eco (16) — no heat needed
     assert ctrl._desired_zone(ZA) == PRESET_ICE
     assert ctrl._preset_reason[ZA] == "booking_warm"
 
@@ -145,13 +145,13 @@ def test_the_band_belongs_to_the_rung_that_is_heating_not_to_any_eco_rest():
 
 def test_an_eco_booking_keeps_its_own_release_band():
     """The band follows the preset the rung sets: an ECO-keyword booking heating
-    at eco holds until eco-low + band, exactly as before."""
+    at eco holds until eco + band, exactly as before."""
     ctrl, _ = make_controller()
-    booking(ctrl, ZA, "Test event")  # eco-low target 14
+    booking(ctrl, ZA, "Test event")  # eco target 16
     ctrl.applied[ZA] = PRESET_ECO
-    hall_temp(ctrl, 14.3)  # above 14, inside the band
+    hall_temp(ctrl, 16.3)  # above 16, inside the band
     assert ctrl._desired_zone(ZA) == PRESET_ECO
-    hall_temp(ctrl, 14.6)
+    hall_temp(ctrl, 16.6)
     assert ctrl._desired_zone(ZA) == PRESET_ICE
 
 

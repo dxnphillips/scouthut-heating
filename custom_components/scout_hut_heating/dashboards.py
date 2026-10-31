@@ -86,8 +86,7 @@ _BOOST = [
 ]
 _TEMPERATURES = [
     ("hall_comfort_temp", "Hall comfort"),
-    ("hall_eco_temp", "Hall eco"),
-    ("hall_eco_low_temp", "Hall eco-low (ECO bookings)"),
+    ("hall_eco_temp", "Eco (all rooms, ECO bookings)"),
     ("office_comfort_temp", "Office comfort"),
     ("shared_comfort_temp", "Shared comfort"),
     ("boost_offset", "Boost offset (above comfort)"),

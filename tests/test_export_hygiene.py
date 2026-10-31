@@ -40,7 +40,7 @@ def test_eco_keyword_bookings_keep_only_the_matched_keyword():
     ctrl, hass = make_controller()
     hass.states.set(HB, "heat", {"current_temperature": 12.0})
     run(ctrl.async_reconcile())  # baseline observed: calendar off
-    booking(ctrl, ZA, title="Sal-Vation cleaning (Mrs X)")
+    booking(ctrl, ZA, title="Sal-Vation fitness (Mrs X)")
     run(ctrl.async_reconcile())
     exported = _export_events(ctrl, "booking_start")
     assert exported and exported[-1]["title"] == "eco:sal-vation"

@@ -832,11 +832,15 @@ class ScoutController:
         self._preheat_blind: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self.water_window = False
         # The (comfort, eco) setpoint pair last written to the hall heaters, so
-        # the reconciler can re-assert the eco/eco-low value when it changes
-        # WITHOUT a preset transition (an eco-keyword booking inheriting an
-        # already-eco preset would otherwise never get eco-low written). None
-        # until the first push.
+        # the reconciler can re-assert them when a slider changes WITHOUT a
+        # preset transition. None until the first push.
         self._hall_temps_pushed: tuple[float, float] | None = None
+        # The eco value last landed on each zone's heaters, the eco number
+        # entity on each heater's device, and the value last written to each
+        # (v1.51.0: one eco temperature in every zone).
+        self._eco_landed: dict[str, float] = {}
+        self._eco_number: dict[str, str] = {}
+        self._eco_number_pushed: dict[str, float] = {}
 
         # Optimum-start learning: an in-flight warm-up sample per zone
         # (started-at, start temperature, ticks-with-fans-running, total
@@ -953,12 +957,12 @@ class ScoutController:
         # Whether the running booking was an ECO-keyword one, latched on its
         # start edge (the title can be refreshed away by the end edge), and the
         # eco tail it leaves behind (v1.49.0): until this instant, bare occupancy
-        # in the zone heats toward the eco-low target the booking had, not full
-        # comfort — the person still moving about after a cleaning booking IS the
-        # cleaner (field 2026-10-02: four hall heaters lit at 06:00Z and 10:15Z,
-        # the moment each sal-vation booking ended, on a 15–17 °C hall the booking
-        # had just said should sit at 14). Not persisted: a restart drops the
-        # tail and falls back to the ordinary comfort behaviour.
+        # in the zone heats toward eco, not full comfort — the person still
+        # moving about after an ECO booking is that booking's visit (field
+        # 2026-10-02: four hall heaters lit at 06:00Z and 10:15Z, the moment each
+        # sal-vation booking ended, on a 15–17 °C hall the booking had just said
+        # should sit at eco). Not persisted: a restart drops the tail and falls
+        # back to the ordinary comfort behaviour.
         self._cal_eco_running: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self._eco_tail_until: dict[str, datetime | None] = {ZONE_A: None, ZONE_B: None}
         # Overshoot accumulators for the booking_end summary (pure measurement).
@@ -1585,8 +1589,8 @@ class ScoutController:
         """Each room zone's pre-heat window for the next comfort booking on
         either calendar, on that room's own lead (v1.51.0).
 
-        An eco-keyword booking does not pre-heat them (the cleaner gets eco once
-        the booking runs, as before). A booking whose start cannot be read opens
+        An eco-keyword booking does not pre-heat them (it gets eco once the
+        booking runs, as before). A booking whose start cannot be read opens
         the window at once, as it does for the hall (err warm).
         """
         if room_next:
@@ -2179,12 +2183,12 @@ class ScoutController:
         """Adaptive pre-heat lead for a zone's next event, capped by the slider.
 
         eco: the event matches an ECO keyword, so the pre-heat aims at the
-        lower eco-low setpoint instead of comfort (the same target the
-        reconciler will push when the event runs). gap_hours: time until the
+        eco temperature instead of comfort (the same target the reconciler
+        will push when the event runs). gap_hours: time until the
         event starts, when known — the learned heat-loss rate then predicts
         how much further the room will cool before the pre-heat begins.
         """
-        target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
+        target = self.number("hall_eco_temp") if eco else self._zone_target(zone)
         rate, rate_key = self._prediction_rate(zone)
         # Size the pre-heat for the AVERAGE reading — the quantity the heat
         # gate releases on, so the lead brings to target exactly what the gate
@@ -3324,10 +3328,13 @@ class ScoutController:
         await self.async_reconcile()
 
     async def async_hall_temps_changed(self) -> None:
-        """Re-push hall temperatures when a temperature slider changes."""
+        """Re-push the temperatures when the comfort or eco slider changes: the
+        hall's numbers and preset, and the eco value on any other zone resting
+        at eco (v1.51.0, one eco temperature everywhere)."""
         if self.applied[ZONE_A] in (PRESET_COMFORT, PRESET_ECO):
-            await self._async_push_hall_temps(eco_low=self._eco_low_wanted(ZONE_A))
+            await self._async_push_hall_temps()
             await self._async_set_preset(ZONE_A, self.applied[ZONE_A], force=True)
+        await self._reland_eco()
 
     def _state_snapshot(self) -> dict[str, Any]:
         """Durable state: safety latches and clocks that must survive a restart.
@@ -3926,16 +3933,15 @@ class ScoutController:
         """Is this zone inside the eco tail an ECO-keyword booking left behind?
 
         Set on the booking's end edge for one motion timeout (v1.49.0). While it
-        runs, bare occupancy heats toward the eco-low target the booking had
-        rather than full comfort. Cleared by the next booking start.
+        runs, bare occupancy heats toward eco rather than full comfort. Cleared by the next booking start.
 
         It lasts the visit, not a fixed 15 min (v1.51.0): motion anywhere in the
         building while the tail runs carries it one more motion timeout, so it
         ends only when the building has been quiet that long, or the zone's alarm
-        is set away. Field 2026-10-30: the 09:45–11:15Z sal-vation clean overran
-        by an hour with the hall PIR never quiet, the 15-min tail ran out at
-        11:30Z and the hall and the shared block went to comfort 19 for the
-        cleaner until the alarm at 12:18Z. A gap longer than the timeout, or an
+        is set away. Field 2026-10-30: the 09:45–11:15Z sal-vation booking
+        overran by an hour with the hall PIR never quiet, the 15-min tail ran out
+        at 11:30Z and the hall and the shared block went to comfort 19 until the
+        alarm at 12:18Z. A gap longer than the timeout, or an
         away arm, makes the next person a new visit (someone arrived ten minutes
         after that 12:18Z arm).
         """
@@ -3957,21 +3963,16 @@ class ScoutController:
             return False
         return True
 
-    def _eco_low_wanted(self, zone: str) -> bool:
-        """Should this zone's eco preset carry the eco-LOW setpoint right now —
-        an ECO-keyword booking is active, or its eco tail is still running?"""
-        return self._eco_keyword_active(zone) or self._eco_tail_active(zone)
-
     def _booking_target(self, zone: str) -> float:
         """The setpoint a booking / pre-heat is aiming for.
 
-        Comfort, or the lower eco-low setpoint for an ECO-keyword event — the
+        Comfort, or the eco temperature for an ECO-keyword event — the
         same target the reconciler will push and the pre-heat sizes for. This
         is the temperature the cold-booking lockout bypass judges the room
         against.
         """
         if self._eco_keyword_active(zone):
-            return self.number("hall_eco_low_temp")
+            return self.number("hall_eco_temp")
         return self._zone_target(zone)
 
     def _cooling_reference(self) -> float:
@@ -3980,7 +3981,7 @@ class ScoutController:
 
         This is a COMFORT reference, not the heating goal, and the two differ on
         purpose. An ECO-keyword booking lowers what we are willing to *spend*
-        (the heating goal drops to eco-low), but it says nothing about what the
+        (the heating goal drops to eco), but it says nothing about what the
         people in the room find pleasant: a hirer sitting in a 21 °C hall is as
         warm as any other group at 21, so the breeze belongs at the same line.
         A Boost is the opposite case — an occupant has explicitly asked for
@@ -4005,7 +4006,7 @@ class ScoutController:
         radiators. Frost protection is unaffected (ice still holds the 7 °C floor).
 
         ``target`` is the goal the calling rung asked for, so an ECO-keyword
-        booking is judged against its own eco-low floor: a hall warm enough to be
+        booking is judged against its own eco floor: a hall warm enough to be
         having a breeze is unimaginably far above that, so a booked eco session can
         never relight heat mid-breeze. Defaults to comfort (the occupancy rung).
         """
@@ -4362,12 +4363,11 @@ class ScoutController:
         alarm_present = self._alarm_present(self.config.get(ZONE_ALARM[zone]))
         if occupied_override or motion or alarm_present:
             # Inside the eco tail of an ECO-keyword booking that has just ended,
-            # the occupant is still that booking's low-key visit (the cleaner
-            # finishing up), so the zone heats toward the eco-low target it was
-            # just given rather than full comfort (v1.49.0). The manual override
-            # is an explicit ask for comfort and is exempt.
+            # the occupant is still that booking's low-key visit, so the zone
+            # heats toward eco rather than full comfort (v1.49.0). The manual
+            # override is an explicit ask for comfort and is exempt.
             eco_tail = not occupied_override and self._eco_tail_active(zone)
-            target = self.number("hall_eco_low_temp") if eco_tail else self._zone_target(zone)
+            target = self.number("hall_eco_temp") if eco_tail else self._zone_target(zone)
             preset = PRESET_ECO if eco_tail else PRESET_COMFORT
             # An occupied zone iced as "warm" relights on the same stale-reading
             # rule as a booking (v1.44.1): a frozen probe at target would
@@ -4397,7 +4397,7 @@ class ScoutController:
             return self._reason(zone, "building_empty", PRESET_ICE)
         # Zone quiet but someone is elsewhere in the building: rest at eco rather
         # than leaving a stale comfort preset running (e.g. the hall after a
-        # booking ends while a cleaner is still in the kitchen).
+        # booking ends while someone is still in the kitchen).
         return self._reason(zone, "others_present", PRESET_ECO)
 
     def _desired_room(self, room: str) -> str | None:
@@ -4470,12 +4470,12 @@ class ScoutController:
                 return self._reason(room, "booking", PRESET_COMFORT)
             return self._reason(room, "preheat", PRESET_COMFORT)
         if eco_running:
-            # Low-key session (the cleaner IS the motion): rest at eco, which
-            # the Rointe idles at once warm enough.
+            # Low-key session: rest at eco, which the Rointe idles at once warm
+            # enough.
             return self._reason(room, "booking_eco", PRESET_ECO)
         if here:
-            # Whoever is in here just after a cleaning booking is the cleaner
-            # finishing up (the eco tail, v1.50.7 for the block, v1.51.0 here).
+            # Whoever is in here just after an ECO booking is that booking's
+            # visit (the eco tail, v1.50.7 for the block, v1.51.0 here).
             if self._eco_tail_active(ZONE_A) or self._eco_tail_active(ZONE_B):
                 return self._reason(room, "eco_tail", PRESET_ECO)
             if self._room_wants_heat(room, goal, PRESET_COMFORT):
@@ -4921,10 +4921,10 @@ class ScoutController:
 
         Only counts when the room was actually HEATED toward the target this
         episode — the distinction is not eco-vs-comfort but driven-vs-coasting.
-        A deep-winter eco booking climbing from frost 7 to its eco-low 14 can
-        overshoot 14 (mass) exactly as a comfort booking overshoots 19, and we
-        want that; but a mild-day room already at 16, sitting on ice above the
-        same 14 floor and never driven there, is not overshoot (field 2026-09-11:
+        A deep-winter eco booking climbing from frost 7 to its eco target can
+        overshoot it (mass) exactly as a comfort booking overshoots 19, and we
+        want that; but a mild-day room sitting on ice above its eco floor and
+        never driven there, is not overshoot (field 2026-09-11:
         that logged a meaningless peak_over 2.12). So `_booking_over_heated` latches
         once the zone is in a heating preset (comfort/eco) during the episode, and
         `booking_end` reports 0 unless it did — capturing the mass tail (which
@@ -5082,7 +5082,7 @@ class ScoutController:
         self._eco_tail_until[zone] = None  # a new booking owns the zone now
         self._booking_started_at[zone] = self._now()
         self._booking_handover[zone] = handover
-        target = self.number("hall_eco_low_temp") if eco else self._zone_target(zone)
+        target = self.number("hall_eco_temp") if eco else self._zone_target(zone)
         coldest = self._zone_room_temp(zone, coldest=True)
         average = self._zone_room_temp(zone)
         self.audit.record(
@@ -5216,8 +5216,8 @@ class ScoutController:
         heat only helps when the room is BELOW what is wanted, so the fans chase
         the same goal the heaters do. When there is no heating goal the applied
         preset is ice, which returns the anti-frost floor (7) — so a warm-enough
-        or frozen hall (e.g. an eco-low booking whose room already sits above its
-        low target) does not destratify unwanted heat onto its occupants. Because
+        or frozen hall (e.g. an eco booking whose room already sits above its
+        eco target) does not destratify unwanted heat onto its occupants. Because
         a booked zone only lands on ice once its room is already at/above the
         booking target, the applied setpoint is a faithful proxy for "what the
         occupants actually want".
@@ -5228,19 +5228,8 @@ class ScoutController:
             # heat to head height while a Boost is driving the room past comfort.
             return self._drive_comfort_target(ZONE_A)
         if applied == PRESET_ECO:
-            return self._hall_eco_target(self._eco_low_wanted(ZONE_A))
+            return self.number("hall_eco_temp")
         return ROINTE_ANTIFROST
-
-    def _hall_eco_target(self, eco_low: bool) -> float:
-        """The eco setpoint to push for the hall.
-
-        Eco-keyword bookings get the low setpoint; every other eco path (an
-        unoccupied running booking gone quiet, a coast hold, someone elsewhere
-        in the building) keeps the ordinary eco number.
-        """
-        if eco_low:
-            return self.number("hall_eco_low_temp")
-        return self.number("hall_eco_temp")
 
     async def _reconcile_hall_temps(self) -> None:
         """Re-assert the hall comfort/eco setpoints when the intended value
@@ -5248,21 +5237,19 @@ class ScoutController:
         transition.
 
         The per-preset push in `_async_set_preset` only fires on a preset
-        CHANGE. So an eco-keyword booking that starts while the hall is already
-        `eco` (e.g. a prior booking went quiet->eco, a coast hold, or someone
-        elsewhere in the building left it at others-present eco) never gets
-        eco-low (14) written and heats the whole session at 16. This backstop
-        compares the intended (comfort, eco) pair
-        against what was last pushed and re-pushes only on a genuine change, so
-        it costs nothing per tick when nothing moved.
+        CHANGE, so a slider moved while the hall already rests at eco would
+        otherwise never reach the radiators. This backstop compares the
+        intended (comfort, eco) pair against what was last pushed and re-pushes
+        only on a genuine change, so it costs nothing per tick when nothing
+        moved. The office and the rooms get the same from `_reland_eco`.
         """
+        await self._reland_eco()
         if self.applied[ZONE_A] not in (PRESET_COMFORT, PRESET_ECO):
             return
-        eco_low = self._eco_low_wanted(ZONE_A)
         comfort_temp = self.number("hall_comfort_temp")
-        eco_temp = self._hall_eco_target(eco_low)
+        eco_temp = self.number("hall_eco_temp")
         if self._hall_temps_pushed != (comfort_temp, eco_temp):
-            await self._async_push_hall_temps(eco_low=eco_low)
+            await self._async_push_hall_temps()
             # A changed number alone never moves the live setpoint on this
             # hardware — land the new eco / (undriven) comfort value too.
             await self._async_land_zone(ZONE_A, self.applied[ZONE_A])
@@ -5446,13 +5433,10 @@ class ScoutController:
             return None if cached is None else abs(setpoint - cached) <= tol
         if expected == PRESET_ECO:
             if zone == ZONE_A:
-                # Either eco value we push is legitimate (eco-low for ECO
-                # keyword events, plain eco otherwise).
-                eco = self.number("hall_eco_temp")
-                eco_low = self.number("hall_eco_low_temp")
-                return min(abs(setpoint - eco), abs(setpoint - eco_low)) <= tol
-            # The office eco setpoint lives on the device and is never
-            # pushed by the integration, so it cannot be judged.
+                return abs(setpoint - self.number("hall_eco_temp")) <= tol
+            # Landed on the office since v1.51.0, but not judged yet: a
+            # mismatch latches a manual hold at once, and whether the device
+            # keeps the landed eco through its own syncs is unproven here.
             return None
         return None
 
@@ -5474,7 +5458,7 @@ class ScoutController:
             )
             self._preset_entry_reason[zone] = self._preset_reason.get(zone) or ""
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
-            await self._async_push_hall_temps(eco_low=self._eco_low_wanted(zone))
+            await self._async_push_hall_temps()
         ok = await self._async_apply_climate(climates, preset)
         # The preset copies a possibly-stale cached number into the live
         # setpoint; land the intended value explicitly (see _async_land_zone).
@@ -5497,9 +5481,7 @@ class ScoutController:
         Uses whatever the user mapped explicitly; for either side left blank it
         auto-discovers the matching ``number`` entities from the same device as
         each mapped hall climate entity (Rointe exposes a comfort and an eco
-        temperature number per heater). Eco-low is not a separate entity — it is
-        just a lower value written to the eco number, so there is nothing to map
-        for it.
+        temperature number per heater).
         """
         comfort = self._as_list(self.config.get(CONF_HALL_COMFORT_NUMBERS))
         eco = self._as_list(self.config.get(CONF_HALL_ECO_NUMBERS))
@@ -5529,16 +5511,15 @@ class ScoutController:
                     eco.append(member.entity_id)
         return comfort, eco
 
-    async def _async_push_hall_temps(self, eco_low: bool) -> None:
+    async def _async_push_hall_temps(self) -> None:
         comfort_numbers, eco_numbers = self._hall_number_entities()
         comfort_temp = self.number("hall_comfort_temp")
-        eco_temp = self._hall_eco_target(eco_low)
+        eco_temp = self.number("hall_eco_temp")
         # Record the intended pair even if a side is unmappable, so the
         # reconciler does not retry a push that has nowhere to land every tick.
         self._hall_temps_pushed = (comfort_temp, eco_temp)
         if not eco_numbers or not comfort_numbers:
-            # The whole point of eco-low is to write 14 to the device; if the
-            # Rointe comfort/eco number entities cannot be resolved (disabled,
+            # If the Rointe comfort/eco number entities cannot be resolved (disabled,
             # renamed away from the "comfort"/"eco" substring, or on another
             # device) the write silently vanishes and the heater keeps its own
             # setpoint. In a project whose instrument is the audit trail, a
@@ -5548,7 +5529,6 @@ class ScoutController:
                 self._now(),
                 comfort_found=bool(comfort_numbers),
                 eco_found=bool(eco_numbers),
-                eco_low=eco_low,
             )
         # This sets the BASE comfort setpoint. When the drive-to-target loop is
         # on it then refines each heater's number to target + trim on top (the
@@ -5595,24 +5575,84 @@ class ScoutController:
         landed explicitly. Comfort is landed here only when the drive loop is
         off — with it on, ``_reconcile_drive`` lands each heater's own
         (target + trim) value in the same reconcile. Ice needs nothing: the
-        cached anti-frost value is a constant 7. The office eco and the shared
-        eco live on the devices and are never pushed, so there is nothing to
-        land for them. False if any landing write raised.
+        cached anti-frost value is a constant 7. False if any landing write
+        raised.
+
+        Eco is ONE temperature in every zone since v1.51.0 (owner: the fitness
+        classes are happy at 16, so an ECO booking is just eco, and the eco-low
+        slider went). It is landed on the office and the kitchen and toilets
+        too, which until then sat at whatever eco value was set on each
+        radiator, invisible to us.
         """
-        if zone != ZONE_A:
-            return True
+        ok = True
         if preset == PRESET_ECO:
-            value = self._hall_eco_target(self._eco_keyword_active(zone))
-        elif preset == PRESET_COMFORT and not self.switch_on(
-            "drive_to_target", default=True
+            value = self.number("hall_eco_temp")
+            self._eco_landed[zone] = value
+            if zone != ZONE_A:  # the hall's eco number goes with the comfort pair
+                ok = await self._async_push_eco_numbers(zone, value)
+        elif (
+            zone == ZONE_A
+            and preset == PRESET_COMFORT
+            and not self.switch_on("drive_to_target", default=True)
         ):
             value = self.number("hall_comfort_temp")
         else:
             return True
-        ok = True
-        for climate in self._as_list(self.config.get(ZONE_CLIMATES[zone])):
+        for climate in self._climates_of(zone):
             ok = await self._async_set_live_setpoint(climate, value) and ok
         return ok
+
+    async def _async_push_eco_numbers(self, zone: str, value: float) -> bool:
+        """Write the eco value to the eco NUMBER on each of this zone's heaters,
+        so the radiator's own stored eco agrees with the live setpoint we land
+        (a device re-asserting its preset then lands the same value). Written
+        once per change, not on every eco apply; False if the write raised."""
+        numbers = [
+            number
+            for climate in self._climates_of(zone)
+            if (number := self._heater_eco_number(climate))
+            and self._eco_number_pushed.get(number) != value
+        ]
+        if not numbers:
+            return True
+        ok = await self._async_heater_call(
+            "number",
+            "set_value",
+            {"entity_id": numbers, "value": value},
+            climate=",".join(numbers),
+        )
+        if ok:
+            for number in numbers:
+                self._eco_number_pushed[number] = value
+        return ok
+
+    def _heater_eco_number(self, climate: str) -> str | None:
+        """The Rointe eco-temperature number on this heater's own device (cached
+        like `_heater_comfort_number`)."""
+        if climate in self._eco_number:
+            return self._eco_number[climate] or None
+        found = ""
+        registry = er.async_get(self.hass)
+        entry = registry.async_get(climate)
+        if entry is not None and entry.device_id is not None:
+            for member in er.async_entries_for_device(
+                registry, entry.device_id, include_disabled_entities=False
+            ):
+                eid = member.entity_id.lower()
+                if member.domain == "number" and "eco" in eid and "comfort" not in eid:
+                    found = member.entity_id
+                    break
+        self._eco_number[climate] = found
+        return found or None
+
+    async def _reland_eco(self) -> None:
+        """Re-land the eco temperature on any office or room zone resting at eco
+        whose landed value is no longer the slider's (the hall's own backstop
+        is the comfort/eco pair check in `_reconcile_hall_temps`)."""
+        value = self.number("hall_eco_temp")
+        for zone in (ZONE_B, *self._rooms()):
+            if self.applied.get(zone) == PRESET_ECO and self._eco_landed.get(zone) != value:
+                await self._async_land_zone(zone, PRESET_ECO)
 
     async def _async_set_live_setpoint(self, climate: str, value: float) -> bool:
         """Write a heater's live target temperature (``climate.set_temperature``)."""
@@ -5689,7 +5729,7 @@ class ScoutController:
         """°C above comfort to hold the hall at during a running booking so it does
         not dip below comfort as the evening cools (see preheat.hold_margin).
 
-        Hall only, comfort bookings only (an ECO-keyword booking targets eco-low,
+        Hall only, comfort bookings only (an ECO-keyword booking targets eco,
         not comfort), and only once the event is actually running — the pre-heat
         owns the arrival, this owns holding the floor through the slot. Sized from
         the same learned cool-off and warm-up rates the pre-heat uses, so it is
@@ -7400,7 +7440,7 @@ class ScoutController:
         # fixed cap. Destratifying stored heat onto occupants only helps when the
         # room is BELOW what is wanted; so the fans chase the same goal the
         # heaters do, and harvest nothing when there is no goal. This is what
-        # stops an eco-low booking whose room already sits above its low target
+        # stops an eco booking whose room already sits above its eco target
         # (applied ice) from having unwanted ceiling heat pushed down onto people
         # who asked for it cool. `fan_recirc_max_floor_temp` stays as an absolute
         # upper ceiling.

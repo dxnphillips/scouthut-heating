@@ -107,11 +107,11 @@ def test_occupied_override_beats_the_cooling_hold_on_a_booking_too():
 
 
 def test_an_eco_booking_is_judged_against_its_own_low_goal():
-    # A hall warm enough to be having a breeze is far above an eco-low 14, so it
+    # A hall warm enough to be having a breeze is far above eco 16, so it
     # lands on booking_warm before the hold is even reached — an eco session can
     # never relight heat mid-breeze, whichever gate you look at.
     ctrl, _ = make_controller()
-    booking(ctrl, ZA, "sal-vation cleaning")
+    booking(ctrl, ZA, "sal-vation fitness")
     motion(ctrl, "hall")
     hall_temp(ctrl, 19.0)
     ctrl._hall_cooling_until = ctrl._now() + timedelta(minutes=10)

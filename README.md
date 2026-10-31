@@ -89,14 +89,21 @@ entirely, the button fails soft and points at the YAML files:
 
 - **Numbers:** pre-heat lead time (the *maximum* — see optimum start below),
   hall/office learned radiator gains, no-motion eco timeout, door/window ice
-  delays, seasonal-lockout threshold, hall comfort/eco/eco-low temperatures,
+  delays, seasonal-lockout threshold, hall comfort and eco temperatures,
   water pre-heat lead time, water keep-on-after-motion. The hall setpoint
-  defaults (comfort 19.5 °C, eco 16 °C, eco-low 14 °C) are sized for **active**
+  defaults (comfort 19.5 °C, eco 16 °C) are sized for **active**
   hall use per CIBSE Guide A (~17 °C for higher-activity spaces) and
   sports-hall practice (12–16 °C for games), anchored to the 18 °C classroom
   floor for the most sedentary regulars — crafts, closing circle, parents at
   pick-up. Use Boost for a genuinely sedentary cold evening and the ECO
-  keyword tier for pure-activity lettings.
+  keyword for pure-activity lettings. **Eco is one temperature in every zone**
+  (v1.51.0): the hall, the office and the kitchen and toilets all rest at the
+  same eco value, and an ECO-keyword booking simply heats to eco. The separate
+  eco-low slider (14 °C) is gone — the fitness classes it was for found 16 fine
+  — so the orphaned `hall_eco_low_temp` entity can be deleted. Eco is written to
+  each office and room heater's own eco number once and landed on its live
+  setpoint on every eco apply; until v1.51.0 those heaters rested at whatever
+  eco was stored on the radiator, never set by us.
 - **Select:** boost duration (30/60/90 min).
 - **Switches:** hall/office automation enabled, hall/office occupied override,
   water heater manual override.
@@ -173,8 +180,8 @@ before any cooling breeze, so a lost sensor never blows a draught on a guess.)
   out — pushing that already-paid-for warmth back down instead of letting it escape
   through the poorly-insulated roof. Crucially it chases the **same goal the
   heaters have**, so it never pushes stored ceiling heat down onto people who are
-  already warm enough — e.g. an eco-low cleaning slot (14 °C) whose room already
-  sits at 16 gets no unwanted destrat, because the hall's on its anti-frost floor
+  already warm enough — e.g. an ECO booking (16 °C) whose room already sits at
+  17.5 gets no unwanted destrat, because the hall's on its anti-frost floor
   and there's no heating goal to harvest toward. That residual-harvest path
   requires the hall to be **occupied**: an empty,
   unheated hut still stratifies from warm fabric, but the field cool-off samples
@@ -402,7 +409,7 @@ difference is the net climb rate, and the lead is how long that rate takes to
 cover the deficit *plus a fixed finish* — the Rointes throttle to half power
 inside the last degree and their oil mass lags, so every climb here pays the
 same ~30-minute tail whether it started 1 °C or 5 °C short. A booking matching
-an ECO keyword pre-heats only to the eco-low setpoint, not comfort. The deficit
+an ECO keyword pre-heats only to the eco setpoint, not comfort. The deficit
 is measured from the **average** of the zone's heater readings — the same
 quantity the heat gate releases on, so the lead brings to target exactly what
 is then judged (the coldest reading is recorded beside it). The result is clamped between 15 minutes and the **Pre-heat lead time
@@ -619,7 +626,7 @@ restarts) of everything it decides and learns:
   decided them: `booking`, `preheat`, `booking_warm`, `booking_eco`,
   `booking_quiet`, `preheat_coast`, `booking_coast`, `motion`, `eco_tail`
   (occupancy inside the motion timeout after an ECO-keyword booking ended,
-  heating toward that booking's eco-low target rather than comfort; the shared
+  heating toward eco rather than comfort; the shared
   kitchen/toilets follow it too since v1.50.7, resting at eco on a kitchen or
   toilet trip rather than going to comfort),
   `occupied_override`, `occupied_warm`, `others_present`, `alarm`, `opening`,

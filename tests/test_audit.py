@@ -791,9 +791,9 @@ def test_never_heated_warm_coast_logs_no_overshoot():
 
     ctrl, hass = make_controller()
     ctrl.applied[ZA] = PRESET_ICE  # warm enough already: on ice, not driven
-    _hall_temp(hass, 16)  # well above the eco-low floor
+    _hall_temp(hass, 17.5)  # well above the eco floor (16)
     ctrl._record_booking_edges()  # baseline
-    booking(ctrl, ZA, "test")  # 'test' is a default ECO keyword -> eco-low target
+    booking(ctrl, ZA, "test")  # 'test' is a default ECO keyword -> eco target
     ctrl._record_booking_edges()  # start
     advance(ctrl, 30)
     ctrl._record_booking_edges()
@@ -806,27 +806,28 @@ def test_never_heated_warm_coast_logs_no_overshoot():
 
 
 def test_heated_eco_booking_still_logs_overshoot():
-    # A deep-winter eco booking DRIVEN up from frost toward its eco-low floor can
+    # A deep-winter eco booking DRIVEN up from frost toward its eco floor can
     # overshoot it (Rointe mass) exactly as a comfort booking overshoots 19 — that
     # IS overshoot and must be measured (the fix is not to exclude eco, but to
     # require the room was actually heated toward target).
     from scout_testkit import end_booking
 
     ctrl, hass = make_controller()
-    _hall_temp(hass, 13)  # below the eco-low floor, climbing
+    eco = ctrl.number("hall_eco_temp")  # an ECO booking aims at eco (16)
+    _hall_temp(hass, eco - 3)  # below the eco floor, climbing
     ctrl._record_booking_edges()  # baseline
-    booking(ctrl, ZA, "test")  # eco-low target 14
-    ctrl.applied[ZA] = PRESET_ECO  # being driven toward eco-low
+    booking(ctrl, ZA, "test")
+    ctrl.applied[ZA] = PRESET_ECO  # being driven toward eco
     ctrl._record_booking_edges()  # start (room below target: no overshoot yet)
-    _hall_temp(hass, 15.5)  # overshot the 14 floor
+    _hall_temp(hass, eco + 1.5)  # overshot the eco floor
     over_room = ctrl._zone_room_temp(ZA)
     ctrl._record_booking_edges()
-    _hall_temp(hass, 14)
+    _hall_temp(hass, eco)
     end_booking(ctrl, ZA)
     ctrl._record_booking_edges()  # end
 
     (evt,) = events(ctrl, "booking_end")
-    assert evt["peak_over"] == pytest.approx(over_room - 14)  # driven -> counted
+    assert evt["peak_over"] == pytest.approx(over_room - eco)  # driven -> counted
 
 
 def test_restart_mid_booking_records_no_phantom_start():

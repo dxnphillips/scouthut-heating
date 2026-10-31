@@ -212,7 +212,7 @@ def test_the_arrival_grace_keeps_the_rooms_heating():
 def test_an_eco_keyword_booking_rests_them_at_eco():
     ctrl, hass = make_controller()
     _room_temps(hass, 13.0, 13.0, 13.0)
-    booking(ctrl, ZA, "sal-vation cleaning")
+    booking(ctrl, ZA, "sal-vation fitness")
     motion(ctrl, "kitchen")
     assert set(_desired(ctrl).values()) == {PRESET_ECO}
     assert ctrl._preset_reason["kitchen"] == "booking_eco"
@@ -280,7 +280,7 @@ def test_an_eco_keyword_booking_does_not_pre_heat_them(monkeypatch):
     ctrl, hass = make_controller()
     _cold_evening(hass)
     _room_temps(hass, 13.0, 13.0, 13.0)
-    _upcoming(ctrl, monkeypatch, 30, "sal-vation cleaning")
+    _upcoming(ctrl, monkeypatch, 30, "sal-vation fitness")
     assert not any(ctrl.cal_window[r] for r in ROOMS)
 
 

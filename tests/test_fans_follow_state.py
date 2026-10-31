@@ -133,9 +133,9 @@ def test_an_eco_booking_gets_the_breeze_at_the_ordinary_comfort_line():
 
     ctrl, _ = _mk()
     ctrl._numbers["hall_comfort_temp"].native_value = 19.0
-    booking(ctrl, ZA, "sal-vation cleaning")
+    booking(ctrl, ZA, "sal-vation fitness")
     assert ctrl._eco_keyword_active(ZA) is True
-    assert ctrl._booking_target(ZA) == ctrl.number("hall_eco_low_temp")  # 14: the heat goal
+    assert ctrl._booking_target(ZA) == ctrl.number("hall_eco_temp")  # 16: the heat goal
     assert ctrl._cooling_reference() == 19.0  # but comfort is what the breeze reads
     assert _lines(ctrl) == (20.0, 19.5)
 

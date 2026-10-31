@@ -30,8 +30,7 @@ NAMES: dict[str, str] = {
     "window_ice_minutes": "Window: drop to ice after",
     "seasonal_lockout_temp": "Seasonal lockout: 3-day average threshold",
     "hall_comfort_temp": "Hall comfort temperature",
-    "hall_eco_temp": "Hall eco temperature",
-    "hall_eco_low_temp": "Hall eco-low temperature",
+    "hall_eco_temp": "Eco temperature (all rooms, and ECO bookings)",
     "water_preheat_minutes": "Water heater pre-heat lead time",
     "water_motion_keepalive_minutes": "Water heater keep-on after motion",
     "fan_dt_on": "Fan: ceiling-floor ΔT to start",
@@ -50,7 +49,7 @@ NAMES: dict[str, str] = {
     "booking_hold_cap": "Booking hold: max °C above comfort",
 }
 
-HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp", "hall_eco_low_temp")
+HALL_TEMP_KEYS = ("hall_comfort_temp", "hall_eco_temp")
 
 
 async def async_setup_entry(

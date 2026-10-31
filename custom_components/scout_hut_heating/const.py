@@ -223,12 +223,12 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # 12-16 °C, and the 18 °C classroom floor applies to the most sedentary
     # regulars (crafts, closing circle, parents at the edge). Comfort 19.5
     # serves those; games sessions self-heat well past comfort at that level,
-    # and pure-activity lettings use the eco-low keyword tier (14 °C, inside
-    # the active-sports band). Eco 16 is the occupied-adjacent resting point
-    # (circulation-space territory, an easy recovery to comfort).
+    # and ECO-keyword lettings (the fitness classes, happy at 16) get eco. Eco 16
+    # is also the occupied-adjacent resting point (circulation-space territory,
+    # an easy recovery to comfort). Since v1.51.0 it is ONE eco temperature for
+    # every zone, and the separate eco-low tier is gone.
     "hall_comfort_temp": (19, 24, 0.5, 19.5, "°C"),
     "hall_eco_temp": (10, 18.5, 0.5, 16, "°C"),
-    "hall_eco_low_temp": (8, 18, 0.5, 14, "°C"),
     # The 15 L / 2 kW Speedflow needs ~30 min from cold to reach temperature,
     # so the default matches a full reheat and the range leaves headroom.
     "water_preheat_minutes": (5, 60, 5, 30, "min"),
@@ -328,7 +328,6 @@ NUMBER_ICONS: dict[str, str] = {
     "seasonal_lockout_temp": "mdi:thermometer-chevron-up",
     "hall_comfort_temp": "mdi:thermometer-high",
     "hall_eco_temp": "mdi:thermometer-low",
-    "hall_eco_low_temp": "mdi:thermometer-minus",
     "water_preheat_minutes": "mdi:water-boiler",
     "water_motion_keepalive_minutes": "mdi:timer-outline",
     "fan_dt_on": "mdi:fan-plus",

@@ -132,21 +132,74 @@ def test_every_heater_write_blocks():
     assert all(c["blocking"] for c in heater_calls)
 
 
-def test_hall_eco_apply_lands_the_eco_value_and_the_eco_low_repush():
+def test_hall_eco_apply_lands_the_eco_value():
     _wire_numbers()
     ctrl, hass = make_controller()
-    motion(ctrl, "office")  # someone elsewhere -> hall rests at ordinary eco
+    motion(ctrl, "office")  # someone elsewhere -> hall rests at eco
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_ECO
     eco = ctrl.number("hall_eco_temp")
     assert _landed(hass, HB) == eco and _landed(hass, HF) == eco
-    # A keyword booking starts on an already-eco hall: the backstop re-push of
-    # the eco number must LAND the eco-low value too (a changed number alone
-    # left the radiator at 16 on this hardware).
-    booking(ctrl, ZA, title="test")
+    # A slider change on an already-eco hall is landed too (a changed number
+    # alone never moves the live setpoint on this hardware).
+    ctrl._numbers["hall_eco_temp"].native_value = 15.0
     run(ctrl.async_reconcile())
     assert ctrl.applied[ZA] == PRESET_ECO
-    assert _landed(hass, HB) == ctrl.number("hall_eco_low_temp")
+    assert _landed(hass, HB) == 15.0
+
+
+# --- One eco temperature in every zone (v1.51.0) --------------------------------
+# Until v1.51.0 the office and the kitchen and toilets rested at whatever eco was
+# stored on each radiator, never written by us. Now eco is the one slider value
+# everywhere: written to each heater's eco number once and landed on the live
+# setpoint on every eco apply.
+OFFICE = "climate.office"
+
+
+def _office_and_rooms_at_eco(ctrl, hass):
+    hass.states.set(OFFICE, "heat", {"current_temperature": 15.0})
+    for room in ("kitchen", "gents", "ladies"):
+        hass.states.set(f"climate.{room}", "heat", {"current_temperature": 15.0})
+    motion(ctrl, "hall")  # someone in the hall: office and rooms rest at eco
+    run(ctrl.async_reconcile())
+
+
+def test_office_and_rooms_rest_at_the_same_eco():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _office_and_rooms_at_eco(ctrl, hass)
+    eco = ctrl.number("hall_eco_temp")
+    for zone, climate in (("zone_b", OFFICE), ("kitchen", "climate.kitchen"),
+                          ("gents", "climate.gents"), ("ladies", "climate.ladies")):
+        assert ctrl.applied[zone] == PRESET_ECO, zone
+        assert _landed(hass, climate) == eco, zone
+        assert _pushed(hass, f"number.{climate.split('.')[1]}_eco_temperature") == eco
+
+
+def test_the_eco_number_is_written_once_not_on_every_eco_apply():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _office_and_rooms_at_eco(ctrl, hass)
+    eco_writes = lambda: [  # noqa: E731
+        c for c in service_calls(hass, "number", "set_value")
+        if "number.office_eco_temperature" in _ids(c)
+    ]
+    assert len(eco_writes()) == 1
+    run(ctrl._async_set_preset("zone_b", PRESET_ICE))
+    run(ctrl._async_set_preset("zone_b", PRESET_ECO))
+    assert len(eco_writes()) == 1  # same value: no second number write
+    assert len(_landings(hass, OFFICE)) == 2  # but the live setpoint is landed
+
+
+def test_an_eco_slider_change_reaches_the_office_and_rooms_already_at_eco():
+    _wire_numbers()
+    ctrl, hass = make_controller()
+    _office_and_rooms_at_eco(ctrl, hass)
+    ctrl._numbers["hall_eco_temp"].native_value = 15.0
+    run(ctrl.async_reconcile())
+    for climate in (OFFICE, "climate.kitchen", "climate.gents", "climate.ladies"):
+        assert _landed(hass, climate) == 15.0, climate
+    assert _pushed(hass, "number.office_eco_temperature") == 15.0
 
 
 def test_undriven_comfort_lands_the_comfort_value():

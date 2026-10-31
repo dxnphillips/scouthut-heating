@@ -146,7 +146,7 @@ def test_pre_heat_window_has_no_hold_yet():
 
 def test_eco_keyword_booking_has_no_hold():
     ctrl, hass = _cold_evening_booking()
-    ctrl.cal_title[ZA] = "test"  # ECO keyword -> aims at eco-low, not comfort
+    ctrl.cal_title[ZA] = "test"  # ECO keyword -> aims at eco, not comfort
     assert ctrl._booking_hold_margin(ZA) == 0.0
 
 

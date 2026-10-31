@@ -23,7 +23,7 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 773
+  a fully wired controller). Every behaviour change ships with tests. 776
   passing as of 2026-10-31.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
@@ -3489,6 +3489,23 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   `warmup_sample` per room (`rate_key` `gents_warmup_rate` etc.) should land
   near 11–13 gross; preset churn on the toilets outside bookings (each room now
   flips on its own PIR) — if it is a nuisance, Q22's dwell is the lever.
+- **Eco is one temperature in every zone; the eco-low slider is gone (v1.51.0,
+  owner: "they're not cleaners, they're fitness classes and they've worked out
+  that 16 is fine for them so they can just be eco bookings").** The sal-vation
+  bookings are fitness classes, not cleaning. An ECO-keyword booking now heats
+  to `hall_eco_temp` (16) like any eco rest; `hall_eco_low_temp`,
+  `_eco_low_wanted` and `_hall_eco_target` are removed, and the eco tail heats
+  toward the same eco. The office and the three rooms rested at whatever eco
+  was stored on each radiator, never written by us (one reason the office's
+  heat may have been "on a fair bit"): `_async_land_zone` now writes the eco
+  value to each office/room heater's own eco number once per change
+  (`_heater_eco_number`, `_eco_number_pushed`) and lands it on the live
+  setpoint on every eco apply; `_reland_eco` re-lands a slider change on any
+  office/room zone already at eco. Office eco drift is still not judged (a
+  mismatch latches a manual hold at once; whether the device keeps the landed
+  eco through its own syncs is unproven). **Owner-side:** delete the orphaned
+  `hall_eco_low_temp` entity. Tests in `tests/test_write_path.py` and
+  `tests/test_eco_tail.py`.
 
 ## Architecture pointers
 
