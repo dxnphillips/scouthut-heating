@@ -465,8 +465,12 @@ pre-heat never saw). A pre-heat its booking overtakes before it arrives is
 kept too, closed at the booking start before the group's own heat joins it:
 those are the climbs where the lead was too short, the ones it most needs to
 learn from. Each is judged on the zone average's
-start and finish (exponentially smoothed and step-capped, so one odd morning
-can only nudge the number, never yank it); a temperature *rise* while unheated
+start and finish and step-capped, so one odd morning can move the number at
+most a quarter. A climb that took **longer** than the gain said is believed at
+once (within that cap), because that is the direction that arrives cold; one
+that went faster only moves it 30 % of the way (v1.51.1, after the first
+cold-soaked evening read slower than every gain it was led on and arrived
+0.6–2.5 °C short); a temperature *rise* while unheated
 (July roof sun) is never mistaken for good insulation. The hall keeps **two**
 gains — with and without the destratification fans enabled — because the fans
 materially change warm-up speed, and the one the next lead will use is the one
@@ -664,7 +668,9 @@ restarts) of everything it decides and learns:
   values the decisions used (ceiling, the hall "floor" average and coldest
   reading, office, shared, outdoor, ceiling humidity, fan state, fan mode,
   hall occupancy, heat
-  demand, and the O1 wattage). Fan mode and occupancy ride alongside fan state
+  demand, and the O1 wattage; since v1.51.1 also each kitchen/toilet room's
+  reading and its radiator's panel temperature, as `kitchen` / `gents` /
+  `ladies` and `<room>_surface`, beside `shared`, the coldest of them). Fan mode and occupancy ride alongside fan state
   so empty-building winter fan-hours — the thing the occupancy gate suppresses —
   are measurable straight from the trace. The wattage matters because it encodes the manual transformer
   dial's tap — warm-up samples also carry their average O1 watts, so a moved

@@ -2357,7 +2357,10 @@ class ScoutController:
           sample opened there times the tail of a climb whose start it never
           saw — 2026-10-15 16:10Z timed 11 min of a 41-min climb (2.8 gross
           against the learned 12.8, the cold-arrival direction), saved only by
-          the mild gate and the rise floor.
+          the mild gate and the rise floor. And the live reason must say
+          ``preheat`` too (v1.51.1): a room still in the comfort it entered for
+          a pre-heat when its booking ENDED opened a fresh sample at 2026-11-02
+          20:00Z, closed as "ended early" 18 s later when it went to eco.
         * **Timed on the zone AVERAGE** (v1.47.0), the quantity the lead sizes
           (`_zone_preheat_minutes`), the gate releases on and
           `booking_start.shortfall` judges — the sample must time what the lead
@@ -2425,6 +2428,7 @@ class ScoutController:
                     and temp is not None
                     and temp < target - 0.5
                     and self._preset_entry_reason.get(zone) == "preheat"
+                    and self._preset_reason.get(zone) == "preheat"
                     and not self._booking_event_running(zone)
                     and not self._within_startup_grace(now)
                 ):
@@ -2597,7 +2601,7 @@ class ScoutController:
         """
         if zone not in DRIVE_COAST_ZONES:
             return 0.0
-        jumped = self._note_coast_jump(zone, zone_avg, now)
+        jumped = self._note_coast_jump(zone, zone_avg, now, comfort)
         hottest = self._zone_hottest_panel(zone)
         ready = (
             comfort
@@ -2636,6 +2640,16 @@ class ScoutController:
             # 17:04Z empty but at target +0.62). Also engage-only.
             if not (self._zone_occupied(zone) or zone_avg >= target):
                 return 0.0
+            # ...and never in a pre-heat that has not yet reached target
+            # (v1.51.1). The pre-heat's job is to arrive; an easing there only
+            # ever arrives short. Across October-November eight hall pre-heat
+            # easings on a room still short rose +0.25 on average, five of them
+            # 0.12 or less. 2026-11-02 18:15Z: one leader arriving early made
+            # the empty pre-heat "occupied", the easing cut the elements at
+            # 18.5 on a cold-soaked hall, and the booking started 0.62 short.
+            # Inside the booking (the people there) it still eases as before.
+            if zone_avg < target and self._zone_pre_heating(zone):
+                return 0.0
             self._drive_coast_since[zone] = now
             self._drive_coast_from[zone] = zone_avg
             self._drive_coast_peak[zone] = zone_avg
@@ -2661,7 +2675,7 @@ class ScoutController:
         return DRIVE_COAST_ALLOWANCE
 
     def _note_coast_jump(
-        self, zone: str, zone_avg: float | None, now: datetime
+        self, zone: str, zone_avg: float | None, now: datetime, comfort: bool = True
     ) -> bool:
         """Is this zone's average reading too fresh off a catch-up jump to ease on?
 
@@ -2696,16 +2710,25 @@ class ScoutController:
         self._drive_coast_seen[zone] = zone_avg
         if previous is not None and zone_avg - previous >= DRIVE_COAST_MAX_JUMP:
             self._drive_coast_jumped[zone] = now
-            self.audit.record(
-                "drive_coast_jump",
-                now,
-                zone=zone,
-                previous=previous,
-                zone_avg=zone_avg,
-                rise=round(zone_avg - previous, 2),
-            )
+            # Audited only while the zone is being driven, where the easing it
+            # withholds exists (v1.51.1): over half the week's jumps to 11-01
+            # were on zones sitting on ice or eco. The settle clock above runs
+            # either way, so a jump just before comfort still holds the easing.
+            if comfort:
+                self.audit.record(
+                    "drive_coast_jump",
+                    now,
+                    zone=zone,
+                    previous=previous,
+                    zone_avg=zone_avg,
+                    rise=round(zone_avg - previous, 2),
+                )
             return True
         return self._coast_settling(zone, now)
+
+    def _zone_pre_heating(self, zone: str) -> bool:
+        """Is this zone in a pre-heat window whose booking has not started?"""
+        return bool(self.cal_window.get(zone)) and not self._booking_event_running(zone)
 
     def _coast_settling(self, zone: str, now: datetime) -> bool:
         at = self._drive_coast_jumped.get(zone)
@@ -4962,6 +4985,18 @@ class ScoutController:
             # The stalest hall heater's upload age on a trusted sync clock
             # (v1.45.0) — the overnight sync-gap measurement the findings lacked.
             hall_sync=self._hall_sync_age_max(),
+            # Each kitchen/toilet room's reading and its radiator's panel (v1.51.1):
+            # `shared` is only the coldest of the three, and the first cold-soaked
+            # evening (2026-11-02) could not say which room plateaued, or whether
+            # its radiator was still firing while it did.
+            **{
+                key: value
+                for room in self._rooms()
+                for key, value in (
+                    (room, self._zone_room_temp(room)),
+                    (f"{room}_surface", self._zone_hottest_panel(room)),
+                )
+            },
         )
 
     def _reset_booking_overshoot(self, zone: str) -> None:

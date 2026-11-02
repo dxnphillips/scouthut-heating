@@ -23,8 +23,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 793
-  passing as of 2026-10-31.
+  a fully wired controller). Every behaviour change ships with tests. 804
+  passing as of 2026-11-02.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
   `fans_follow_state`) were removed entirely — **fan direction is now fully
@@ -3554,6 +3554,52 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   start after the line is fitted would mean soak needs its own term after all.
   Tests in `tests/test_startup_allowance.py` (the fit, the caps, the October
   replay, the conversion) and `tests/test_learning_conditions.py`.
+- **The first cold-soaked evening on v1.51.0 (2026-11-02, 18:30Z booking,
+  2026-11-02 20:48Z export) — everything arrived short; v1.51.1.** Deployed
+  10-31 08:57Z (`warmup_gain_converted` exact: hall fans 11.74 → 16.15, hall
+  33.23 → 45.69, office 16.25 → 22.35), then an empty weekend: the hall fell to
+  10.0 at outdoor 3.4, the rooms to 11–12. Monday's pre-heats: gents 15:15Z
+  (lead 198, from 11.0), ladies 15:15Z (199, from 12.0), kitchen 15:25Z (188,
+  from 12.0), hall 16:00Z (154, from 12.75 average, rate 16.15, tail 1.0, k
+  8.68). At the start: hall 18.38 average / 17.5 coldest (**+0.62 short**),
+  kitchen 17.5, ladies 17.0, gents 16.5 against 19. Every climb read slower than
+  its gain (cut-short samples, the first `cut_short` in the field): hall 18.13 vs
+  16.15, kitchen 24.0, gents 26.5, ladies 25.3 vs the seed 20 — and the EWMA
+  moved each only 30 % of the way (16.74, 21.2, 22.0, 21.6). Three fixes in
+  v1.51.1: (1) **a slow climb folds at full weight** within the 25 % cap
+  (`updated_rate`; the `MAX_RATE_STEP_FRAC` comment always said so, the code
+  applied `ALPHA` both ways), a fast one keeps the EWMA — the cold-arrival
+  direction stays slow to learn; (2) **no easing in a pre-heat that has not
+  reached target** (`_zone_pre_heating`): a leader arrived at 18:02Z, the empty
+  pre-heat counted as occupied, and the easing cut the hall's elements at 18.5
+  from 18:15Z (`rise` 0.0, the room fell to 18.38 by the start); eight hall
+  pre-heat easings on a still-short room averaged +0.25, five ≤ 0.12, so the
+  rule is "a pre-heat arrives, the booking eases"; (3) **a warm-up sample needs
+  the live reason `preheat`** as well as the entry reason — the gents and
+  ladies, still in their pre-heat comfort when the booking ended, opened
+  samples at 20:00:00Z that closed 18 s later. Also: `drive_coast_jump` is
+  audited only on a zone in comfort (over half the week's were on ice/eco), and
+  the trace carries each room's reading and panel (`kitchen`, `gents`, `ladies`,
+  `<room>_surface`). Replayed: the hall's next lead for the same evening is ~20
+  min longer (176 vs 154), and without the easing the room was ~0.5 °C/15 min
+  from target at 18:15Z. **Open — the toilets may not reach 19 from a cold soak
+  at all.** The coldest room (mostly the gents) climbed 11.0 → 14.5 in the first
+  hour, then 14.5 → 16.5 in two, then 16.5 → 17.5 in 75 min, still on comfort at
+  20:00Z after 4 h 45 min; a 26.5 min/°C gain would size ~270 min for that climb
+  and the cap is 240. **Decision rule:** read `gents` / `gents_surface` on the
+  next cold evening — panel hot (≳ 50 °C) through a plateau below 18 is a
+  capacity/soak wall (the levers are the owner's: a later-season eco floor in
+  the toilets before a booking day, a longer cap for the rooms, or a lower
+  toilet target); a panel throttling or cold while short is a control problem.
+  Also seen, not changed: after the 20:00Z `booking_end` the hall iced on
+  `occupied_warm` (average 19.62), fell under 19 with the door traffic and was
+  relit on a 13-minute-old hall trip at 20:30:23Z, 102 s before the motion
+  timed out (`building_empty` 20:32:05Z, fans 10 min min-run) — the eager
+  occupancy churn Q22's dwell would address. Room k learned low overnight
+  (kitchen 5.9, gents 4.7, ladies 8.4 %/h; hall 8.7, office 3.3) — the slow
+  phase; the leak they predict while heating a cold-soaked room is much higher
+  (the gents' plateau implies ~20 %/h), the two-lump question again. Tests in
+  `tests/test_first_cold_evening.py`.
 
 ## Architecture pointers
 
