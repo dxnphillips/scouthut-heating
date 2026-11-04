@@ -168,8 +168,10 @@ the direction changes back, so reversals stay rare. (A warm reading is required
 before any cooling breeze, so a lost sensor never blows a draught on a guess.)
 
 - **Winter destratification** (default) → fans **reverse (up air)** when the
-  ceiling-minus-floor ΔT is above the start threshold (default 2 °C, tuned
-  for this under-radiatored hall; generic practice is ~3 °C) **and** the
+  ceiling-minus-floor ΔT is above the start threshold (default 1.5 °C since
+  v1.51.1: the hall rests ~0.6 °C above its radiator probes with nothing
+  running, so this is one ceiling-sensor step plus about a degree of real pooling;
+  they stop at 0.5, back at that resting gap) **and** the
   heat is worth moving — meaning either a radiator in *any* zone is drawing power
   (so office or shared heat leaking into the hall counts too), **or** the floor is
   still below **the temperature the hall is actually being heated to** (its

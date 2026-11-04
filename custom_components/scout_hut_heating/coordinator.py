@@ -3533,6 +3533,8 @@ class ScoutController:
             # the marker that the gains are already in the learned-tail units.
             "warmup_history": {k: [list(c) for c in v] for k, v in self._warmup_history.items()},
             "warmup_tail_v": 1,
+            # The fan start/stop lines have been moved onto the v1.51.1 defaults.
+            "fan_dt_v": 1,
             "audit": self.audit.to_list(),
             "trace": self.trace.to_list(),
         }
@@ -3564,6 +3566,31 @@ class ScoutController:
                 changed[key] = [old, new]
         self.audit.record("warmup_gain_converted", self._now(), factor=TAIL_CONVERSION, **changed)
         await self._store.async_save(self._state_snapshot())
+
+    def _apply_fan_dt_defaults(self) -> None:
+        """Move the fan start/stop lines onto the v1.51.1 defaults, once.
+
+        The owner's sliders sat at 0.5 / 0.0, under the ~0.6 °C the hall shows
+        with nothing running, so the reverse fans started on every heating
+        episode and cycled on the resting gap (2026-11-04: seven starts in a
+        four-hour empty pre-heat; 85 runs in the month, and three of five Pause
+        presses came 1–17 min after a start in an occupied hall). The owner
+        asked for the new values as the defaults and in effect. A restored
+        slider keeps its stored value, so this writes the defaults once and the
+        store is marked (`fan_dt_v`); a later slider move is left alone.
+        Audited (`fan_defaults_applied`, old → new).
+        """
+        changed: dict[str, list[float]] = {}
+        for key in ("fan_dt_on", "fan_dt_off"):
+            write = getattr(self._numbers.get(key), "write_value", None)
+            if write is None:
+                continue
+            old = self.number(key)
+            new = float(NUMBER_DEFS[key][3])
+            if old != new:
+                write(new)
+                changed[key] = [old, new]
+        self.audit.record("fan_defaults_applied", self._now(), **changed)
 
     async def _async_restore_state(self) -> None:
         try:
@@ -3614,8 +3641,13 @@ class ScoutController:
                 ][-WARMUP_HISTORY_MAX:]
             except (TypeError, ValueError):
                 continue
+        fan_defaults = not data.get("fan_dt_v")
+        if fan_defaults:
+            self._apply_fan_dt_defaults()
         if not data.get("warmup_tail_v"):
-            await self._async_convert_warmup_gains()
+            await self._async_convert_warmup_gains()  # saves, with both markers
+        elif fan_defaults:
+            await self._store.async_save(self._state_snapshot())
 
     def _heater_detail(self, climate: str) -> dict[str, Any]:
         """The full per-heater snapshot for the diagnostics export.

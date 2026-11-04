@@ -23,7 +23,7 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 817
+  a fully wired controller). Every behaviour change ships with tests. 822
   passing as of 2026-11-04.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
@@ -3665,6 +3665,29 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   closed it at the alarm (fixes 3 and 5 both stop that). Empty-pre-heat reverse
   fans cycled seven times on the owner's `fan_dt_on` 0.5 / `fan_dt_off` 0.0
   (on at ~0.55, off at ~−0.1, ~20–35 min runs at 54 W): noted, not changed.
+- **Fan start/stop lines 1.5 / 0.5, as defaults and in effect (v1.51.1, owner:
+  "set them as the new defaults").** Read across the month's 85 reverse runs
+  (65 h, ~4 kWh): with the hall empty, unheated and the fans off at 03–05Z the
+  ceiling reads a median **~0.6** above the radiator probes (27 nights), so the
+  owner's `fan_dt_on` 0.5 / `fan_dt_off` 0.0 sat under the hall's resting gap
+  and the fans started on every heating episode and cycled on it (11-04: seven
+  starts in a four-hour empty pre-heat, six at 0.53–0.60, each stopping at
+  ≤ 0.0 after 10–35 min). Three of the five Pause presses came 1–17 min after a
+  reverse start in an occupied hall (10-19 17:29 and 19:15, 10-30 12:52, at
+  start gaps 1.50 / 1.90 / 1.52), one in a forward breeze (10-12). Replayed on
+  the month's starts: 85 at 0.5, 55 at 1.0, 37 at 1.5, 26 at 2.0 (occupied 57 /
+  38 / 23 / 15); the sun-warmed pre-heat starts (gaps 2–5) all clear 1.5. The
+  `fan_dt_on` default is now **1.5** (`fan_dt_off` stays 0.5), and
+  `_apply_fan_dt_defaults` moves an existing install's sliders onto them once
+  (`fan_defaults_applied`, store marker `fan_dt_v`); a later slider move is
+  kept. Not changed: min run/off 10/10, `cooling_above_comfort` 1.0, the dial
+  (reverse at 52–58 W). 65 of 85 runs ended because the hall's heating stopped
+  (or a Pause / the alarm) with 1.5–4 °C still at the ceiling — by design (Q24:
+  never push the room past comfort); code, not a setting, and wants more cold
+  evenings first. **Decision rule:** if the leaders confirm the fans are why
+  they press Pause and presses continue at 1.5, go to 2.0 (all three
+  pre-Pause starts were under it). Supersedes Q1's "raise `fan_dt_on` to ~1.5"
+  rule (done). Tests in `tests/test_fan_thresholds.py`.
 
 ## Architecture pointers
 
