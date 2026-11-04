@@ -110,13 +110,19 @@ def test_net_gain_and_prediction_helpers():
 
 # --- Pure model: the learning ------------------------------------------------------
 
-def test_rate_update_moves_toward_the_observation():
-    # 4 °C in 195 min: with a 2.5 °C allowance added back that is 6.5 °C over
-    # 3.25 h = 2 °C/h gross = 30 min/°C. EWMA (alpha 0.3) from 20 -> 23.
-    assert updated_rate(20, 195, 4, tail=2.5) == pytest.approx(23)
-    # At the 1.0 seed: 5 °C over 3.25 h = 39 min/°C; alpha says 25.7, the 25 %
-    # step cap holds it to 25.
+def test_rate_update_takes_a_slow_climb_at_full_weight():
+    # v1.51.1: a climb slower than the learned gain is the warm direction and is
+    # believed at once, within the 25 % step cap. 4 °C in 150 min at the 1.0
+    # seed: 5 °C over 2.5 h = 30 min/°C; from 25 -> 30 (inside the cap).
+    assert updated_rate(25, 150, 4) == pytest.approx(30)
+    # 4 °C in 195 min: 39 min/°C, capped from 20 to 25.
     assert updated_rate(20, 195, 4) == pytest.approx(25)
+
+
+def test_rate_update_moves_a_fraction_toward_a_fast_climb():
+    # Faster than learned (a shorter lead, the cold-arrival direction): the EWMA
+    # as before. 4 °C in 60 min: 5 °C/h = 12 min/°C; 20 + 0.3 x (12 - 20) = 17.6.
+    assert updated_rate(20, 60, 4) == pytest.approx(17.6)
 
 
 def test_rate_update_ignores_small_rises():
@@ -216,6 +222,7 @@ def _start_preheat(ctrl):
     """Put the zone into comfort the way a pre-heat window does."""
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
 
 
 def test_zone_lead_uses_room_and_weather():
@@ -297,8 +304,9 @@ def test_completed_preheat_updates_the_learned_gain():
         _hall_temp(hass, t)
         ctrl._update_warmup_learning()
     assert ctrl._warmup_start[ZA] is None
-    # 4 °C + the 1.0 allowance over 2 h = 2.5 °C/h -> 24 min/°C; 20 + 0.3 * 4.
-    assert ctrl.number("zone_a_warmup_rate") == pytest.approx(21.2, abs=0.01)
+    # 4 °C + the 1.0 allowance over 2 h = 2.5 °C/h -> 24 min/°C, slower than the
+    # learned 20, so taken at full weight.
+    assert ctrl.number("zone_a_warmup_rate") == pytest.approx(24.0, abs=0.01)
 
 
 def test_a_boost_or_occupancy_climb_is_not_sampled():
@@ -310,6 +318,7 @@ def test_a_boost_or_occupancy_climb_is_not_sampled():
         hass.states.set(E["weather"], "cloudy", {"temperature": 5})
         ctrl.applied[ZA] = PRESET_COMFORT
         ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = reason
+        ctrl._preset_entered_at[ZA] = ctrl._now()
         ctrl._update_warmup_learning()
         assert ctrl._warmup_start[ZA] is None, reason
 
@@ -704,7 +713,7 @@ def test_learning_lands_in_the_key_the_lead_predicts_with():
     (evt,) = [e for e in ctrl.audit.to_list() if e.get("event") == "warmup_sample"]
     assert evt["rate_key"] == "zone_a_warmup_rate_fans"
     assert evt["fan_ticks"] == 0
-    assert ctrl.number("zone_a_warmup_rate_fans") == pytest.approx(21.2, abs=0.01)
+    assert ctrl.number("zone_a_warmup_rate_fans") == pytest.approx(24.0, abs=0.01)
 
 
 def test_all_day_event_start_parses_to_an_aware_midnight():

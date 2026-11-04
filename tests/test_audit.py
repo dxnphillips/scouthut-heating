@@ -187,6 +187,7 @@ def test_accepted_warmup_sample_is_audited_with_its_inputs():
     _outdoor(hass, 5)  # cold: warm-up learning only folds in cold conditions
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"  # only a real pre-heat is sampled
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     # Climb 18 -> 22 in 1 °C/30-min steps.
     for t in (19, 20, 21, 22):
@@ -202,10 +203,11 @@ def test_accepted_warmup_sample_is_audited_with_its_inputs():
     assert evt["minutes"] == pytest.approx(120, abs=0.1)
     assert evt["rise"] == pytest.approx(4.0)
     assert evt["avg_gap"] == pytest.approx(15.0)  # (18 + 22) / 2 - 5
-    # Gross gain: (4 + 1.0 allowance) / 2 h = 2.5 °C/h -> 24 min/°C.
+    # Gross gain: (4 + 1.0 allowance) / 2 h = 2.5 °C/h -> 24 min/°C. Slower than
+    # the learned 20, so it folds at full weight (v1.51.1).
     assert evt["observed_gain"] == pytest.approx(60 / 2.5, abs=0.01)
     assert evt["old_rate"] == 20.0
-    assert evt["new_rate"] == pytest.approx(21.2, abs=0.01)
+    assert evt["new_rate"] == pytest.approx(24.0, abs=0.01)
     assert evt["old_tail"] == evt["new_tail"] == 1.0  # one climb: no line to fit yet
     assert evt["method"] == "ewma" and evt["history_n"] == 1
 
@@ -217,6 +219,7 @@ def test_rejected_warmup_sample_is_audited_as_rejected():
     _outdoor(hass, 5)  # cold, so the rejection is the small rise, not the mild gate
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     advance(ctrl, 20)
     _hall_temp(hass, 18.4)  # too small a rise to teach anything
@@ -241,6 +244,7 @@ def test_warmup_sample_records_the_raw_end_reading_and_the_clamped_rise():
     _outdoor(hass, 5)
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()  # start at 18
     advance(ctrl, 120)
     _hall_temp(hass, 24)  # the catch-up lands 2 °C over target
@@ -250,7 +254,7 @@ def test_warmup_sample_records_the_raw_end_reading_and_the_clamped_rise():
     assert evt["end_temp"] == 24.0
     assert evt["rise"] == pytest.approx(4.0)
     assert evt["accepted"] is True
-    assert evt["new_rate"] == pytest.approx(21.2, abs=0.01)  # same as the honest 18 -> 22
+    assert evt["new_rate"] == pytest.approx(24.0, abs=0.01)  # same as the honest 18 -> 22
 
 
 def test_warmup_sample_records_the_average_fan_wattage():
@@ -269,6 +273,7 @@ def test_warmup_sample_records_the_average_fan_wattage():
     _outdoor(hass, 5)  # cold: warm-up learning only folds in cold conditions
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()  # sample starts
     ctrl._update_warmup_learning()  # one mid-warm-up tick
     advance(ctrl, 120)
@@ -290,6 +295,7 @@ def _run_warmup(outdoor_temp):
     _outdoor(hass, outdoor_temp)
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     for t in (19, 20, 21, 22):
         advance(ctrl, 30)
@@ -317,7 +323,7 @@ def test_warmup_in_cold_weather_is_learned():
     cold = _run_warmup(5.0)
     assert cold["mild"] is False
     assert cold["accepted"] is True
-    assert cold["new_rate"] == pytest.approx(21.2, abs=0.01)
+    assert cold["new_rate"] == pytest.approx(24.0, abs=0.01)
 
 
 def test_warmup_with_no_outdoor_reading_is_not_learned():
@@ -330,6 +336,7 @@ def test_warmup_with_no_outdoor_reading_is_not_learned():
     _hall_temp(hass, 18)  # no _outdoor() call -> weather entity unset -> None
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     for t in (19, 20, 21, 22):
         advance(ctrl, 30)

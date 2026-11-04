@@ -158,6 +158,7 @@ def _preheat_climb(ctrl, hass, start, minutes, outdoor=8.0):
     _hall_reads(hass, start)
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     advance(ctrl, minutes)
     _hall_reads(hass, 19.0)

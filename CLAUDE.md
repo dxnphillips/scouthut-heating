@@ -23,8 +23,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 793
-  passing as of 2026-10-31.
+  a fully wired controller). Every behaviour change ships with tests. 822
+  passing as of 2026-11-04.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
   `fans_follow_state`) were removed entirely — **fan direction is now fully
@@ -3554,6 +3554,140 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   start after the line is fitted would mean soak needs its own term after all.
   Tests in `tests/test_startup_allowance.py` (the fit, the caps, the October
   replay, the conversion) and `tests/test_learning_conditions.py`.
+- **The first cold-soaked evening on v1.51.0 (2026-11-02, 18:30Z booking,
+  2026-11-02 20:48Z export) — everything arrived short; v1.51.1.** Deployed
+  10-31 08:57Z (`warmup_gain_converted` exact: hall fans 11.74 → 16.15, hall
+  33.23 → 45.69, office 16.25 → 22.35), then an empty weekend: the hall fell to
+  10.0 at outdoor 3.4, the rooms to 11–12. Monday's pre-heats: gents 15:15Z
+  (lead 198, from 11.0), ladies 15:15Z (199, from 12.0), kitchen 15:25Z (188,
+  from 12.0), hall 16:00Z (154, from 12.75 average, rate 16.15, tail 1.0, k
+  8.68). At the start: hall 18.38 average / 17.5 coldest (**+0.62 short**),
+  kitchen 17.5, ladies 17.0, gents 16.5 against 19. Every climb read slower than
+  its gain (cut-short samples, the first `cut_short` in the field): hall 18.13 vs
+  16.15, kitchen 24.0, gents 26.5, ladies 25.3 vs the seed 20 — and the EWMA
+  moved each only 30 % of the way (16.74, 21.2, 22.0, 21.6). Three fixes in
+  v1.51.1: (1) **a slow climb folds at full weight** within the 25 % cap
+  (`updated_rate`; the `MAX_RATE_STEP_FRAC` comment always said so, the code
+  applied `ALPHA` both ways), a fast one keeps the EWMA — the cold-arrival
+  direction stays slow to learn; (2) **no easing in a pre-heat that has not
+  reached target** (`_zone_pre_heating`): a leader arrived at 18:02Z, the empty
+  pre-heat counted as occupied, and the easing cut the hall's elements at 18.5
+  from 18:15Z (`rise` 0.0, the room fell to 18.38 by the start); eight hall
+  pre-heat easings on a still-short room averaged +0.25, five ≤ 0.12, so the
+  rule is "a pre-heat arrives, the booking eases"; (3) **a warm-up sample needs
+  the live reason `preheat`** as well as the entry reason — the gents and
+  ladies, still in their pre-heat comfort when the booking ended, opened
+  samples at 20:00:00Z that closed 18 s later. Also: `drive_coast_jump` is
+  audited only on a zone in comfort (over half the week's were on ice/eco), and
+  the trace carries each room's reading and panel (`kitchen`, `gents`, `ladies`,
+  `<room>_surface`). Replayed: the hall's next lead for the same evening is ~20
+  min longer (176 vs 154), and without the easing the room was ~0.5 °C/15 min
+  from target at 18:15Z. **Open — the toilets may not reach 19 from a cold soak
+  at all.** The coldest room (mostly the gents) climbed 11.0 → 14.5 in the first
+  hour, then 14.5 → 16.5 in two, then 16.5 → 17.5 in 75 min, still on comfort at
+  20:00Z after 4 h 45 min; a 26.5 min/°C gain would size ~270 min for that climb
+  and the cap is 240. **Decision rule:** read `gents` / `gents_surface` on the
+  next cold evening — panel hot (≳ 50 °C) through a plateau below 18 is a
+  capacity/soak wall (the levers are the owner's: a later-season eco floor in
+  the toilets before a booking day, a longer cap for the rooms, or a lower
+  toilet target); a panel throttling or cold while short is a control problem.
+  Also seen, not changed: after the 20:00Z `booking_end` the hall iced on
+  `occupied_warm` (average 19.62), fell under 19 with the door traffic and was
+  relit on a 13-minute-old hall trip at 20:30:23Z, 102 s before the motion
+  timed out (`building_empty` 20:32:05Z, fans 10 min min-run) — the eager
+  occupancy churn Q22's dwell would address. Room k learned low overnight
+  (kitchen 5.9, gents 4.7, ladies 8.4 %/h; hall 8.7, office 3.3) — the slow
+  phase; the leak they predict while heating a cold-soaked room is much higher
+  (the gents' plateau implies ~20 %/h), the two-lump question again. Tests in
+  `tests/test_first_cold_evening.py`.
+- **The weather went quiet and learning stopped with it (2026-11-04 13:35Z
+  export, v1.51.0 still deployed; two more fixes in v1.51.1).** The configured
+  weather entity has given no temperature since ~04:00Z on 11-03: from 04:59Z
+  every cool-off (31 by the export) was rejected `no_outdoor`, every lead was
+  sized for 5 °C, and tonight's samples would all read `mild` and be dropped —
+  with nothing in the log but the rejections. (4) **`_outdoor_source`** falls
+  back to any other weather entity with a temperature (`weather.forecast_home`
+  first, °F converted; the seasonal forecast follows it), `outdoor_fallback` /
+  `outdoor_lost` (60 min, notification + push) / `outdoor_restored`,
+  `state.outdoor`; tests in `tests/test_outdoor_watch.py`. (5) **A warm-up
+  sample opens only within 5 min of the comfort entry**
+  (`WARMUP_OPEN_WINDOW_MIN`, `_preset_entered_at`): the 25-min startup grace
+  only delayed a restart's sample, which would then open half-way up the climb
+  on hot panels and read the bulk alone (too fast, no allowance) — the case if
+  v1.51.1 is deployed mid-pre-heat. **Tuesday 11-03, sal-vation eco booking
+  17:45–20:00Z (target 16):** pre-heats ladies 14:50Z (lead 175, from 12.5),
+  gents 15:00Z (165, 12.0), kitchen 15:10Z (158, 12.5), hall 15:35Z (133,
+  12.62); at the start the rooms read 15.5 / 16.0 / 16.0 and the hall 15.38
+  (0.62 short). From 16:32Z three hall heaters sat at their own 16 (`hall_fire`
+  1) while the cold end read 13.0 for two hours, holding the average flat at
+  15.38; the class lifted it to 16.88 (`booking_warm` ice 18:23Z, relit
+  19:23Z, `peak_over` 0.88). **Eco pre-heats teach nothing** — the sampler is
+  comfort-only (an eco pre-heat's reason is `booking_eco`, and it is not
+  driven, so its finish stalls half a degree under, e.g. the kitchen at 15.5
+  for 90 min); left so on purpose: mixing undriven eco finishes into the
+  comfort line would bias the allowance. If comfort climbs stay too scarce to
+  fit, the lever is driving eco bookings like comfort and then sampling them.
+  **hall_left went dark again at 18:07:10Z** (`heater_silent` 21:07Z, reading
+  17.0, panel 43): the 10-13 silence began at 18:02Z, also mid sal-vation
+  booking. Owner-side: ask the class whether that radiator is switched off at
+  the wall during it. **Today's 17:30Z booking:** all four pre-heats opened at
+  13:30Z pinned at the 240 cap; uncapped they want hall 241, kitchen 274, gents
+  276, ladies 290 (at the assumed 5 °C, v1.51.0 gains), so the rooms will
+  arrive short again and the hall runs on three heaters. The Q2 rule (raise the
+  cap on persistent shortfall at the cap) waits for tonight's
+  `booking_start.rooms` — and the gents plateau question for v1.51.1's trace.
+- **That booking, read (2026-11-04 19:00Z export, still v1.51.0; one more
+  v1.51.1 fix).** The hall arrived: its three live probes went 11.5 → 19.0 in
+  207 min (the `warmup_sample` closed `reached_target` at 16:57Z, 33 min early
+  on the capped 240) and read 19.33 at 17:25Z (`last_lead_calc.indoor`). But
+  `booking_start` said **average 18.75, shortfall 0.25, coldest 17.0**, and
+  `booking_end` `peak_over` 0.0: they read the room without the freshness
+  filter, so hall_left's frozen 17.0 (silent since 11-03 18:07Z) was in them,
+  as it was in the trace `floor` / `hall_coldest` (17.0 flat for four hours),
+  the condensation watch, the drive's zone average (the 17:16Z easing engaged
+  on 18.5 with the live probes at ~19.2) and the cool-off reading (a value
+  that never falls damps the measured loss — the cold-arrival direction). (6)
+  **`_probe_dark`**: a heater silent on a trusted clock past the stale window is
+  left out of `_zone_climate_temps`, `_floor_temp`, `_room_reading_members` and
+  the drive's zone average whatever the caller asks; it is still driven. No
+  clock, no change. Tests in `tests/test_silent_heater_readings.py`. This
+  supersedes Q18's "the fan ΔT reference still averages the frozen probe" (the
+  fan reference already passed the stale window, so it never did). Same
+  session: the rooms at 17:30Z read kitchen 18.5, gents 17.0, ladies 17.5 after
+  the full 240 min from 11.5–12.5, and by the 18:48Z alarm kitchen 19.0,
+  gents 18.0, ladies 18.0 with the ladies' panel at **84 °C** — five hours flat
+  out to reach 18, the decision rule's capacity/soak wall for the toilets
+  (owner's call: a toilet target of 18, a longer room cap, or an eco floor on
+  booking days). The front fire door stood open 17:52–18:17Z (`opening`, hall
+  iced) and the live hall fell to 18.3 by the 18:30Z end. Every warm-up sample
+  (hall, three rooms) was rejected `mild` for want of an outdoor reading, now
+  ~39 h lost; the gents also opened a sample at the 18:30Z booking end and
+  closed it at the alarm (fixes 3 and 5 both stop that). Empty-pre-heat reverse
+  fans cycled seven times on the owner's `fan_dt_on` 0.5 / `fan_dt_off` 0.0
+  (on at ~0.55, off at ~−0.1, ~20–35 min runs at 54 W): noted, not changed.
+- **Fan start/stop lines 1.5 / 0.5, as defaults and in effect (v1.51.1, owner:
+  "set them as the new defaults").** Read across the month's 85 reverse runs
+  (65 h, ~4 kWh): with the hall empty, unheated and the fans off at 03–05Z the
+  ceiling reads a median **~0.6** above the radiator probes (27 nights), so the
+  owner's `fan_dt_on` 0.5 / `fan_dt_off` 0.0 sat under the hall's resting gap
+  and the fans started on every heating episode and cycled on it (11-04: seven
+  starts in a four-hour empty pre-heat, six at 0.53–0.60, each stopping at
+  ≤ 0.0 after 10–35 min). Three of the five Pause presses came 1–17 min after a
+  reverse start in an occupied hall (10-19 17:29 and 19:15, 10-30 12:52, at
+  start gaps 1.50 / 1.90 / 1.52), one in a forward breeze (10-12). Replayed on
+  the month's starts: 85 at 0.5, 55 at 1.0, 37 at 1.5, 26 at 2.0 (occupied 57 /
+  38 / 23 / 15); the sun-warmed pre-heat starts (gaps 2–5) all clear 1.5. The
+  `fan_dt_on` default is now **1.5** (`fan_dt_off` stays 0.5), and
+  `_apply_fan_dt_defaults` moves an existing install's sliders onto them once
+  (`fan_defaults_applied`, store marker `fan_dt_v`); a later slider move is
+  kept. Not changed: min run/off 10/10, `cooling_above_comfort` 1.0, the dial
+  (reverse at 52–58 W). 65 of 85 runs ended because the hall's heating stopped
+  (or a Pause / the alarm) with 1.5–4 °C still at the ceiling — by design (Q24:
+  never push the room past comfort); code, not a setting, and wants more cold
+  evenings first. **Decision rule:** if the leaders confirm the fans are why
+  they press Pause and presses continue at 1.5, go to 2.0 (all three
+  pre-Pause starts were under it). Supersedes Q1's "raise `fan_dt_on` to ~1.5"
+  rule (done). Tests in `tests/test_fan_thresholds.py`.
 
 ## Architecture pointers
 

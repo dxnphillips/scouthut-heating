@@ -56,6 +56,13 @@ MAX_RATE = 60.0
 
 # Weight of a new observation in the exponential moving average. 0.3 means the
 # estimate settles after a handful of bookings but still tracks the seasons.
+# Applied only to a climb that read FASTER than the learned gain (a shorter
+# lead, the cold-arrival direction). One that read SLOWER is taken at full
+# weight, within the step cap below (v1.51.1): the first cold-soaked pre-heats
+# on every key (2026-11-02, hall from 12.75, toilets from 11-12) all read
+# slower than the gain they were led on (hall 18.1 against 16.15; kitchen,
+# gents, ladies 24.0, 26.5, 25.3 against the seed 20) and arrived 0.6-2.5 short,
+# and at 0.3 a room needs four or five such evenings to stop arriving short.
 ALPHA = 0.3
 
 # Robust EWMA: no single sample may move the rate more than this fraction of
@@ -63,7 +70,9 @@ ALPHA = 0.3
 # Symmetric — this is the one guard that protects BOTH directions, and the only
 # one the warm-up learning keeps beyond the cold gate and the sample-selection
 # rules. The dangerous corruption is a rate that reads too FAST (short lead,
-# cold arrival); a slow sample is fail-safe and folds at full weight.
+# cold arrival); a slow sample is fail-safe and folds at full weight (since
+# v1.51.1 in the code as well as in this comment: until then ALPHA applied both
+# ways).
 MAX_RATE_STEP_FRAC = 0.25
 
 # The start-up allowance ("tail"), in °C-equivalent at the bulk gain: the time
@@ -350,7 +359,9 @@ def updated_rate(
     observed = warmup_observed_rate(minutes_elapsed, temp_rise, avg_gap, cool_k, tail)
     if observed is None:
         return rate
-    new = rate + ALPHA * (observed - rate)
+    # Slower than assumed (a longer lead, the warm direction): believe it at once.
+    # Faster: move a fraction of the way, as before.
+    new = observed if observed > rate else rate + ALPHA * (observed - rate)
     # Robust: cap how far one sample can move the rate, either direction.
     new = max(rate * (1 - MAX_RATE_STEP_FRAC), min(rate * (1 + MAX_RATE_STEP_FRAC), new))
     return max(MIN_RATE, min(MAX_RATE, new))

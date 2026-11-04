@@ -168,8 +168,10 @@ the direction changes back, so reversals stay rare. (A warm reading is required
 before any cooling breeze, so a lost sensor never blows a draught on a guess.)
 
 - **Winter destratification** (default) → fans **reverse (up air)** when the
-  ceiling-minus-floor ΔT is above the start threshold (default 2 °C, tuned
-  for this under-radiatored hall; generic practice is ~3 °C) **and** the
+  ceiling-minus-floor ΔT is above the start threshold (default 1.5 °C since
+  v1.51.1: the hall rests ~0.6 °C above its radiator probes with nothing
+  running, so this is one ceiling-sensor step plus about a degree of real pooling;
+  they stop at 0.5, back at that resting gap) **and** the
   heat is worth moving — meaning either a radiator in *any* zone is drawing power
   (so office or shared heat leaking into the hall counts too), **or** the floor is
   still below **the temperature the hall is actually being heated to** (its
@@ -436,8 +438,10 @@ what makes the learning season-proof: a July cool-off and a January one
 teach the same fabric constant, only the gap differs, so the first cold
 snap of autumn is predicted correctly instead of waiting for the model to
 re-learn winter (measured here in July 2026: hall ~10 %/h, insulated office
-~4.5 %/h; when the weather entity is unreadable the prediction assumes a
-cold 5 °C outside and errs warm).
+~4.5 %/h; when the weather entity stops reporting, another weather entity in
+Home Assistant is used if there is one (`weather.forecast_home` first, v1.51.1),
+and with none the prediction assumes a cold 5 °C outside and errs warm, the
+learning pauses, and after an hour a notification and a push say so).
 
 *Coast on free heat (optional, hall only).* The **Coast on free heat (skip
 pre-heat)** switch (default **off**) is the mirror of optimum start: during the
@@ -465,8 +469,12 @@ pre-heat never saw). A pre-heat its booking overtakes before it arrives is
 kept too, closed at the booking start before the group's own heat joins it:
 those are the climbs where the lead was too short, the ones it most needs to
 learn from. Each is judged on the zone average's
-start and finish (exponentially smoothed and step-capped, so one odd morning
-can only nudge the number, never yank it); a temperature *rise* while unheated
+start and finish and step-capped, so one odd morning can move the number at
+most a quarter. A climb that took **longer** than the gain said is believed at
+once (within that cap), because that is the direction that arrives cold; one
+that went faster only moves it 30 % of the way (v1.51.1, after the first
+cold-soaked evening read slower than every gain it was led on and arrived
+0.6–2.5 °C short); a temperature *rise* while unheated
 (July roof sun) is never mistaken for good insulation. The hall keeps **two**
 gains — with and without the destratification fans enabled — because the fans
 materially change warm-up speed, and the one the next lead will use is the one
@@ -664,7 +672,9 @@ restarts) of everything it decides and learns:
   values the decisions used (ceiling, the hall "floor" average and coldest
   reading, office, shared, outdoor, ceiling humidity, fan state, fan mode,
   hall occupancy, heat
-  demand, and the O1 wattage). Fan mode and occupancy ride alongside fan state
+  demand, and the O1 wattage; since v1.51.1 also each kitchen/toilet room's
+  reading and its radiator's panel temperature, as `kitchen` / `gents` /
+  `ladies` and `<room>_surface`, beside `shared`, the coldest of them). Fan mode and occupancy ride alongside fan state
   so empty-building winter fan-hours — the thing the occupancy gate suppresses —
   are measurable straight from the trace. The wattage matters because it encodes the manual transformer
   dial's tap — warm-up samples also carry their average O1 watts, so a moved

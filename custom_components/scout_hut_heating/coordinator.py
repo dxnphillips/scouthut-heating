@@ -122,6 +122,7 @@ from .const import (
     NOTIFY_FIRE,
     NOTIFY_HEATER_SILENT,
     NOTIFY_PROBE_IMPLAUSIBLE,
+    NOTIFY_OUTDOOR_LOST,
     NOTIFY_HEATERS_OFFLINE,
     NOTIFY_OPENING_INFERRED,
     NOTIFY_RECONCILE_ERROR,
@@ -538,6 +539,16 @@ HEATER_SILENT_MINUTES = 180.0
 # is alerted once it has lasted this long, so a probe catching up a couple of
 # minutes behind its siblings (2026-09-16) is left out but not reported.
 PROBE_IMPLAUSIBLE_ALERT_MINUTES = 15.0
+# The outdoor temperature (v1.51.1). Without it every cool-off is rejected
+# (``no_outdoor``), every warm-up sample reads ``mild`` and every lead is sized
+# for 5 °C outside — learning stops and nothing says so (field 2026-11-03: the
+# weather entity gave no temperature from 04:00Z, 41 cool-offs in a row
+# rejected). A fallback weather entity is used when there is one; with none,
+# the loss is alerted once it has lasted this long, well past an API blip.
+OUTDOOR_LOST_ALERT_MINUTES = 60.0
+# Home Assistant's own weather entity (Met.no, created at onboarding): the first
+# fallback when the configured provider stops reporting.
+OUTDOOR_FALLBACK_PREFERRED = "weather.forecast_home"
 # An idle radiator panel is a second thermometer beside its own probe: once it
 # has cooled it reads 0.5–1.0 above the probe (every iced heater in the October
 # exports), 2–5 while it is still shedding. A probe its own idle panel agrees
@@ -677,6 +688,13 @@ COOL_DROPOUT_GRACE_MIN = 5.0
 # 12-14 → nudge toward 13-14"). The reset-40 rate is now known to over-lead a
 # 4 °C cold start ~2× (77 min actual vs a 181-min lead), which is wasted energy.
 WARMUP_COLD_MAX_OUTDOOR = 14.0
+# A warm-up sample opens only this soon after the zone entered comfort for its
+# pre-heat (v1.51.1), so it always times the climb from its start. The startup
+# grace alone only delayed the opening: a restart mid-pre-heat re-applies
+# comfort on a room already heating, and 25 min later a sample would open on
+# hot panels with the start-up already paid, reading the bulk alone and so a
+# gain too fast (the cold-arrival direction) and no allowance.
+WARMUP_OPEN_WINDOW_MIN = 5.0
 # A cool-off sample anchors only once the zone's radiators have cooled: while a
 # panel is still this far above the room it is releasing stored heat past the
 # mid-wall probe beside it, and the "decay" is the panel, not the fabric. The
@@ -991,6 +1009,9 @@ class ScoutController:
         # already lit flips the live reason to `preheat` with no preset change.
         # The warm-up learning keys on this, not the live reason (v1.50.2).
         self._preset_entry_reason: dict[str, str] = {}
+        # When each zone last CHANGED preset (the same edge): a warm-up sample
+        # opens only within WARMUP_OPEN_WINDOW_MIN of it (v1.51.1).
+        self._preset_entered_at: dict[str, datetime] = {}
 
         # Drive-to-target (outer per-heater trim loop). Keyed by climate
         # entity_id. The staircase term is deliberately NOT persisted across a
@@ -1085,6 +1106,12 @@ class ScoutController:
         # its siblings, and which have been alerted.
         self._probe_implausible_since: dict[str, datetime] = {}
         self._probe_implausible_alerted: set[str] = set()
+        # Outdoor watch (v1.51.1): since when the configured weather entity has
+        # had no temperature, the source last seen, and whether the loss (no
+        # source at all) has been alerted.
+        self._outdoor_missing_since: datetime | None = None
+        self._outdoor_source_seen: str | None = None
+        self._outdoor_lost_alerted = False
         # Freeze detector: each heater's last room reading and when it last
         # CHANGED (the Rointe entity's own timestamps are always fresh).
         self._probe_last_value: dict[str, float] = {}
@@ -1694,7 +1721,7 @@ class ScoutController:
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            if climate in implausible:
+            if climate in implausible or self._probe_dark(climate):
                 continue
             if stale_min is not None and self._probe_frozen(climate, stale_min):
                 continue
@@ -1760,6 +1787,8 @@ class ScoutController:
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
             if climate in implausible or st.attributes.get("current_temperature") is None:
+                continue
+            if self._probe_dark(climate):
                 continue
             members.add(climate)
         return frozenset(members)
@@ -2049,6 +2078,25 @@ class ScoutController:
         stale = self._probe_silent_minutes(climate)
         return stale is not None and stale >= minutes
 
+    def _probe_dark(self, climate: str) -> bool:
+        """Has this heater been PROVEN silent — no upload on its trusted sync
+        clock for the Rointe stale window (v1.51.1)?
+
+        Its reading is then a value it held when it stopped talking, not the
+        room, and it is left out of every room reading, not only the warm-enough
+        decisions that already drop it. Field 2026-11-04: hall_left silent since
+        18:07Z the day before, its reading stuck at 17.0, left out of the gate
+        but counted in `booking_start` (the hall reported 0.25 short when its
+        three live probes averaged ~19.3), `booking_end`, the overshoot peak,
+        the trace's floor and cold end, the drive's zone average that sets the
+        approach hold and the coast band, and the cool-off reading, where a
+        value that never falls under-reads the loss — the cold-arrival
+        direction. Only a trusted clock can say this: without one a flat value
+        may simply be a still room, so nothing changes on such an install.
+        """
+        age = self._sync_age_minutes(climate)
+        return age is not None and age >= self._rointe_stale_min()
+
     @staticmethod
     def _iso_naive(stamp: datetime | None) -> str | None:
         return stamp.isoformat(timespec="seconds") if stamp is not None else None
@@ -2153,18 +2201,55 @@ class ScoutController:
             return None
         return max(vals) - min(vals)
 
-    def _outdoor_temp(self) -> float | None:
-        weather = self.config.get(CONF_WEATHER)
-        if not weather:
+    def _weather_temperature(self, entity_id: str | None) -> float | None:
+        """The current temperature (°C) a weather entity reports, or None."""
+        if not entity_id:
             return None
-        st = self.hass.states.get(weather)
-        if st is None:
+        st = self.hass.states.get(entity_id)
+        if st is None or st.state in ("unknown", "unavailable"):
             return None
         try:
             temp = st.attributes.get("temperature")
-            return float(temp) if temp is not None else None
+            if temp is None:
+                return None
+            temp = float(temp)
         except (TypeError, ValueError):
             return None
+        if st.attributes.get("temperature_unit") == "°F":
+            temp = (temp - 32.0) * 5.0 / 9.0
+        return temp
+
+    def _outdoor_source(self) -> str | None:
+        """The weather entity the outdoor temperature comes from right now.
+
+        The configured one while it reports a temperature. When it stops
+        (2026-11-03: no temperature from 04:00Z for over a day, so every
+        cool-off was rejected ``no_outdoor`` and every warm-up would have read
+        ``mild``), any other weather entity in HA that has one, Home Assistant's
+        own ``weather.forecast_home`` first. None when nothing does.
+        """
+        weather = self.config.get(CONF_WEATHER)
+        if not weather:
+            return None
+        if self._weather_temperature(weather) is not None:
+            return weather
+        async_all = getattr(self.hass.states, "async_all", None)
+        if async_all is None:
+            return None
+        try:
+            others = sorted(
+                (st.entity_id for st in async_all("weather") if st.entity_id != weather),
+                key=lambda e: (e != OUTDOOR_FALLBACK_PREFERRED, e),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        for entity_id in others:
+            if self._weather_temperature(entity_id) is not None:
+                return entity_id
+        return None
+
+    def _outdoor_temp(self) -> float | None:
+        return self._weather_temperature(self._outdoor_source())
 
     def _zone_target(self, zone: str) -> float:
         """The comfort temperature a pre-heat is aiming for.
@@ -2357,7 +2442,10 @@ class ScoutController:
           sample opened there times the tail of a climb whose start it never
           saw — 2026-10-15 16:10Z timed 11 min of a 41-min climb (2.8 gross
           against the learned 12.8, the cold-arrival direction), saved only by
-          the mild gate and the rise floor.
+          the mild gate and the rise floor. And the live reason must say
+          ``preheat`` too (v1.51.1): a room still in the comfort it entered for
+          a pre-heat when its booking ENDED opened a fresh sample at 2026-11-02
+          20:00Z, closed as "ended early" 18 s later when it went to eco.
         * **Timed on the zone AVERAGE** (v1.47.0), the quantity the lead sizes
           (`_zone_preheat_minutes`), the gate releases on and
           `booking_start.shortfall` judges — the sample must time what the lead
@@ -2425,8 +2513,11 @@ class ScoutController:
                     and temp is not None
                     and temp < target - 0.5
                     and self._preset_entry_reason.get(zone) == "preheat"
+                    and self._preset_reason.get(zone) == "preheat"
                     and not self._booking_event_running(zone)
                     and not self._within_startup_grace(now)
+                    and (entered := self._preset_entered_at.get(zone)) is not None
+                    and now - entered <= timedelta(minutes=WARMUP_OPEN_WINDOW_MIN)
                 ):
                     fans = 1 if self._fans_running() else 0
                     w = self._o1_watts() if zone == ZONE_A else None
@@ -2597,7 +2688,7 @@ class ScoutController:
         """
         if zone not in DRIVE_COAST_ZONES:
             return 0.0
-        jumped = self._note_coast_jump(zone, zone_avg, now)
+        jumped = self._note_coast_jump(zone, zone_avg, now, comfort)
         hottest = self._zone_hottest_panel(zone)
         ready = (
             comfort
@@ -2636,6 +2727,16 @@ class ScoutController:
             # 17:04Z empty but at target +0.62). Also engage-only.
             if not (self._zone_occupied(zone) or zone_avg >= target):
                 return 0.0
+            # ...and never in a pre-heat that has not yet reached target
+            # (v1.51.1). The pre-heat's job is to arrive; an easing there only
+            # ever arrives short. Across October-November eight hall pre-heat
+            # easings on a room still short rose +0.25 on average, five of them
+            # 0.12 or less. 2026-11-02 18:15Z: one leader arriving early made
+            # the empty pre-heat "occupied", the easing cut the elements at
+            # 18.5 on a cold-soaked hall, and the booking started 0.62 short.
+            # Inside the booking (the people there) it still eases as before.
+            if zone_avg < target and self._zone_pre_heating(zone):
+                return 0.0
             self._drive_coast_since[zone] = now
             self._drive_coast_from[zone] = zone_avg
             self._drive_coast_peak[zone] = zone_avg
@@ -2661,7 +2762,7 @@ class ScoutController:
         return DRIVE_COAST_ALLOWANCE
 
     def _note_coast_jump(
-        self, zone: str, zone_avg: float | None, now: datetime
+        self, zone: str, zone_avg: float | None, now: datetime, comfort: bool = True
     ) -> bool:
         """Is this zone's average reading too fresh off a catch-up jump to ease on?
 
@@ -2696,16 +2797,25 @@ class ScoutController:
         self._drive_coast_seen[zone] = zone_avg
         if previous is not None and zone_avg - previous >= DRIVE_COAST_MAX_JUMP:
             self._drive_coast_jumped[zone] = now
-            self.audit.record(
-                "drive_coast_jump",
-                now,
-                zone=zone,
-                previous=previous,
-                zone_avg=zone_avg,
-                rise=round(zone_avg - previous, 2),
-            )
+            # Audited only while the zone is being driven, where the easing it
+            # withholds exists (v1.51.1): over half the week's jumps to 11-01
+            # were on zones sitting on ice or eco. The settle clock above runs
+            # either way, so a jump just before comfort still holds the easing.
+            if comfort:
+                self.audit.record(
+                    "drive_coast_jump",
+                    now,
+                    zone=zone,
+                    previous=previous,
+                    zone_avg=zone_avg,
+                    rise=round(zone_avg - previous, 2),
+                )
             return True
         return self._coast_settling(zone, now)
+
+    def _zone_pre_heating(self, zone: str) -> bool:
+        """Is this zone in a pre-heat window whose booking has not started?"""
+        return bool(self.cal_window.get(zone)) and not self._booking_event_running(zone)
 
     def _coast_settling(self, zone: str, now: datetime) -> bool:
         at = self._drive_coast_jumped.get(zone)
@@ -3194,7 +3304,7 @@ class ScoutController:
                 _LOGGER.debug("companion push to %s failed: %s", service, err)
 
     async def _async_seasonal_check(self) -> None:
-        weather = self.config.get(CONF_WEATHER)
+        weather = self._outdoor_source() or self.config.get(CONF_WEATHER)
         if not weather:
             return
         threshold = self.number("seasonal_lockout_temp")
@@ -3423,6 +3533,8 @@ class ScoutController:
             # the marker that the gains are already in the learned-tail units.
             "warmup_history": {k: [list(c) for c in v] for k, v in self._warmup_history.items()},
             "warmup_tail_v": 1,
+            # The fan start/stop lines have been moved onto the v1.51.1 defaults.
+            "fan_dt_v": 1,
             "audit": self.audit.to_list(),
             "trace": self.trace.to_list(),
         }
@@ -3454,6 +3566,31 @@ class ScoutController:
                 changed[key] = [old, new]
         self.audit.record("warmup_gain_converted", self._now(), factor=TAIL_CONVERSION, **changed)
         await self._store.async_save(self._state_snapshot())
+
+    def _apply_fan_dt_defaults(self) -> None:
+        """Move the fan start/stop lines onto the v1.51.1 defaults, once.
+
+        The owner's sliders sat at 0.5 / 0.0, under the ~0.6 °C the hall shows
+        with nothing running, so the reverse fans started on every heating
+        episode and cycled on the resting gap (2026-11-04: seven starts in a
+        four-hour empty pre-heat; 85 runs in the month, and three of five Pause
+        presses came 1–17 min after a start in an occupied hall). The owner
+        asked for the new values as the defaults and in effect. A restored
+        slider keeps its stored value, so this writes the defaults once and the
+        store is marked (`fan_dt_v`); a later slider move is left alone.
+        Audited (`fan_defaults_applied`, old → new).
+        """
+        changed: dict[str, list[float]] = {}
+        for key in ("fan_dt_on", "fan_dt_off"):
+            write = getattr(self._numbers.get(key), "write_value", None)
+            if write is None:
+                continue
+            old = self.number(key)
+            new = float(NUMBER_DEFS[key][3])
+            if old != new:
+                write(new)
+                changed[key] = [old, new]
+        self.audit.record("fan_defaults_applied", self._now(), **changed)
 
     async def _async_restore_state(self) -> None:
         try:
@@ -3504,8 +3641,13 @@ class ScoutController:
                 ][-WARMUP_HISTORY_MAX:]
             except (TypeError, ValueError):
                 continue
+        fan_defaults = not data.get("fan_dt_v")
+        if fan_defaults:
+            self._apply_fan_dt_defaults()
         if not data.get("warmup_tail_v"):
-            await self._async_convert_warmup_gains()
+            await self._async_convert_warmup_gains()  # saves, with both markers
+        elif fan_defaults:
+            await self._store.async_save(self._state_snapshot())
 
     def _heater_detail(self, climate: str) -> dict[str, Any]:
         """The full per-heater snapshot for the diagnostics export.
@@ -3710,6 +3852,15 @@ class ScoutController:
                 # still heats against its own reading.
                 "probes_implausible": {
                     c: _iso(t) for c, t in self._probe_implausible_since.items()
+                },
+                # Where the outdoor temperature is coming from (v1.51.1): the
+                # configured weather entity, a fallback, or None (no reading —
+                # learning paused, leads sized for 5 °C), and since when the
+                # configured one has been quiet.
+                "outdoor": {
+                    "source": self._outdoor_source(),
+                    "missing_since": _iso(self._outdoor_missing_since),
+                    "lost_alert": self._outdoor_lost_alerted,
                 },
                 # Reconcile steps currently raising: every step AFTER one of these
                 # is being skipped each tick, so anything it owns (fans, the trace,
@@ -4731,6 +4882,7 @@ class ScoutController:
                 ("heaters_offline", self._update_heaters_offline),
                 ("heater_silence", self._update_heater_silence),
                 ("probe_plausibility", self._update_probe_plausibility),
+                ("outdoor_watch", self._update_outdoor_watch),
                 ("booking_edges", self._record_booking_edges),
                 ("passive_rise", self._update_passive_rise),
                 ("zones", self._reconcile_zones),
@@ -4962,6 +5114,18 @@ class ScoutController:
             # The stalest hall heater's upload age on a trusted sync clock
             # (v1.45.0) — the overnight sync-gap measurement the findings lacked.
             hall_sync=self._hall_sync_age_max(),
+            # Each kitchen/toilet room's reading and its radiator's panel (v1.51.1):
+            # `shared` is only the coldest of the three, and the first cold-soaked
+            # evening (2026-11-02) could not say which room plateaued, or whether
+            # its radiator was still firing while it did.
+            **{
+                key: value
+                for room in self._rooms()
+                for key, value in (
+                    (room, self._zone_room_temp(room)),
+                    (f"{room}_surface", self._zone_hottest_panel(room)),
+                )
+            },
         )
 
     def _reset_booking_overshoot(self, zone: str) -> None:
@@ -5522,6 +5686,7 @@ class ScoutController:
                 reason=self._preset_reason.get(zone),
             )
             self._preset_entry_reason[zone] = self._preset_reason.get(zone) or ""
+            self._preset_entered_at[zone] = self._now()
         if zone == ZONE_A and preset in (PRESET_COMFORT, PRESET_ECO) and not force:
             await self._async_push_hall_temps()
         ok = await self._async_apply_climate(climates, preset)
@@ -6054,10 +6219,14 @@ class ScoutController:
             # here, so it works uniformly for all three zones (hall/office/shared).
             # A probe the sanity rule rejects is left out of the average too — a
             # frozen-low reading would otherwise hold the average under the line
-            # while its siblings are already at target (field 2026-09-16).
+            # while its siblings are already at target (field 2026-09-16). So is
+            # a heater proven silent (v1.51.1): it is still driven, harmlessly,
+            # but the value it last uploaded is not the room.
             sane_vals = [
-                v for v in readable
-                if median is None or v >= median - DRIVE_PROBE_SANE_BELOW
+                v for c, v in probes.items()
+                if v is not None
+                and not self._probe_dark(c)
+                and (median is None or v >= median - DRIVE_PROBE_SANE_BELOW)
             ]
             zone_avg = sum(sane_vals) / len(sane_vals) if sane_vals else None
             near_target = zone_avg is not None and zone_avg >= target - DRIVE_APPROACH_BAND
@@ -6663,8 +6832,9 @@ class ScoutController:
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            # A probe reading far below its siblings is broken, not cold (v1.50.6).
-            if climate in implausible:
+            # A probe reading far below its siblings is broken, not cold (v1.50.6);
+            # one whose heater has been proven silent holds an old value (v1.51.1).
+            if climate in implausible or self._probe_dark(climate):
                 continue
             # Freshness by VALUE (see _probe_frozen): the Rointe entity's
             # timestamps advance every poll whether or not the device synced.
@@ -7235,6 +7405,83 @@ class ScoutController:
             await self._push_companion(
                 title, message, icon="mdi:thermometer-alert", channel="Scout Hut alerts"
             )
+
+    async def _update_outdoor_watch(self) -> None:
+        """Say when the outdoor temperature is coming from a fallback, or from
+        nowhere (v1.51.1).
+
+        A fallback taking over from the configured weather entity is audited
+        at once (``outdoor_fallback`` naming it), with a persistent notification
+        while it carries the reading. No source at all for
+        ``OUTDOOR_LOST_ALERT_MINUTES`` is ``outdoor_lost``, notified and pushed:
+        the learning has stopped and the leads assume 5 °C. A gap shorter than
+        that with no fallback (an API blip, the weather entity still loading at
+        a restart) leaves no event. ``outdoor_restored`` when the configured
+        entity reports again after either.
+        """
+        configured = self.config.get(CONF_WEATHER)
+        if not configured:
+            return
+        now = self._now()
+        source = self._outdoor_source()
+        if source == configured:
+            if self._outdoor_missing_since is not None and (
+                self._outdoor_lost_alerted or self._outdoor_source_seen is not None
+            ):
+                self.audit.record(
+                    "outdoor_restored",
+                    now,
+                    weather=configured,
+                    outdoor=self._weather_temperature(configured),
+                    minutes=round((now - self._outdoor_missing_since).total_seconds() / 60, 1),
+                )
+                persistent_notification.async_dismiss(self.hass, NOTIFY_OUTDOOR_LOST)
+            self._outdoor_missing_since = None
+            self._outdoor_source_seen = None
+            self._outdoor_lost_alerted = False
+            return
+        if self._outdoor_missing_since is None:
+            self._outdoor_missing_since = now
+        title = "🏕 Scout Hut – No outdoor temperature"
+        if source is not None:
+            if source != self._outdoor_source_seen:
+                self._outdoor_source_seen = source
+                self._outdoor_lost_alerted = False
+                self.audit.record(
+                    "outdoor_fallback",
+                    now,
+                    weather=configured,
+                    source=source,
+                    outdoor=self._weather_temperature(source),
+                )
+                persistent_notification.async_create(
+                    self.hass,
+                    f"{configured} has stopped reporting a temperature, so the "
+                    f"outdoor reading is coming from {source}. Check the weather "
+                    "integration in Settings → Devices & services.",
+                    title=title,
+                    notification_id=NOTIFY_OUTDOOR_LOST,
+                )
+            return
+        if self._outdoor_lost_alerted:
+            return
+        minutes = (now - self._outdoor_missing_since).total_seconds() / 60
+        if minutes < OUTDOOR_LOST_ALERT_MINUTES:
+            return
+        self._outdoor_lost_alerted = True
+        self.audit.record("outdoor_lost", now, weather=configured, minutes=round(minutes, 1))
+        message = (
+            f"{configured} has not reported an outdoor temperature for "
+            f"{minutes / 60:.0f} h. Until it does, pre-heats are sized as if it were "
+            "5 °C outside and the warm-up and cool-off learning is paused. Check "
+            "the weather integration in Settings → Devices & services."
+        )
+        persistent_notification.async_create(
+            self.hass, message, title=title, notification_id=NOTIFY_OUTDOOR_LOST
+        )
+        await self._push_companion(
+            title, message, icon="mdi:weather-cloudy-alert", channel="Scout Hut alerts"
+        )
 
     def _mapped_fault(self) -> bool:
         """The Shelly-published fault boolean, when mapped and readable."""

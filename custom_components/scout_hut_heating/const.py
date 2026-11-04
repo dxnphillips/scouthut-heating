@@ -251,7 +251,11 @@ NUMBER_DEFS: dict[str, tuple[float, float, float, float, str | None]] = {
     # start earlier and run closer to fully mixed than the generic 3/1
     # practice, still within the documented band (Reznor 2-3 °C rule,
     # CaptiveAire 0.5-1 °C hysteresis).
-    "fan_dt_on": (0.5, 10, 0.5, 2, "°C"),
+    # Start gap 1.5 (v1.51.1): the hall rests ~0.6 above its probes with
+    # nothing running (27 nights, Oct-Nov 2026), so 1.5 is a ceiling step plus
+    # about a degree of real pooling; 0.5 started the fans on every heating
+    # episode and 2.0 missed some of it.
+    "fan_dt_on": (0.5, 10, 0.5, 1.5, "°C"),
     "fan_dt_off": (0, 5, 0.5, 0.5, "°C"),
     # Anti-short-cycle timers.
     "fan_min_run_minutes": (0, 60, 1, 10, "min"),
@@ -504,3 +508,4 @@ NOTIFY_HEATERS_OFFLINE = {
 }
 NOTIFY_HEATER_SILENT = "scout_heater_silent"
 NOTIFY_PROBE_IMPLAUSIBLE = "scout_probe_implausible"
+NOTIFY_OUTDOOR_LOST = "scout_outdoor_lost"
