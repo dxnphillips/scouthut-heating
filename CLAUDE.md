@@ -23,7 +23,7 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 812
+  a fully wired controller). Every behaviour change ships with tests. 817
   passing as of 2026-11-04.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
@@ -3636,6 +3636,35 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   arrive short again and the hall runs on three heaters. The Q2 rule (raise the
   cap on persistent shortfall at the cap) waits for tonight's
   `booking_start.rooms` — and the gents plateau question for v1.51.1's trace.
+- **That booking, read (2026-11-04 19:00Z export, still v1.51.0; one more
+  v1.51.1 fix).** The hall arrived: its three live probes went 11.5 → 19.0 in
+  207 min (the `warmup_sample` closed `reached_target` at 16:57Z, 33 min early
+  on the capped 240) and read 19.33 at 17:25Z (`last_lead_calc.indoor`). But
+  `booking_start` said **average 18.75, shortfall 0.25, coldest 17.0**, and
+  `booking_end` `peak_over` 0.0: they read the room without the freshness
+  filter, so hall_left's frozen 17.0 (silent since 11-03 18:07Z) was in them,
+  as it was in the trace `floor` / `hall_coldest` (17.0 flat for four hours),
+  the condensation watch, the drive's zone average (the 17:16Z easing engaged
+  on 18.5 with the live probes at ~19.2) and the cool-off reading (a value
+  that never falls damps the measured loss — the cold-arrival direction). (6)
+  **`_probe_dark`**: a heater silent on a trusted clock past the stale window is
+  left out of `_zone_climate_temps`, `_floor_temp`, `_room_reading_members` and
+  the drive's zone average whatever the caller asks; it is still driven. No
+  clock, no change. Tests in `tests/test_silent_heater_readings.py`. This
+  supersedes Q18's "the fan ΔT reference still averages the frozen probe" (the
+  fan reference already passed the stale window, so it never did). Same
+  session: the rooms at 17:30Z read kitchen 18.5, gents 17.0, ladies 17.5 after
+  the full 240 min from 11.5–12.5, and by the 18:48Z alarm kitchen 19.0,
+  gents 18.0, ladies 18.0 with the ladies' panel at **84 °C** — five hours flat
+  out to reach 18, the decision rule's capacity/soak wall for the toilets
+  (owner's call: a toilet target of 18, a longer room cap, or an eco floor on
+  booking days). The front fire door stood open 17:52–18:17Z (`opening`, hall
+  iced) and the live hall fell to 18.3 by the 18:30Z end. Every warm-up sample
+  (hall, three rooms) was rejected `mild` for want of an outdoor reading, now
+  ~39 h lost; the gents also opened a sample at the 18:30Z booking end and
+  closed it at the alarm (fixes 3 and 5 both stop that). Empty-pre-heat reverse
+  fans cycled seven times on the owner's `fan_dt_on` 0.5 / `fan_dt_off` 0.0
+  (on at ~0.55, off at ~−0.1, ~20–35 min runs at 54 W): noted, not changed.
 
 ## Architecture pointers
 

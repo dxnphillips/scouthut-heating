@@ -220,7 +220,20 @@ reconciler, and they change how several entries above should be read:
   every heater unavailable for six hours and would have raised eight of these
   on top of `heaters_offline`), and an alerted heater is held — not called
   heard — while it is unreachable or its clock is briefly untrusted after a
-  reload. Diagnostics: `state.heaters_silent`.
+  reload. Diagnostics: `state.heaters_silent`. **A proven-silent heater is out
+  of every room reading (v1.51.1, `_probe_dark`):** once its trusted clock has
+  stood past the Rointe stale window (120 min) its reading is the value it held
+  when it stopped talking, so `_zone_climate_temps`, `_floor_temp` and
+  `_room_reading_members` leave it out whether or not the caller asked for
+  freshness, and the drive leaves it out of the zone average (it is still
+  driven, harmlessly). The heat gate already dropped it; until then the
+  arrival and end records, the overshoot peak, the trace, the condensation
+  watch, the approach hold, the coast band and the cool-off reading all
+  counted it. Field 2026-11-04: hall_left silent since 18:07Z the day before
+  at 17.0, and `booking_start` said the hall arrived 0.25 short when its three
+  live probes averaged 19.33; a cool-off on such a reading under-reads the
+  loss (the cold-arrival direction). Without a trusted clock a flat value may
+  be a still room, so nothing changes on such an install.
 - **A hall probe that cannot be the room is left out of it (v1.50.6)** —
   `_hall_implausible_probes`: with three or more hall probes readable, one
   well under their median (the drive's own sanity rule at first; see the

@@ -1721,7 +1721,7 @@ class ScoutController:
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            if climate in implausible:
+            if climate in implausible or self._probe_dark(climate):
                 continue
             if stale_min is not None and self._probe_frozen(climate, stale_min):
                 continue
@@ -1787,6 +1787,8 @@ class ScoutController:
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
             if climate in implausible or st.attributes.get("current_temperature") is None:
+                continue
+            if self._probe_dark(climate):
                 continue
             members.add(climate)
         return frozenset(members)
@@ -2075,6 +2077,25 @@ class ScoutController:
         silent that long on a trusted sync clock, else unchanged that long?"""
         stale = self._probe_silent_minutes(climate)
         return stale is not None and stale >= minutes
+
+    def _probe_dark(self, climate: str) -> bool:
+        """Has this heater been PROVEN silent — no upload on its trusted sync
+        clock for the Rointe stale window (v1.51.1)?
+
+        Its reading is then a value it held when it stopped talking, not the
+        room, and it is left out of every room reading, not only the warm-enough
+        decisions that already drop it. Field 2026-11-04: hall_left silent since
+        18:07Z the day before, its reading stuck at 17.0, left out of the gate
+        but counted in `booking_start` (the hall reported 0.25 short when its
+        three live probes averaged ~19.3), `booking_end`, the overshoot peak,
+        the trace's floor and cold end, the drive's zone average that sets the
+        approach hold and the coast band, and the cool-off reading, where a
+        value that never falls under-reads the loss — the cold-arrival
+        direction. Only a trusted clock can say this: without one a flat value
+        may simply be a still room, so nothing changes on such an install.
+        """
+        age = self._sync_age_minutes(climate)
+        return age is not None and age >= self._rointe_stale_min()
 
     @staticmethod
     def _iso_naive(stamp: datetime | None) -> str | None:
@@ -6166,10 +6187,14 @@ class ScoutController:
             # here, so it works uniformly for all three zones (hall/office/shared).
             # A probe the sanity rule rejects is left out of the average too — a
             # frozen-low reading would otherwise hold the average under the line
-            # while its siblings are already at target (field 2026-09-16).
+            # while its siblings are already at target (field 2026-09-16). So is
+            # a heater proven silent (v1.51.1): it is still driven, harmlessly,
+            # but the value it last uploaded is not the room.
             sane_vals = [
-                v for v in readable
-                if median is None or v >= median - DRIVE_PROBE_SANE_BELOW
+                v for c, v in probes.items()
+                if v is not None
+                and not self._probe_dark(c)
+                and (median is None or v >= median - DRIVE_PROBE_SANE_BELOW)
             ]
             zone_avg = sum(sane_vals) / len(sane_vals) if sane_vals else None
             near_target = zone_avg is not None and zone_avg >= target - DRIVE_APPROACH_BAND
@@ -6775,8 +6800,9 @@ class ScoutController:
             st = self.hass.states.get(climate)
             if st is None or st.state in ("unavailable", "unknown"):
                 continue
-            # A probe reading far below its siblings is broken, not cold (v1.50.6).
-            if climate in implausible:
+            # A probe reading far below its siblings is broken, not cold (v1.50.6);
+            # one whose heater has been proven silent holds an old value (v1.51.1).
+            if climate in implausible or self._probe_dark(climate):
                 continue
             # Freshness by VALUE (see _probe_frozen): the Rointe entity's
             # timestamps advance every poll whether or not the device synced.
