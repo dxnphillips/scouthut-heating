@@ -187,6 +187,7 @@ def test_accepted_warmup_sample_is_audited_with_its_inputs():
     _outdoor(hass, 5)  # cold: warm-up learning only folds in cold conditions
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"  # only a real pre-heat is sampled
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     # Climb 18 -> 22 in 1 °C/30-min steps.
     for t in (19, 20, 21, 22):
@@ -218,6 +219,7 @@ def test_rejected_warmup_sample_is_audited_as_rejected():
     _outdoor(hass, 5)  # cold, so the rejection is the small rise, not the mild gate
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     advance(ctrl, 20)
     _hall_temp(hass, 18.4)  # too small a rise to teach anything
@@ -242,6 +244,7 @@ def test_warmup_sample_records_the_raw_end_reading_and_the_clamped_rise():
     _outdoor(hass, 5)
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()  # start at 18
     advance(ctrl, 120)
     _hall_temp(hass, 24)  # the catch-up lands 2 °C over target
@@ -270,6 +273,7 @@ def test_warmup_sample_records_the_average_fan_wattage():
     _outdoor(hass, 5)  # cold: warm-up learning only folds in cold conditions
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()  # sample starts
     ctrl._update_warmup_learning()  # one mid-warm-up tick
     advance(ctrl, 120)
@@ -291,6 +295,7 @@ def _run_warmup(outdoor_temp):
     _outdoor(hass, outdoor_temp)
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     for t in (19, 20, 21, 22):
         advance(ctrl, 30)
@@ -331,6 +336,7 @@ def test_warmup_with_no_outdoor_reading_is_not_learned():
     _hall_temp(hass, 18)  # no _outdoor() call -> weather entity unset -> None
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
     ctrl._update_warmup_learning()
     for t in (19, 20, 21, 22):
         advance(ctrl, 30)

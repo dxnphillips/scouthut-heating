@@ -222,6 +222,7 @@ def _start_preheat(ctrl):
     """Put the zone into comfort the way a pre-heat window does."""
     ctrl.applied[ZA] = PRESET_COMFORT
     ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = "preheat"
+    ctrl._preset_entered_at[ZA] = ctrl._now()
 
 
 def test_zone_lead_uses_room_and_weather():
@@ -317,6 +318,7 @@ def test_a_boost_or_occupancy_climb_is_not_sampled():
         hass.states.set(E["weather"], "cloudy", {"temperature": 5})
         ctrl.applied[ZA] = PRESET_COMFORT
         ctrl._preset_reason[ZA] = ctrl._preset_entry_reason[ZA] = reason
+        ctrl._preset_entered_at[ZA] = ctrl._now()
         ctrl._update_warmup_learning()
         assert ctrl._warmup_start[ZA] is None, reason
 

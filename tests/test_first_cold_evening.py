@@ -24,9 +24,11 @@ from scout_testkit import (
     E,
     PRESET_COMFORT,
     ZA,
+    advance,
     booking,
     make_controller,
     motion,
+    run,
     set_registry,
 )
 
@@ -117,6 +119,7 @@ def _gents_in_preheat_comfort(ctrl, hass, live_reason):
     ctrl._numbers["shared_comfort_temp"].native_value = 19.0
     ctrl.applied["gents"] = PRESET_COMFORT
     ctrl._preset_entry_reason["gents"] = "preheat"
+    ctrl._preset_entered_at["gents"] = ctrl._now()
     ctrl._preset_reason["gents"] = live_reason
 
 
@@ -132,6 +135,29 @@ def test_no_sample_opens_when_the_booking_has_ended():
 def test_a_sample_still_opens_on_a_real_pre_heat():
     ctrl, hass = make_controller()
     _gents_in_preheat_comfort(ctrl, hass, "preheat")
+    ctrl._update_warmup_learning()
+    assert ctrl._warmup_start["gents"] is not None
+
+
+def test_a_restart_mid_pre_heat_opens_no_sample_on_a_room_already_heating():
+    # The restart re-applies comfort; inside the 25-min startup grace no sample
+    # opens, and once it has passed the climb is half done, the panels hot.
+    ctrl, hass = make_controller()
+    _gents_in_preheat_comfort(ctrl, hass, "preheat")
+    ctrl.applied["gents"] = None
+    run(ctrl._async_set_preset("gents", PRESET_COMFORT))
+    assert ctrl._preset_entry_reason["gents"] == "preheat"
+    advance(ctrl, 26)
+    ctrl._update_warmup_learning()
+    assert ctrl._warmup_start["gents"] is None
+
+
+def test_a_sample_opens_on_the_tick_after_the_pre_heat_starts():
+    ctrl, hass = make_controller()
+    _gents_in_preheat_comfort(ctrl, hass, "preheat")
+    ctrl.applied["gents"] = None
+    run(ctrl._async_set_preset("gents", PRESET_COMFORT))
+    advance(ctrl, 1)
     ctrl._update_warmup_learning()
     assert ctrl._warmup_start["gents"] is not None
 

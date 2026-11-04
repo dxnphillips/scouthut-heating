@@ -23,8 +23,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 804
-  passing as of 2026-11-02.
+  a fully wired controller). Every behaviour change ships with tests. 812
+  passing as of 2026-11-04.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
   `fans_follow_state`) were removed entirely — **fan direction is now fully
@@ -3600,6 +3600,42 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   phase; the leak they predict while heating a cold-soaked room is much higher
   (the gents' plateau implies ~20 %/h), the two-lump question again. Tests in
   `tests/test_first_cold_evening.py`.
+- **The weather went quiet and learning stopped with it (2026-11-04 13:35Z
+  export, v1.51.0 still deployed; two more fixes in v1.51.1).** The configured
+  weather entity has given no temperature since ~04:00Z on 11-03: from 04:59Z
+  every cool-off (31 by the export) was rejected `no_outdoor`, every lead was
+  sized for 5 °C, and tonight's samples would all read `mild` and be dropped —
+  with nothing in the log but the rejections. (4) **`_outdoor_source`** falls
+  back to any other weather entity with a temperature (`weather.forecast_home`
+  first, °F converted; the seasonal forecast follows it), `outdoor_fallback` /
+  `outdoor_lost` (60 min, notification + push) / `outdoor_restored`,
+  `state.outdoor`; tests in `tests/test_outdoor_watch.py`. (5) **A warm-up
+  sample opens only within 5 min of the comfort entry**
+  (`WARMUP_OPEN_WINDOW_MIN`, `_preset_entered_at`): the 25-min startup grace
+  only delayed a restart's sample, which would then open half-way up the climb
+  on hot panels and read the bulk alone (too fast, no allowance) — the case if
+  v1.51.1 is deployed mid-pre-heat. **Tuesday 11-03, sal-vation eco booking
+  17:45–20:00Z (target 16):** pre-heats ladies 14:50Z (lead 175, from 12.5),
+  gents 15:00Z (165, 12.0), kitchen 15:10Z (158, 12.5), hall 15:35Z (133,
+  12.62); at the start the rooms read 15.5 / 16.0 / 16.0 and the hall 15.38
+  (0.62 short). From 16:32Z three hall heaters sat at their own 16 (`hall_fire`
+  1) while the cold end read 13.0 for two hours, holding the average flat at
+  15.38; the class lifted it to 16.88 (`booking_warm` ice 18:23Z, relit
+  19:23Z, `peak_over` 0.88). **Eco pre-heats teach nothing** — the sampler is
+  comfort-only (an eco pre-heat's reason is `booking_eco`, and it is not
+  driven, so its finish stalls half a degree under, e.g. the kitchen at 15.5
+  for 90 min); left so on purpose: mixing undriven eco finishes into the
+  comfort line would bias the allowance. If comfort climbs stay too scarce to
+  fit, the lever is driving eco bookings like comfort and then sampling them.
+  **hall_left went dark again at 18:07:10Z** (`heater_silent` 21:07Z, reading
+  17.0, panel 43): the 10-13 silence began at 18:02Z, also mid sal-vation
+  booking. Owner-side: ask the class whether that radiator is switched off at
+  the wall during it. **Today's 17:30Z booking:** all four pre-heats opened at
+  13:30Z pinned at the 240 cap; uncapped they want hall 241, kitchen 274, gents
+  276, ladies 290 (at the assumed 5 °C, v1.51.0 gains), so the rooms will
+  arrive short again and the hall runs on three heaters. The Q2 rule (raise the
+  cap on persistent shortfall at the cap) waits for tonight's
+  `booking_start.rooms` — and the gents plateau question for v1.51.1's trace.
 
 ## Architecture pointers
 

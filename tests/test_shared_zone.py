@@ -364,6 +364,7 @@ def test_a_room_pre_heat_teaches_that_rooms_gain():
     _room_temps(hass, 15.0, 14.0, 15.0)
     ctrl.applied["gents"] = PRESET_COMFORT
     ctrl._preset_entry_reason["gents"] = ctrl._preset_reason["gents"] = "preheat"
+    ctrl._preset_entered_at["gents"] = ctrl._now()
     ctrl._update_warmup_learning()
     assert ctrl._warmup_start["gents"] is not None
     advance(ctrl, 80)

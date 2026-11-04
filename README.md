@@ -436,8 +436,10 @@ what makes the learning season-proof: a July cool-off and a January one
 teach the same fabric constant, only the gap differs, so the first cold
 snap of autumn is predicted correctly instead of waiting for the model to
 re-learn winter (measured here in July 2026: hall ~10 %/h, insulated office
-~4.5 %/h; when the weather entity is unreadable the prediction assumes a
-cold 5 °C outside and errs warm).
+~4.5 %/h; when the weather entity stops reporting, another weather entity in
+Home Assistant is used if there is one (`weather.forecast_home` first, v1.51.1),
+and with none the prediction assumes a cold 5 °C outside and errs warm, the
+learning pauses, and after an hour a notification and a push say so).
 
 *Coast on free heat (optional, hall only).* The **Coast on free heat (skip
 pre-heat)** switch (default **off**) is the mirror of optimum start: during the

@@ -504,3 +504,4 @@ NOTIFY_HEATERS_OFFLINE = {
 }
 NOTIFY_HEATER_SILENT = "scout_heater_silent"
 NOTIFY_PROBE_IMPLAUSIBLE = "scout_probe_implausible"
+NOTIFY_OUTDOOR_LOST = "scout_outdoor_lost"

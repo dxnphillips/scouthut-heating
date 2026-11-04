@@ -95,7 +95,15 @@ class FakeStates:
         return self._d.get(entity_id)
 
     def set(self, entity_id, state, attrs=None):
-        self._d[entity_id] = FakeState(state, attrs)
+        st = FakeState(state, attrs)
+        st.entity_id = entity_id
+        self._d[entity_id] = st
+
+    def async_all(self, domain=None):
+        return [
+            st for eid, st in self._d.items()
+            if domain is None or eid.split(".", 1)[0] == domain
+        ]
 
 
 class FakeServices:
@@ -372,6 +380,10 @@ def advance(ctrl, minutes):
         ctrl.water_last_hot = ctrl.water_last_hot - delta
     if ctrl.water_hygiene_until is not None:
         ctrl.water_hygiene_until = ctrl.water_hygiene_until - delta
+    for zone, ts in ctrl._preset_entered_at.items():
+        ctrl._preset_entered_at[zone] = ts - delta
+    if ctrl._outdoor_missing_since is not None:
+        ctrl._outdoor_missing_since = ctrl._outdoor_missing_since - delta
 
 
 def set_preset_state(hass, entity_id, preset):
