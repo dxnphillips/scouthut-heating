@@ -279,7 +279,13 @@ this priority (highest wins):
    Boost offset** (`boost_offset`, default +2 °C) for the boost duration. A boost
    is someone saying "still too cold", so it must reach *above* the standing
    comfort setpoint — otherwise pressing it while already at comfort would do
-   nothing. Reverts to plain comfort when the boost expires.
+   nothing. Reverts to plain comfort when the boost expires. **It also ends when
+   the building is armed and left** (v1.51.2): an away arm on the zone's panel
+   with no booking or pre-heat running ends a boost that was pressed in an open
+   building (`boost_cancelled`, reason `alarm`). A boost pressed from the app
+   into an already-armed building is a pre-warm for someone on the way and is
+   kept until they disarm. Every settled arm and disarm is now in the audit
+   (`alarm_change`).
 
    *Booking hold (anticipatory).* During a running booking the hall's heating
    comes on, and stays on, a little **above** comfort so it can't dip below it
@@ -433,7 +439,11 @@ zone's **learned heat-loss constant** (the % of the indoor–outdoor gap lost
 per hour, measured whenever the room coasts unheated) predicts how much
 further it will cool before the pre-heat begins — Newton cooling toward the
 outdoor temperature, never below the 7 °C anti-frost floor — so a booking
-many hours away still gets a long-enough lead. Normalising by the gap is
+many hours away still gets a long-enough lead. The room cools only until its
+pre-heat begins (the gap less the lead), so the window opens when the lead
+from the room as it is now covers the gap (v1.51.2; until then the room was
+cooled across the whole gap, as if it kept cooling while being heated, and the
+hall's pre-heats arrived 40–86 min early in the first week of November). Normalising by the gap is
 what makes the learning season-proof: a July cool-off and a January one
 teach the same fabric constant, only the gap differs, so the first cold
 snap of autumn is predicted correctly instead of waiting for the model to
@@ -616,6 +626,15 @@ restarts) of everything it decides and learns:
   (frozen probe, stale relight) judge silence, not a flat value. Each
   heater's `sync_at` / `sync_clock` / `sync_age_min` are in the export and the
   trace carries `hall_sync`, the stalest hall heater's upload age.
+- **A heater back from silence is sent our settings again (v1.51.2)** — a
+  heater that went dark keeps whatever it last received; the writes made
+  while it was silent were stored by the cloud, not delivered. On 2026-11-05
+  hall_left came back after 41.6 h on a setpoint we had not sent, and nothing
+  re-sent ours until the hall next changed preset an hour later. Now
+  `heater_heard` re-sends its zone's preset and re-lands the drive's value on
+  it in the same tick (`resent` names the zone). A proven-silent heater's
+  frozen value is also left out of the drive's sanity median, so it cannot
+  make honest cold probes look insane.
 - **`booking_start` / `booking_end`** — the ground truth: the room average
   against the target at the moment each booking begins (the coldest reading
   beside it) (a positive

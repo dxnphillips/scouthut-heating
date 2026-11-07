@@ -23,8 +23,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 822
-  passing as of 2026-11-04.
+  a fully wired controller). Every behaviour change ships with tests. 836
+  passing as of 2026-11-07.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
   `fans_follow_state`) were removed entirely — **fan direction is now fully
@@ -3688,6 +3688,71 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   they press Pause and presses continue at 1.5, go to 2.0 (all three
   pre-Pause starts were under it). Supersedes Q1's "raise `fan_dt_on` to ~1.5"
   rule (done). Tests in `tests/test_fan_thresholds.py`.
+- **The week after (2026-11-07 08:57Z export, v1.51.0 still deployed; three
+  fixes in v1.51.2).** The export landed 15 s after the Rointe token expired:
+  `heaters_offline` on all three zones at 08:57:41Z, exactly 168 h after the
+  10-31 08:57Z deploy (the auto-reload is due 10 min later; the next export
+  shows whether `rointe_reload` / `rointe_reload_recovered` follow). The
+  weather entity is still dead, so every cool-off since 11-03 (108 in this
+  export) was rejected `no_outdoor` and all 14 warm-ups `mild`: nothing has
+  learned for four days, and only v1.51.1's fallback (plus a second weather
+  entity) restarts it. hall_left spoke again at 11-05 11:41Z after 41.6 h. Three
+  defects:
+  (1) **A Boost outlived its people** (`_update_alarm_watch`). Boost sits above
+  the alarm in the ladder; on 11-06 one pressed at 19:37:53Z ran on after the
+  20:30Z booking end with the hall empty from ~20:34Z (trace `occupied` false
+  at 20:49Z), all four hall radiators firing at stair +1.0 (hall to 20.0, ceiling
+  20.9) and the three rooms driven toward 21, until it ran out at 21:07:53Z and
+  the alarm's ice landed on the next tick (10-23 06:33Z had the same shape).
+  The arm time itself was in no event. Now an away arm on the zone's panel with
+  no booking or pre-heat window active cancels a boost (`boost_cancelled`
+  reason `alarm`), except one pressed while the zone was already away-armed
+  (a remote pre-warm, `_boost_remote`, persisted, kept until a disarm is seen);
+  a running booking keeps its boost (the owner's "if it's booked we're
+  expecting them to return") until it ends. Settled panel changes are audited
+  as `alarm_change`. Tests in `tests/test_boost_alarm.py`.
+  (2) **A heater back from silence ran on its own setpoint.** At 11-05 11:41:28Z
+  hall_left uploaded a setpoint we had not sent and `drive_setpoint_rejected`
+  fired that tick; nothing re-sent ours (`_drive_push` writes only a changed
+  value; the preset had not changed) until the hall left comfort at 12:48Z. So
+  the Q18 assumption "the cloud takes the write and the device will pick it up
+  when it returns" is wrong: writes made while a heater is dark are not
+  delivered. `heater_heard` now sets the zone's re-send flag and drops the
+  drive's pushed record, so preset and drive value are landed again in the
+  same tick (`resent`). The drive's sanity median also leaves out a
+  proven-silent heater: at 11:29Z hall_left's frozen 17.0 made the median 15.5
+  and two honest probes at 11.0 were withdrawn as insane. Tests in
+  `tests/test_heard_heater.py`.
+  (3) **The pre-heat lead decayed the room through its own pre-heat**
+  (`preheat_start_temp`). `required_lead_minutes` cooled the room across the
+  whole gap to the event, i.e. as if it kept cooling while being heated; its
+  docstring called that "a few minutes" of extra lead. At a winter k of ~10 %/h
+  over 3–4 h it was about an hour: 11-06 the hall opened at 14:05Z for 17:30Z
+  on a predicted 11.37 with the room at 14.12 (lead 206; from the room as it
+  was, 149) and reached 19.0 at 16:04Z, 86 min early; the kitchen 107 min
+  early, then iced on `booking_warm`, cooled, and started its booking at 17.5.
+  The room now cools only over the idle time before the pre-heat begins (gap
+  less lead, bisection), so the window opens when the lead from the current
+  reading covers the gap; a far event still reads the cooling to come.
+  Replayed (same gains, the climbs as observed): hall 11-04 ~3 min late, 11-05
+  ~9 min late (~0.2 short), 11-06 ~38 min early, against 33 / 40 / 86 early
+  before. **The cost is in the toilets:** their gains (21–22) are too fast and
+  have not learned since the weather died, so they open 40–70 min later and
+  arrive ~0.5 colder (gents 18.0 not 18.5 on 11-06) until a slow climb folds
+  (v1.51.1 folds it at full weight); deploy with the weather working.
+  Tests in `tests/test_preheat.py`.
+  **Seen, not changed.** Three Pause presses: 11-05 17:55Z (16 min after a Boost,
+  fans running 3.4 h, average 19.25); 11-05 19:20:26Z, **4 min after the fans
+  started** (19:16:19Z, dt 2.02) on a room at 15.4 average / 13.5 coldest,
+  followed 18 s later by Boost; 11-06 19:01Z (fans running 4.7 h, average 19.5,
+  ceiling 20.1), then Boost at 19:37Z when it had fallen to 18.75. The 19:20Z
+  one is the clearest case yet that Pause is being used to stop the fans; the
+  start (2.02) would still happen at the new 1.5 line. The 17:55Z Pause held
+  through the 18:00–19:15Z booking: a hall heated from 13 that afternoon fell
+  19.25 → 15.38 in 75 min (fast phase of a cold-soaked fabric), and the next
+  booking at 19:30Z started 3.75 short. Rooms at booking starts: 11-05 kitchen
+  19.0 / gents 17.5 / ladies 17.5, then 19.5 / 18.5 / 18.5; 11-06 17.5 / 18.5 /
+  19.0. The sal-vation classes ran `peak_over` 0.88 and 1.12 against 16.
 
 ## Architecture pointers
 

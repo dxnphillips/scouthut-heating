@@ -215,14 +215,19 @@ def required_lead_minutes(
     [MIN_LEAD, max_minutes] — the user's pre-heat slider is the safety cap.
 
     When the event start is known (``gap_hours`` from now) and a heat-loss
-    constant has been learned, the room's temperature at pre-heat time is
-    predicted by Newton cooling toward the outdoor temperature
-    (``predicted_room_temp``), and the lead sized for that predicted deficit.
-    Decaying across the FULL gap (rather than gap minus the eventual lead)
-    slightly over-predicts the cooling — deliberately: the error is a few
-    minutes of extra lead in the warm direction, and it keeps the expression
-    closed-form. The prediction never assumes a drop below the anti-frost
-    floor, which the heating holds even when "off".
+    constant has been learned, the room's temperature when the pre-heat begins
+    is predicted by Newton cooling toward the outdoor temperature
+    (``predicted_room_temp``) over the idle time before it begins — the gap
+    LESS the lead, solved for (``preheat_start_temp``) — and the lead sized
+    for that deficit. Once the gap has come down to the lead there is no idle
+    time left: the climb starts from the room as it is now, which is when the
+    window opens. Until v1.51.2 the room was decayed across the WHOLE gap,
+    i.e. as if it kept cooling for the length of the pre-heat that was in fact
+    heating it; that was called "a few minutes" of extra lead, and at a winter
+    k of ~10 %/h over a 3-4 h gap it was an hour (field 2026-11-06: the hall's
+    window opened at 14:05Z for 17:30Z on a predicted 11.37 with the room at
+    14.12, and it was at 19.0 by 16:04Z). The prediction never assumes a drop
+    below the anti-frost floor, which the heating holds even when "off".
 
     The lead itself is the one-node heat balance (module docstring): the
     radiators' gross gain (``60 / rate`` °C/h) minus the fabric leak over the
@@ -235,15 +240,69 @@ def required_lead_minutes(
     """
     if indoor is None:
         return max_minutes
-    predicted = predicted_room_temp(indoor, outdoor, gap_hours, cool_k)
-    deficit = target - predicted
+    start = preheat_start_temp(
+        rate=rate, indoor=indoor, target=target, outdoor=outdoor,
+        max_minutes=max_minutes, gap_hours=gap_hours, cool_k=cool_k, tail=tail,
+    )
+    return _lead_from(start, rate, target, outdoor, max_minutes, cool_k, tail)
+
+
+def _lead_from(
+    start: float,
+    rate: float,
+    target: float,
+    outdoor: float | None,
+    max_minutes: float,
+    cool_k: float,
+    tail: float,
+) -> float:
+    """The heat-balance lead for a climb that begins at ``start``."""
+    deficit = target - start
     if deficit <= 0:
         return min(MIN_LEAD, max_minutes)
-    net = net_gain_c_per_h(rate, predicted, target, outdoor, cool_k)
+    net = net_gain_c_per_h(rate, start, target, outdoor, cool_k)
     if net <= 0:
         return max_minutes
     lead = 60.0 * (deficit + tail) / net
     return max(min(lead, max_minutes), min(MIN_LEAD, max_minutes))
+
+
+def preheat_start_temp(
+    *,
+    rate: float,
+    indoor: float,
+    target: float,
+    outdoor: float | None,
+    max_minutes: float,
+    gap_hours: float | None,
+    cool_k: float,
+    tail: float = TAIL_SEED_C,
+) -> float:
+    """The room's temperature when its pre-heat will begin (v1.51.2).
+
+    The pre-heat begins ``lead`` minutes before the event, so the room cools
+    idle for ``gap − lead``, and the lead itself depends on how far it has
+    cooled: ``lead = f(cooled over gap − lead)``. ``f`` falls as the idle time
+    shrinks, so there is one answer, found by bisection. If the lead from the
+    room as it is now already covers the gap, there is no idle time and the
+    answer is ``indoor``; that is exactly when the window opens, so the
+    opening is judged on the room as it is, and a far-off event still reads a
+    longer lead for the cooling still to come.
+    """
+    if gap_hours is None or gap_hours <= 0 or cool_k <= 0:
+        return indoor
+    gap_min = gap_hours * 60.0
+    if _lead_from(indoor, rate, target, outdoor, max_minutes, cool_k, tail) >= gap_min:
+        return indoor
+    lo, hi = 0.0, gap_min
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        cooled = predicted_room_temp(indoor, outdoor, (gap_min - mid) / 60.0, cool_k)
+        if _lead_from(cooled, rate, target, outdoor, max_minutes, cool_k, tail) > mid:
+            lo = mid
+        else:
+            hi = mid
+    return predicted_room_temp(indoor, outdoor, (gap_min - hi) / 60.0, cool_k)
 
 
 def predicted_room_temp(
