@@ -67,6 +67,7 @@ from .preheat import (
     learned_warmup,
     net_gain_c_per_h,
     predicted_room_temp,
+    preheat_start_temp,
     required_lead_minutes,
     updated_cooling_k,
     warmup_observed_rate,
@@ -590,6 +591,9 @@ ALARM_AWAY_STATES = frozenset({"armed_away", "armed_vacation"})
 # still), which the hall PIR cannot see. A positive "occupied" signal that keeps
 # a running booking at comfort instead of demoting to eco on motion-silence.
 ALARM_PRESENT_STATES = frozenset({"armed_night", "armed_home"})
+# Passing states a panel goes through on its way somewhere: not recorded as an
+# `alarm_change` (an arm is one event, an unavailable blip none).
+ALARM_UNSETTLED_STATES = frozenset({"arming", "pending", "unavailable", "unknown"})
 # Zones whose heaters the drive-to-target loop controls, and where their
 # climate entities are mapped. The shared zone is included so every heated room
 # is driven to its comfort target, not just the hall.
@@ -759,6 +763,14 @@ class ScoutController:
         self.opening_ice: dict[str, bool] = {ZONE_A: False, ZONE_B: False, "shared": False}
         self.manual_hold: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
         self.boost_until: dict[str, datetime | None] = {ZONE_A: None, ZONE_B: None}
+        # Was the zone already away-armed when its Boost was pressed (v1.51.2)?
+        # A boost pressed from the app into an armed building is a pre-warm for
+        # someone on the way, and an away arm must not end it; one pressed in an
+        # open building ends when the building is armed and left. Cleared the
+        # moment the zone is seen disarmed during the boost.
+        self._boost_remote: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
+        # Last settled state of each alarm panel, for the `alarm_change` audit.
+        self._alarm_seen: dict[str, str | None] = {}
         # Occupant "too warm, stop" cutout for the hall (radiators are locked,
         # so this is the only accessible way to kill the heat). Forces the hall
         # to ice — still frost-protected — above boost and bookings. No timer:
@@ -2279,7 +2291,8 @@ class ScoutController:
         eco temperature instead of comfort (the same target the reconciler
         will push when the event runs). gap_hours: time until the
         event starts, when known — the learned heat-loss rate then predicts
-        how much further the room will cool before the pre-heat begins.
+        how much further the room will cool before the pre-heat begins (over
+        the gap less the lead, not the whole gap, since v1.51.2).
         """
         target = self.number("hall_eco_temp") if eco else self._zone_target(zone)
         rate, rate_key = self._prediction_rate(zone)
@@ -2328,8 +2341,19 @@ class ScoutController:
         }
         if indoor is not None:
             # The heat-balance terms the lead came from, so the arithmetic that
-            # opened a window is readable straight off `preheat_start`.
-            predicted = predicted_room_temp(indoor, outdoor, gap_hours, loss_pct / 100)
+            # opened a window is readable straight off `preheat_start`:
+            # `predicted` is where the climb begins (the room as it is, once the
+            # window opens; v1.51.2).
+            predicted = preheat_start_temp(
+                rate=rate,
+                indoor=indoor,
+                target=target,
+                outdoor=outdoor,
+                max_minutes=self.number("preheat_minutes"),
+                gap_hours=gap_hours,
+                cool_k=loss_pct / 100,
+                tail=tail,
+            )
             self._last_lead_calc[zone]["predicted"] = round(predicted, 2)
             self._last_lead_calc[zone]["net_c_per_h"] = round(
                 net_gain_c_per_h(rate, predicted, target, outdoor, loss_pct / 100), 3
@@ -3423,6 +3447,7 @@ class ScoutController:
     async def async_boost(self, zone: str) -> None:
         minutes = self.boost_minutes()
         self.boost_until[zone] = self._now() + timedelta(minutes=minutes)
+        self._boost_remote[zone] = self._zone_alarm_away(zone)
         # A boost used to be visible only through the preset events it caused;
         # the press (and its expiry/cancel) are now first-class audit events.
         self.audit.record(
@@ -3441,7 +3466,7 @@ class ScoutController:
 
     async def async_cancel_boost(self, zone: str) -> None:
         if self.boost_until.get(zone) is not None:
-            self.audit.record("boost_cancelled", self._now(), zone=zone)
+            self.audit.record("boost_cancelled", self._now(), zone=zone, reason="button")
         self.boost_until[zone] = None
         await self.async_reconcile()
 
@@ -3503,6 +3528,7 @@ class ScoutController:
                 zone: until.isoformat() if until else None
                 for zone, until in self.boost_until.items()
             },
+            "boost_remote": dict(self._boost_remote),
             "manual_hold": dict(self.manual_hold),
             "hall_heating_paused": self.hall_heating_paused,
             # A fire hold must survive a restart: if HA reboots mid-fire the hut
@@ -3614,6 +3640,11 @@ class ScoutController:
             until = _dt((data.get("boost_until") or {}).get(zone))
             if until is not None and until > self._now():
                 self.boost_until[zone] = until
+                # A store from before v1.51.2 has no flag: keep the boost as the
+                # older code would have (an away arm does not end it).
+                self._boost_remote[zone] = bool(
+                    (data.get("boost_remote") or {}).get(zone, True)
+                )
             if (data.get("manual_hold") or {}).get(zone):
                 self.manual_hold[zone] = True
         self.hall_heating_paused = bool(data.get("hall_heating_paused", False))
@@ -4877,6 +4908,7 @@ class ScoutController:
         try:
             for name, step in (
                 ("motion", self._refresh_motion_from_states),
+                ("alarm_watch", self._update_alarm_watch),
                 ("probe_changes", self._track_probe_changes),
                 ("openings", self._evaluate_openings),
                 ("heaters_offline", self._update_heaters_offline),
@@ -5534,6 +5566,63 @@ class ScoutController:
                 self.water_on_since = self._now()
         else:
             self.water_on_since = None
+
+    def _update_alarm_watch(self) -> None:
+        """Audit each alarm panel's settled state changes, and end a Boost whose
+        building has been armed and left (v1.51.2).
+
+        `alarm_change` (panel, previous, state) is recorded when a panel moves
+        between settled states (disarmed, armed_away, armed_night, ...);
+        `arming`, `pending` and an unavailable blip are not settled and leave no
+        mark, so an arm is one event. Until now the arm time was invisible: the
+        alarm is below a Boost in the ladder, so the ice it causes only shows
+        once nothing above it holds.
+
+        A Boost sits above the alarm in the ladder so that one pressed from the
+        app into an armed building (someone warming the hall before they
+        arrive) is not cancelled by the arm it was pressed under. But a boost
+        pressed in an open building ran on after the group armed and left:
+        field 2026-11-06, pressed 19:37:53Z, booking over 20:30Z, the hall empty
+        from ~20:34Z, all four hall radiators firing with the stair at +1.0 and
+        the kitchen and toilets driven toward 21 until it ran out at 21:07:53Z,
+        when the alarm's ice landed on the next tick (10-23 06:33Z was the same
+        shape). So a boost ends when its zone's panel is away-armed with no
+        booking or pre-heat window active, unless it was pressed while already
+        armed; that exemption ends the first time the zone is seen disarmed.
+        Audited as `boost_cancelled` with reason `alarm`. A running booking
+        keeps its boost: if it is booked, the group is expected back (owner,
+        2026-10-24), and the boost then ends at the booking's end if the
+        building is still armed.
+        """
+        for panel, key in (("main", CONF_ALARM_MAIN), ("office", CONF_ALARM_OFFICE)):
+            entity_id = self.config.get(key)
+            state = self.hass.states.get(entity_id) if entity_id else None
+            value = state.state if state is not None else None
+            if value is None or value in ALARM_UNSETTLED_STATES:
+                continue
+            previous = self._alarm_seen.get(panel)
+            self._alarm_seen[panel] = value
+            if previous is not None and previous != value:
+                self.audit.record(
+                    "alarm_change", self._now(), panel=panel, previous=previous, state=value
+                )
+        for zone in (ZONE_A, ZONE_B):
+            if not self.boost_active(zone):
+                continue
+            if not self._zone_alarm_away(zone):
+                self._boost_remote[zone] = False
+                continue
+            if self._boost_remote.get(zone) or self._cal_active(zone):
+                continue
+            self.boost_until[zone] = None
+            self.audit.record(
+                "boost_cancelled",
+                self._now(),
+                zone=zone,
+                reason="alarm",
+                coldest=self._zone_room_temp(zone, coldest=True),
+                average=self._zone_room_temp(zone),
+            )
 
     def _expire_boosts(self) -> None:
         now = self._now()
@@ -6210,7 +6299,14 @@ class ScoutController:
             cap = min(target + offset, ROINTE_COMFORT_MAX)
             loss = self._drive_heatloss_frac(zone)
             probes = {c: self._heater_probe(c) for c in climates}
-            readable = sorted(v for v in probes.values() if v is not None)
+            # The sanity median leaves out a heater proven silent (v1.51.2): its
+            # frozen value is not the room. Field 2026-11-05 11:29Z: hall_front
+            # and hall_right read an honest 11.0, hall_back had jumped to 15.5
+            # and hall_left had sat at 17.0 for 41 h; the median of the four was
+            # 15.5, so the two cold ones were withdrawn "insane".
+            readable = sorted(
+                v for c, v in probes.items() if v is not None and not self._probe_dark(c)
+            )
             median = readable[len(readable) // 2] if readable else None
             # Soften the final approach: once the room AS A WHOLE (the average of
             # this zone's own heater probes — the signal the overshoot outran, not
@@ -7290,11 +7386,27 @@ class ScoutController:
         heard = [c for c in self._heaters_silent_since if c not in silent_now]
         for climate in heard:
             since = self._heaters_silent_since.pop(climate)
+            # A heater back from silence holds whatever it last received before
+            # it went dark: the writes made meanwhile were stored by the cloud,
+            # not delivered (v1.51.2). Field 2026-11-05 11:41:28Z: hall_left,
+            # 41.6 h dark, uploaded a setpoint we had not sent and the read-back
+            # flagged it that tick, but `_drive_push` only writes a CHANGED value
+            # and the zone's preset had not changed, so nothing re-sent ours
+            # until the zone next changed preset at 12:48Z. Re-send the zone's
+            # preset (the existing re-send path, below in this tick) and re-land
+            # the drive's value on this heater.
+            zones = [
+                z for z in (ZONE_A, ZONE_B, *self._rooms()) if climate in self._climates_of(z)
+            ]
+            for zone in zones:
+                self._zone_offline_apply[zone] = True
+            self._drive_pushed.pop(climate, None)
             self.audit.record(
                 "heater_heard",
                 now,
                 heater=climate,
                 minutes=round((now - since).total_seconds() / 60, 1),
+                resent=zones,
             )
         if not new and not heard:
             return

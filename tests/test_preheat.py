@@ -954,3 +954,72 @@ def test_latched_window_still_releases_when_the_event_goes_away(monkeypatch):
     monkeypatch.setattr(ctrl, "_async_calendar_events", _events_for([]))  # nothing ahead
     run(ctrl._async_refresh_calendars())
     assert ctrl.cal_window[ZA] is False
+
+
+# --- The room cools only until its pre-heat begins (v1.51.2) --------------------
+
+_NOV6 = dict(rate=16.74, target=19.0, outdoor=None, max_minutes=240, cool_k=0.1054, tail=1.0)
+
+
+def test_the_lead_does_not_decay_the_room_through_its_own_pre_heat():
+    # 2026-11-06 14:05Z: hall 14.12, event 205 min away. Decayed over the whole
+    # gap it read 11.37 and wanted 206 min, so the window opened; the room was
+    # at 19.0 by 16:04Z, 86 min early. Sized from where the climb really
+    # begins, 205 min out is not yet time.
+    from custom_components.scout_hut_heating.preheat import preheat_start_temp
+
+    old = required_lead_minutes(
+        indoor=predicted_room_temp(14.12, None, 205 / 60, 0.1054), **_NOV6
+    )
+    assert old >= 205  # what opened the window
+    lead = required_lead_minutes(indoor=14.12, gap_hours=205 / 60, **_NOV6)
+    assert lead < 205
+    # ~40 min idle first, not 205: 13.5, not 11.4.
+    assert preheat_start_temp(indoor=14.12, gap_hours=205 / 60, **_NOV6) > 13.4
+    # The window opens when the lead from the room as it is covers the gap.
+    now = required_lead_minutes(indoor=14.12, **_NOV6)
+    assert now == pytest.approx(149, abs=1)
+    assert required_lead_minutes(indoor=14.12, gap_hours=now / 60, **_NOV6) == pytest.approx(now)
+    assert required_lead_minutes(indoor=14.12, gap_hours=(now + 5) / 60, **_NOV6) < now + 5
+
+
+def test_a_far_event_still_reads_the_cooling_to_come():
+    near = required_lead_minutes(indoor=14.12, gap_hours=0, **_NOV6)
+    far = required_lead_minutes(indoor=14.12, gap_hours=8, **_NOV6)
+    assert far > near
+
+
+def test_the_window_opens_on_the_room_as_it_is(monkeypatch):
+    from homeassistant.util import dt as dt_util
+    from scout_testkit import run
+
+    ctrl, hass = make_controller()
+    for key, value in (
+        ("preheat_minutes", 240),
+        ("hall_comfort_temp", 19.0),
+        ("zone_a_heatloss_pct", 10.54),
+        ("zone_a_warmup_rate", 16.74),
+        ("zone_a_warmup_rate_fans", 16.74),
+        ("zone_a_warmup_tail", 1.0),
+        ("zone_a_warmup_tail_fans", 1.0),
+    ):
+        _set_rate(ctrl, key, value)
+    hass.states.set(E["weather"], "unavailable", {})
+    for climate in E["hall"]:
+        hass.states.set(climate, "heat", {"current_temperature": 14.12})
+    start = dt_util.now() + timedelta(minutes=205)
+    monkeypatch.setattr(
+        ctrl, "_async_calendar_events", _events_for([{"start": start.isoformat(), "summary": "x"}])
+    )
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is False
+    start = dt_util.now() + timedelta(minutes=148)
+    monkeypatch.setattr(
+        ctrl, "_async_calendar_events", _events_for([{"start": start.isoformat(), "summary": "x"}])
+    )
+    run(ctrl._async_refresh_calendars())
+    assert ctrl.cal_window[ZA] is True
+    (opened,) = [
+        e for e in ctrl.audit.to_list() if e["event"] == "preheat_start" and e["zone"] == ZA
+    ]
+    assert opened["predicted"] == pytest.approx(14.12, abs=0.01)
