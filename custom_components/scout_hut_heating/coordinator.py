@@ -593,6 +593,9 @@ ALARM_AWAY_STATES = frozenset({"armed_away", "armed_vacation"})
 ALARM_PRESENT_STATES = frozenset({"armed_night", "armed_home"})
 # Passing states a panel goes through on its way somewhere: not recorded as an
 # `alarm_change` (an arm is one event, an unavailable blip none).
+# A booking whose average starts more than this under its target has not
+# arrived, and the coast easing waits for it to reach target (v1.51.3).
+ARRIVED_SHORT_C = 0.25
 ALARM_UNSETTLED_STATES = frozenset({"arming", "pending", "unavailable", "unknown"})
 # Zones whose heaters the drive-to-target loop controls, and where their
 # climate entities are mapped. The shared zone is included so every heated room
@@ -769,6 +772,9 @@ class ScoutController:
         # open building ends when the building is armed and left. Cleared the
         # moment the zone is seen disarmed during the boost.
         self._boost_remote: dict[str, bool] = {ZONE_A: False, ZONE_B: False}
+        # A booking that started short of its target has not arrived (v1.51.3):
+        # no easing until its average reaches target. Cleared at the booking end.
+        self._arrived_short: dict[str, bool] = {}
         # Last settled state of each alarm panel, for the `alarm_change` audit.
         self._alarm_seen: dict[str, str | None] = {}
         # Occupant "too warm, stop" cutout for the hall (radiators are locked,
@@ -2773,7 +2779,17 @@ class ScoutController:
             # the empty pre-heat "occupied", the easing cut the elements at
             # 18.5 on a cold-soaked hall, and the booking started 0.62 short.
             # Inside the booking (the people there) it still eases as before.
-            if zone_avg < target and self._zone_pre_heating(zone):
+            # The same holds inside a booking that STARTED short (v1.51.3):
+            # it has not arrived either. 2026-11-09: a hall cold-soaked to 9.75
+            # started its 18:30Z booking 2.0 short, and at 19:19Z (average
+            # 18.62, panels 75 °C, twenty-odd people) the easing cut the elements
+            # for the full 20-min box for a rise of 0.12; the session ended at
+            # 18.75. 10-28 19:04Z, 0.75 short at the start, was the same (+0.12).
+            if zone_avg >= target:
+                self._arrived_short.pop(zone, None)
+            if zone_avg < target and (
+                self._zone_pre_heating(zone) or self._arrived_short.get(zone)
+            ):
                 return 0.0
             self._drive_coast_since[zone] = now
             self._drive_coast_from[zone] = zone_avg
@@ -5345,6 +5361,7 @@ class ScoutController:
         # pre-heat is naturally reduced or skipped).
         if zone == ZONE_A:
             self._clear_hall_pause("booking_end")
+        self._arrived_short.pop(zone, None)
 
     def _booking_began(self, zone: str, handover: bool) -> None:
         # The title is otherwise refreshed every five minutes; at a handover it
@@ -5360,6 +5377,10 @@ class ScoutController:
         target = self.number("hall_eco_temp") if eco else self._zone_target(zone)
         coldest = self._zone_room_temp(zone, coldest=True)
         average = self._zone_room_temp(zone)
+        if average is not None and target - average > ARRIVED_SHORT_C:
+            self._arrived_short[zone] = True
+        else:
+            self._arrived_short.pop(zone, None)
         self.audit.record(
             "booking_start",
             self._now(),

@@ -23,7 +23,7 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 838
+  a fully wired controller). Every behaviour change ships with tests. 840
   passing as of 2026-11-09.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
@@ -3774,6 +3774,26 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   Tests in `tests/test_climb_leak.py`. Same export, nothing else: two short
   weekend visits (09:45–10:10Z, 11:49–12:08Z) heated and iced cleanly, six
   `alarm_change` events; no warm-up samples (no comfort pre-heats).
+  **That evening proved it (2026-11-09 20:42Z export, still v1.51.2).** Monday
+  18:30Z booking, outdoor 3.4–5.4, hall cold-soaked to 9.75: the pre-heat
+  opened at 15:15Z on a lead of 198 (live k 5.38; on v1.51.3's climb k it
+  would have been 219) and the hall arrived **2.0 short** (17.0 average, cold
+  end 16.0), reaching 18.75 by 20:00Z. Every climb folded slow, all four
+  `cut_short`: hall 16.74 → 19.70, kitchen 21.2 → 25.0, gents 22.0 → 27.5 (the
+  25 % cap; observed 31.1), ladies 21.6 → 27.0 (observed 30.0). Leads for the
+  same evening on the new gains and climb k: hall ~255, kitchen ~254, gents
+  ~335, ladies ~352 — every one past the 240 cap, so the Q2 rule now applies
+  (raise `preheat_minutes`; owner's call). The toilets are the capacity/soak
+  wall the 11-02 decision rule described: gents panel 53–56 °C and ladies
+  79–83 °C flat out from 15:07Z, gents 10 → 15.5 and ladies 11 → 16 in four
+  hours. A fourth defect: **no easing in a booking that started short**
+  (`_arrived_short`, `ARRIVED_SHORT_C` 0.25, latched at `booking_start`,
+  cleared when the average reaches target or at the end) — at 19:19Z the
+  easing ran its full box on the 2.0-short hall (average 18.62, 75 °C panels,
+  people in) for a rise of 0.12, the 10-28 shape again. Tests in
+  `tests/test_first_cold_evening.py`. Seen: the kitchen window open
+  18:58–20:15Z iced all three rooms mid-session (gents 16.5 → 14.0); the
+  window is in the kitchen but `shared_windows` ices every room.
 
 ## Architecture pointers
 
