@@ -443,7 +443,11 @@ many hours away still gets a long-enough lead. The room cools only until its
 pre-heat begins (the gap less the lead), so the window opens when the lead
 from the room as it is now covers the gap (v1.51.2; until then the room was
 cooled across the whole gap, as if it kept cooling while being heated, and the
-hall's pre-heats arrived 40–86 min early in the first week of November). Normalising by the gap is
+hall's pre-heats arrived 40–86 min early in the first week of November).
+The heat lost during the climb itself is charged at the heat-loss rate the
+radiator gain was learned with (stored with each learned climb, v1.51.3), so
+a weekend of slow overnight cool-offs lowering the live rate does not shorten
+the pre-heat. Normalising by the gap is
 what makes the learning season-proof: a July cool-off and a January one
 teach the same fabric constant, only the gap differs, so the first cold
 snap of autumn is predicted correctly instead of waiting for the model to

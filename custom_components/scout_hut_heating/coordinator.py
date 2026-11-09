@@ -2305,6 +2305,7 @@ class ScoutController:
         indoor = self._zone_room_temp(zone, stale_min=self._rointe_stale_min())
         outdoor = self._outdoor_temp()
         loss_pct = self.number(f"{zone}_heatloss_pct")
+        climb_k = self._climb_leak_k(rate_key)
         minutes = required_lead_minutes(
             rate=rate,
             indoor=indoor,
@@ -2314,6 +2315,7 @@ class ScoutController:
             gap_hours=gap_hours,
             cool_k=loss_pct / 100,
             tail=tail,
+            climb_k=climb_k,
         )
         lead = int(round(minutes))
         # Stash the inputs so the caller can audit the computation that
@@ -2338,6 +2340,7 @@ class ScoutController:
             "target": target,
             "outdoor": outdoor,
             "loss_pct": loss_pct,
+            "climb_pct": None if climb_k is None else round(climb_k * 100, 2),
         }
         if indoor is not None:
             # The heat-balance terms the lead came from, so the arithmetic that
@@ -2353,12 +2356,23 @@ class ScoutController:
                 gap_hours=gap_hours,
                 cool_k=loss_pct / 100,
                 tail=tail,
+                climb_k=climb_k,
             )
+            leak = loss_pct / 100 if climb_k is None else climb_k
             self._last_lead_calc[zone]["predicted"] = round(predicted, 2)
             self._last_lead_calc[zone]["net_c_per_h"] = round(
-                net_gain_c_per_h(rate, predicted, target, outdoor, loss_pct / 100), 3
+                net_gain_c_per_h(rate, predicted, target, outdoor, leak), 3
             )
         return lead
+
+    def _climb_leak_k(self, rate_key: str) -> float | None:
+        """The heat-loss constant to charge during a climb on this gain key:
+        the mean of the k stored with each of its learned climbs (v1.51.3), so
+        the leak is the one the gain was fitted against. None (use the live k)
+        until the key has a climb."""
+        history = self._warmup_history.get(rate_key) or []
+        ks = [c[3] for c in history if len(c) >= 4 and c[3] > 0]
+        return sum(ks) / len(ks) if ks else None
 
     def _prediction_rate(self, zone: str) -> tuple[float, str]:
         """The learned rate to predict a warm-up with, and the key it came from.
