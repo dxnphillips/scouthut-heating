@@ -23,8 +23,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 836
-  passing as of 2026-11-07.
+  a fully wired controller). Every behaviour change ships with tests. 840
+  passing as of 2026-11-09.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
   `fans_follow_state`) were removed entirely — **fan direction is now fully
@@ -3753,6 +3753,47 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   booking at 19:30Z started 3.75 short. Rooms at booking starts: 11-05 kitchen
   19.0 / gents 17.5 / ladies 17.5, then 19.5 / 18.5 / 18.5; 11-06 17.5 / 18.5 /
   19.0. The sal-vation classes ran `peak_over` 0.88 and 1.12 against 16.
+- **The climb's leak is the one its gain was learned with (v1.51.3, 2026-11-09
+  06:34Z export, v1.51.2 running).** v1.51.2 deployed 11-07 ~09:18Z; the
+  token expiry auto-reload worked (`rointe_reload` 09:07:46Z, recovered 19 s
+  later, no push); the weather entity came back and cool-offs fold again. An
+  empty, cold-soaked weekend (hall 10–12.5, outdoor ~4–6) then folded long
+  overnight samples (4–15 h for 1 °C) and took every k down: hall 10.0 → 5.38,
+  office 4.29 → 2.71, kitchen 8.26 → 4.07, gents 6.72 → 4.16, ladies 8.97 →
+  6.93 %/h. That is the slow phase, honest for an idle night (the hall trace
+  fell ~0.125 °C/h at a gap of ~6), but the lead charged the same k as the
+  leak DURING a climb, against a gross gain fitted to climbs whose stored k
+  was 8.7: an 11 → 19 hall lead at outdoor 5 fell 209 → 177 min with nothing
+  about the heating changed (the 11-04 climb took 207). Now
+  `required_lead_minutes` / `preheat_start_temp` take `climb_k` for the net
+  gain, and `_climb_leak_k` supplies the mean k stored with the key's learned
+  climbs (`warmup_history`, 4th field); the live k still cools the idle room
+  before the pre-heat. No history → the live k, as before. `preheat_start`
+  records `climb_pct` beside `loss_pct`. The two-lump question (k by phase)
+  is the deeper version; this keeps the fitted pair consistent meanwhile.
+  Tests in `tests/test_climb_leak.py`. Same export, nothing else: two short
+  weekend visits (09:45–10:10Z, 11:49–12:08Z) heated and iced cleanly, six
+  `alarm_change` events; no warm-up samples (no comfort pre-heats).
+  **That evening proved it (2026-11-09 20:42Z export, still v1.51.2).** Monday
+  18:30Z booking, outdoor 3.4–5.4, hall cold-soaked to 9.75: the pre-heat
+  opened at 15:15Z on a lead of 198 (live k 5.38; on v1.51.3's climb k it
+  would have been 219) and the hall arrived **2.0 short** (17.0 average, cold
+  end 16.0), reaching 18.75 by 20:00Z. Every climb folded slow, all four
+  `cut_short`: hall 16.74 → 19.70, kitchen 21.2 → 25.0, gents 22.0 → 27.5 (the
+  25 % cap; observed 31.1), ladies 21.6 → 27.0 (observed 30.0). Leads for the
+  same evening on the new gains and climb k: hall ~255, kitchen ~254, gents
+  ~335, ladies ~352 — every one past the 240 cap, so the Q2 rule now applies
+  (raise `preheat_minutes`; owner's call). The toilets are the capacity/soak
+  wall the 11-02 decision rule described: gents panel 53–56 °C and ladies
+  79–83 °C flat out from 15:07Z, gents 10 → 15.5 and ladies 11 → 16 in four
+  hours. A fourth defect: **no easing in a booking that started short**
+  (`_arrived_short`, `ARRIVED_SHORT_C` 0.25, latched at `booking_start`,
+  cleared when the average reaches target or at the end) — at 19:19Z the
+  easing ran its full box on the 2.0-short hall (average 18.62, 75 °C panels,
+  people in) for a rise of 0.12, the 10-28 shape again. Tests in
+  `tests/test_first_cold_evening.py`. Seen: the kitchen window open
+  18:58–20:15Z iced all three rooms mid-session (gents 16.5 → 14.0); the
+  window is in the kitchen but `shared_windows` ices every room.
 
 ## Architecture pointers
 

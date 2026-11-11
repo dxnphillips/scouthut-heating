@@ -182,3 +182,33 @@ def test_the_trace_carries_each_room_and_its_panel():
     point = ctrl.trace.to_list()[-1]
     assert (point["kitchen"], point["gents"], point["ladies"]) == (17.5, 16.5, 17.0)
     assert point["shared"] == 16.5  # still the coldest of the three
+
+
+# --- No easing in a booking that started short (v1.51.3) ---------------------------
+def test_a_booking_that_started_short_is_not_eased_until_it_arrives():
+    # 2026-11-09 18:30Z: the hall started its booking 2.0 short; at 19:19Z
+    # (average 18.62, hot panels, people in) the easing cut the elements for
+    # its full box for a rise of 0.12.
+    ctrl, hass = _hall_with_hot_panels()
+    for climate in ("climate.hall_back", "climate.hall_front"):
+        hass.states.set(climate, "heat", {"current_temperature": 17.0})
+    ctrl.cal_window[ZA] = True
+    booking(ctrl, ZA)
+    ctrl._booking_began(ZA, handover=False)
+    motion(ctrl, "hall")
+    assert ctrl._arrived_short.get(ZA)
+    assert _coast(ctrl, 18.62) == 0.0
+    # Once its average reaches target it has arrived, and the tail is eased.
+    assert _coast(ctrl, 19.0) == DRIVE_COAST_ALLOWANCE
+    assert not ctrl._arrived_short.get(ZA)
+
+
+def test_a_booking_that_started_on_target_eases_as_before():
+    ctrl, hass = _hall_with_hot_panels()
+    for climate in ("climate.hall_back", "climate.hall_front"):
+        hass.states.set(climate, "heat", {"current_temperature": 18.9})
+    ctrl.cal_window[ZA] = True
+    booking(ctrl, ZA)
+    ctrl._booking_began(ZA, handover=False)
+    motion(ctrl, "hall")
+    assert _coast(ctrl, 18.62) == DRIVE_COAST_ALLOWANCE

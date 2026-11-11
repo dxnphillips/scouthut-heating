@@ -207,6 +207,7 @@ def required_lead_minutes(
     gap_hours: float | None = None,
     cool_k: float = 0.0,
     tail: float = TAIL_SEED_C,
+    climb_k: float | None = None,
 ) -> float:
     """Minutes of pre-heat needed to bring the room up to ``target``.
 
@@ -237,14 +238,26 @@ def required_lead_minutes(
     plus the learned start-up allowance (``tail``). A leak that eats the
     whole gain means the room cannot reach target at this outdoor: the cap,
     which is warm.
+
+    ``climb_k`` (v1.51.3) is the leak charged during the climb, when given;
+    ``cool_k`` still cools the idle room before it. The gross gain is learned
+    from climbs with the k of their day stored beside each one, so the gain
+    and its leak are one fitted pair: charging today's k against a gain fitted
+    with another one moves the lead with nothing about the heating changed.
+    Field 2026-11-09: a weekend of cold-soaked overnight cool-offs took the
+    hall's k from 10.0 to 5.4 %/h (the slow phase, real for an idle night),
+    which would have cut a 11 → 19 lead by ~30 min against climbs measured at
+    k 8.7.
     """
     if indoor is None:
         return max_minutes
     start = preheat_start_temp(
         rate=rate, indoor=indoor, target=target, outdoor=outdoor,
         max_minutes=max_minutes, gap_hours=gap_hours, cool_k=cool_k, tail=tail,
+        climb_k=climb_k,
     )
-    return _lead_from(start, rate, target, outdoor, max_minutes, cool_k, tail)
+    leak = cool_k if climb_k is None else climb_k
+    return _lead_from(start, rate, target, outdoor, max_minutes, leak, tail)
 
 
 def _lead_from(
@@ -277,8 +290,12 @@ def preheat_start_temp(
     gap_hours: float | None,
     cool_k: float,
     tail: float = TAIL_SEED_C,
+    climb_k: float | None = None,
 ) -> float:
     """The room's temperature when its pre-heat will begin (v1.51.2).
+
+    ``cool_k`` cools the idle room; ``climb_k`` (default ``cool_k``) is the leak
+    charged during the climb itself — see ``required_lead_minutes``.
 
     The pre-heat begins ``lead`` minutes before the event, so the room cools
     idle for ``gap − lead``, and the lead itself depends on how far it has
@@ -291,14 +308,15 @@ def preheat_start_temp(
     """
     if gap_hours is None or gap_hours <= 0 or cool_k <= 0:
         return indoor
+    leak = cool_k if climb_k is None else climb_k
     gap_min = gap_hours * 60.0
-    if _lead_from(indoor, rate, target, outdoor, max_minutes, cool_k, tail) >= gap_min:
+    if _lead_from(indoor, rate, target, outdoor, max_minutes, leak, tail) >= gap_min:
         return indoor
     lo, hi = 0.0, gap_min
     for _ in range(40):
         mid = (lo + hi) / 2
         cooled = predicted_room_temp(indoor, outdoor, (gap_min - mid) / 60.0, cool_k)
-        if _lead_from(cooled, rate, target, outdoor, max_minutes, cool_k, tail) > mid:
+        if _lead_from(cooled, rate, target, outdoor, max_minutes, leak, tail) > mid:
             lo = mid
         else:
             hi = mid
