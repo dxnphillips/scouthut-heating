@@ -488,7 +488,10 @@ most a quarter. A climb that took **longer** than the gain said is believed at
 once (within that cap), because that is the direction that arrives cold; one
 that went faster only moves it 30 % of the way (v1.51.1, after the first
 cold-soaked evening read slower than every gain it was led on and arrived
-0.6–2.5 °C short); a temperature *rise* while unheated
+0.6–2.5 °C short). A climb of a single degree counts (v1.51.4; it was two
+while the finish allowance was a guessed constant): short top-ups are what
+pin the learned allowance, and the 2026-11-11 one that arrived 0.75 °C short
+was being thrown away. A temperature *rise* while unheated
 (July roof sun) is never mistaken for good insulation. The hall keeps **two**
 gains — with and without the destratification fans enabled — because the fans
 materially change warm-up speed, and the one the next lead will use is the one

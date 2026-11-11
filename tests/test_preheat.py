@@ -126,11 +126,16 @@ def test_rate_update_moves_a_fraction_toward_a_fast_climb():
 
 
 def test_rate_update_ignores_small_rises():
-    # Under the finish model a sub-2 °C climb is mostly finish and teaches
-    # nothing about the slope.
-    assert MIN_SAMPLE_RISE == 2.0
+    assert MIN_SAMPLE_RISE == 1.0
     assert updated_rate(20, 30, 0.4) == 20
-    assert updated_rate(20, 90, 1.5) == 20
+    assert updated_rate(20, 90, 0.9) == 20
+
+
+def test_a_short_top_up_that_arrived_short_folds():
+    # 2026-11-11: hall pre-heat 16.88 -> 18.25 in 79 min at the 17:30Z start
+    # (0.75 short), gap 11.75, climb k 7.03 %/h, tail 1.0: gross 2.63 °C/h =
+    # 22.8 min/°C against the learned 19.7. Slower, so it folds at once.
+    assert updated_rate(19.7, 79.07, 1.38, 11.75, 0.0703, 1.0) == pytest.approx(22.8, abs=0.1)
 
 
 def test_rate_update_clamps_wild_observations():
