@@ -381,6 +381,17 @@ up to three times, an hour apart, then gives up and says so: an outage a
 reload does not fix is the internet or the Rointe cloud. Audited as
 `rointe_reload` and `rointe_reload_recovered`.
 
+**A radiator that is asked to heat but stays cold is reported (v1.51.4).** If a
+radiator in a heating preset reads 2 °C or more under its own setpoint (so it
+should be at full power) while its panel stays as cold as the room for 45
+minutes, you get a "Radiator not heating" notification and a phone push
+(`heater_not_heating`; `heater_heating` when it warms). It is online and
+reporting, so it is not an outage or a silent radiator: check it is switched
+on at the wall and nothing is covering it. On 2026-11-18 the hall's back
+radiator sat cold through a five-hour pre-heat and the booking started at
+12 °C at that end. The trace now also carries the coldest hall panel
+(`hall_surface_min`).
+
 **Pause hall heating** (occupant cutout). The hall radiators are locked, so if
 someone finds it too warm mid-session they have no way to turn them down. The
 *Pause hall heating* button — ideally wired to a physical remote — forces the

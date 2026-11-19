@@ -212,3 +212,19 @@ def test_a_booking_that_started_on_target_eases_as_before():
     ctrl._booking_began(ZA, handover=False)
     motion(ctrl, "hall")
     assert _coast(ctrl, 18.62) == DRIVE_COAST_ALLOWANCE
+
+
+def test_the_short_start_latch_outlasts_the_booking_end():
+    # 2026-11-16 20:01Z and 11-18 18:30:38Z (37 s after the end edge): easings
+    # on halls at 18.5 that had started 2.38 and 3.25 short, both rise 0.0.
+    ctrl, hass = _hall_with_hot_panels()
+    for climate in ("climate.hall_back", "climate.hall_front"):
+        hass.states.set(climate, "heat", {"current_temperature": 15.75})
+    ctrl.cal_window[ZA] = True
+    booking(ctrl, ZA)
+    ctrl._booking_began(ZA, handover=False)
+    ctrl._booking_ended(ZA, handover=False)
+    motion(ctrl, "hall")
+    assert ctrl._arrived_short.get(ZA)
+    assert _coast(ctrl, 18.5) == 0.0
+    assert _coast(ctrl, 19.0) == DRIVE_COAST_ALLOWANCE
