@@ -144,7 +144,8 @@ def test_an_out_of_family_drop_without_a_flat_spell_still_raises_the_alarm():
     _set(ctrl, "zone_a_heatloss_pct", 2)
     _begin_cooloff(ctrl, hass, 20.0)
     # A steady, fast, stepping decay: the reading never sits still — an opening.
-    for t in (19.75, 19.5, 19.25, 19.0, 18.75, 18.5):
+    # Fast enough to clear the alarm's floored baseline (v1.51.4: 3 × 4 %/h).
+    for t in (19.5, 19.0, 18.5, 18.0, 17.5, 17.0):
         advance(ctrl, 15)
         _probes(hass, t, t)
         ctrl._update_cooloff_learning()
@@ -153,6 +154,24 @@ def test_an_out_of_family_drop_without_a_flat_spell_still_raises_the_alarm():
     assert samples[-1]["frozen"] is False
     assert samples[-1]["max_flat_min"] < COOL_FREEZE_FLAT_MINUTES
     assert ctrl._opening_inferred[ZA] is True
+
+
+def test_a_low_baseline_does_not_make_a_fast_phase_an_opening():
+    # 2026-11-17 00:17Z / 01:40Z, 11-18 23:15Z: the office's slow-phase k had
+    # sunk to ~2 %/h, so 7-10 %/h two hours after a session read as 4-5x and
+    # pushed "window or door open?" with the building armed and shut. The alarm
+    # now judges against at least 4 %/h; the sample is still kept out of k.
+    ctrl, hass = make_controller()
+    _set(ctrl, "zone_a_heatloss_pct", 2)
+    _begin_cooloff(ctrl, hass, 20.0)
+    for t in (19.75, 19.5, 19.25, 19.0, 18.75, 18.5):
+        advance(ctrl, 15)
+        _probes(hass, t, t)
+        ctrl._update_cooloff_learning()
+    sample = _events(ctrl, "cooloff_sample")[-1]
+    assert sample["outlier"] is True and sample["accepted"] is False
+    assert sample["below_alarm"] is True and sample["transient"] is False
+    assert ctrl._opening_inferred[ZA] is False
 
 
 def test_a_slow_genuine_decay_with_long_dwells_is_still_learned():

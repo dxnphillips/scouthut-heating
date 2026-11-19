@@ -507,5 +507,6 @@ NOTIFY_HEATERS_OFFLINE = {
     "shared": "scout_shared_heaters_offline",
 }
 NOTIFY_HEATER_SILENT = "scout_heater_silent"
+NOTIFY_HEATER_NOT_HEATING = "scout_heater_not_heating"
 NOTIFY_PROBE_IMPLAUSIBLE = "scout_probe_implausible"
 NOTIFY_OUTDOOR_LOST = "scout_outdoor_lost"

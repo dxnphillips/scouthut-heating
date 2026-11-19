@@ -23,8 +23,8 @@ sweep, so the ceiling sensor can read hotter than the air the fans reach.
   merged, so there is no v1.50.8 code; that release shipped as v1.50.9.
 - **Tests are offline**: `pytest` runs without Home Assistant installed
   (`tests/conftest.py` stubs the HA surface; `tests/scout_testkit.py` builds
-  a fully wired controller). Every behaviour change ships with tests. 840
-  passing as of 2026-11-09.
+  a fully wired controller). Every behaviour change ships with tests. 848
+  passing as of 2026-11-19.
 - **Toggle surface was consolidated (2026-08-06) to a common-sense minimum.**
   The three fan-direction switches (`summer_mode` / `summer_follows_season` /
   `fans_follow_state`) were removed entirely — **fan direction is now fully
@@ -3794,6 +3794,64 @@ identify the −78 dBm heater. (PR 1–7 shipped as v1.37.0 — the "go" was giv
   `tests/test_first_cold_evening.py`. Seen: the kitchen window open
   18:58–20:15Z iced all three rooms mid-session (gents 16.5 → 14.0); the
   window is in the kitchen but `shared_windows` ices every room.
+  **A top-up that arrived short was thrown away (v1.51.4, 2026-11-11 18:57Z
+  export, v1.51.3 deployed ~15:20Z).** A daytime visitor had lifted the hall
+  10 → 16.9 on and off; the 17:30Z booking's pre-heat opened at 16:10Z from
+  16.88 on a lead of 83 (gain 19.7, tail 1.0, `climb_pct` 7.03, predicted net
+  2.2 °C/h). All four elements ran flat out (panels 55–61 °C), the drive
+  reached +1.0, and the room arrived **0.75 short** (18.25), reaching 19.0 at
+  ~18:01Z, 115 min in. The `cut_short` sample (1.38 °C in 79 min, gap 11.75,
+  outdoor 5.8, not mild) read 22.8 min/°C — slower, so it would have folded at
+  once and sized the same climb at ~104 min — but `MIN_SAMPLE_RISE` 2.0
+  rejected it. That floor dates from the fixed 2.5 °C finish, when a short climb
+  was mostly the guessed constant; with the allowance learned, short top-ups are
+  the climbs that pin the line's intercept (the hall key has two climbs in its
+  history, both 3 h+, so no fit yet), and it is back at **1.0**. Fail
+  direction: a slow reading folds at once (warm), a fast one by `ALPHA`, both
+  under the 25 % cap. Single-probe zones read 0.5 steps, so a 1 °C rise there is
+  two quanta — the step cap and the fit carry that. Same evening, the toilets
+  again: ladies 16.5 → 18.0 by 17:57Z and flat at 18.0 to the 18:57Z export
+  (panel 83–85 °C all afternoon), gents 16.0 → 18.0 (panel 56–59 °C) — the
+  wall at 18 that the 11-02 rule describes, now three evenings running. The
+  easing ran once (18:01Z, average at target, `rise` 0.25). Test in
+  `tests/test_preheat.py`.
+  **A cold week on v1.51.3 (2026-11-19 04:22Z export, 11-13 → 11-19; three more
+  v1.51.4 fixes).** Outdoor −3 to 10. Every comfort booking pinned the 240 cap
+  and arrived short: 11-13 17:30Z hall 0.62 (from 14.0; rooms 19.0 / 18.0 /
+  17.0), 11-16 18:30Z hall **2.38** (from 9.75; rooms 15.5 / 14.0 / 14.5),
+  11-18 17:30Z hall **3.25** (from 9.75; 12.0 at the cold end; rooms 17 / 16 /
+  16); the sal-vation eco classes 0.25–0.62. All 12 warm-up samples folded
+  (cut-short, cold): hall fans 22.1 → 24.5 with the tail fitted to the 0.5
+  floor, kitchen 30.8, gents 34.0, ladies 35.7 (ladies' tail still 1.0, no fit).
+  Uncapped at these values the same evenings want hall 280–300, kitchen ~280,
+  gents ~350, ladies ~415 (toilets to 18: ~310). The Q2 rule ("persistent
+  positive shortfalls with the lead pinned at cap → raise the slider") is now
+  met for the hall; the toilets are the 11-02 capacity/soak wall (panels 80+ °C
+  flat out). Both are the owner's call. The Rointe token expired on time at
+  11-18 15:19:52Z (168 h after the 11-11 15:20Z deploy) and the auto-reload
+  recovered it in 11 min with no push, mid-pre-heat. Fixes: (1) **"Radiator not
+  heating"** (`_update_heater_not_heating`, `HEATER_NOT_HEATING_DEFICIT_C` 2.0,
+  `HEATER_NOT_HEATING_MINUTES` 45): on 11-18 hall_back read 10.0 → 13.5 for five
+  hours in comfort while the others reached ~17, its panel within 3 °C of its
+  reading (the plausibility rule kept it in for exactly that reason), the hall's
+  mean panel 50 °C against 59 on the Sunday — the element was not firing, it was
+  online and uploading, and nothing said so. Now a heater in comfort/eco, ≥ 2 °C
+  under its own live setpoint with a panel that agrees with its probe for 45 min
+  is alerted (`heater_not_heating` / `heater_heating`, notification + push,
+  `state.heaters_not_heating`); the trace carries `hall_surface_min`.
+  **Owner-side: check hall_back** (wall switch, cover, its own open-window
+  detection). (2) **The short-start latch outlasts the booking end**: 11-16
+  20:01Z and 11-18 18:30:38Z (37 s after the end edge) the easing engaged on a
+  hall still at 18.5, both `rise` 0.0. (3) **The opening alarm judges against at
+  least 4 %/h** (`OPENING_ALARM_MIN_K`): the office's k sank to 1.9–2.1 on cold
+  nights and three post-session samples at 7.4–9.5 %/h, 2.3 h after the ice edge
+  with the building armed, pushed "window or door open?" (11-17 00:17Z, 01:40Z;
+  11-18 23:15Z) — the decision rule's "baseline too low, not the line". The fold
+  is unchanged; `cooloff_sample.below_alarm` marks them. Seen, not changed: the
+  office probe freeze-jumps +2.5 to +4.5 on most heating starts
+  (`drive_coast_jump`), and its 19:00Z easing on 11-18 held the full box at 19.0
+  (`rise` 0.0). Tests in `tests/test_not_heating.py`,
+  `tests/test_first_cold_evening.py`, `tests/test_freeze_guards.py`.
 
 ## Architecture pointers
 

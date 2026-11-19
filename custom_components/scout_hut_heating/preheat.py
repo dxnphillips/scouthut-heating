@@ -100,10 +100,14 @@ WARMUP_HISTORY_MAX = 10
 # unchanged, so shorter climbs start later and longer ones earlier.
 TAIL_CONVERSION = (3.0 + 2.5) / (3.0 + TAIL_SEED_C)
 
-# Ignore warm-up samples with less rise than this (°C): a 1 °C climb is mostly
-# tail, so its implied gain swings on a small tail error and teaches little
-# about the slope. (Was 1.0 under the linear model.)
-MIN_SAMPLE_RISE = 2.0
+# Ignore warm-up samples with less rise than this (°C). 2.0 under the fixed
+# 2.5 °C finish (v1.43.0), when a short climb was mostly that guessed finish;
+# back to 1.0 (v1.51.4) now the allowance is learned: short top-ups are the
+# climbs that pin its intercept, and on 2026-11-11 the floor threw away the
+# one sample (1.38 °C in 79 min, booking 0.75 short) that said the gain was
+# too fast. A slow reading folds at once (the warm direction); a fast one
+# moves a fraction of the way, both under the 25 % step cap.
+MIN_SAMPLE_RISE = 1.0
 
 # ...and with less duration than this (minutes): a cloud-lagged reading that
 # catches up in one jump would otherwise register an implausibly fast warm-up

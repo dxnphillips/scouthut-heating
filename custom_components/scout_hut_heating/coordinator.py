@@ -62,6 +62,7 @@ from .preheat import (
     TAIL_CONVERSION,
     WARMUP_HISTORY_MAX,
     cooling_observed_k,
+    COOL_OUTLIER_RATIO,
     cooling_sample_is_outlier,
     hold_margin,
     learned_warmup,
@@ -121,6 +122,7 @@ from .const import (
     NOTIFY_FAN_TOO_HOT,
     NOTIFY_INTERNAL_DOOR,
     NOTIFY_FIRE,
+    NOTIFY_HEATER_NOT_HEATING,
     NOTIFY_HEATER_SILENT,
     NOTIFY_PROBE_IMPLAUSIBLE,
     NOTIFY_OUTDOOR_LOST,
@@ -532,6 +534,21 @@ ROINTE_RELOAD_SETTLE_MIN = 10.0
 # stayed so for 25 h; its reading sat at 18.0 while the hall fell to 12, the next
 # day's session ran on three heaters, and no alert existed to say so.
 HEATER_SILENT_MINUTES = 180.0
+# A radiator that is talking but not heating (v1.51.4). Field 2026-11-18: through
+# the 13:30Z pre-heat and the 17:30Z booking, hall_back read 10.0 → 13.5 for five
+# hours while the other three climbed to ~17 with all four in comfort, its
+# setpoint 19, its clock uploading every ~25 min. Its panel must have been within
+# 3 °C of that reading (else the plausibility rule would have left it out), so
+# the element was not firing; the hall's mean panel read 50 °C against 59 on the
+# Sunday, i.e. three hot panels and one cold. The booking started at 15.75
+# average, 12.0 at that end. Nothing said so: it was reachable and reporting, so
+# neither the outage watch nor the silence alert apply. A heater in comfort/eco,
+# reachable, whose probe sits HEATER_NOT_HEATING_DEFICIT_C or more under its own
+# live setpoint (it should be at full power) while its panel stays within
+# PROBE_PANEL_AGREES_C of that probe, for HEATER_NOT_HEATING_MINUTES, is alerted.
+# 45 min because the surface can lag the cloud ~30 min at burn start.
+HEATER_NOT_HEATING_DEFICIT_C = 2.0
+HEATER_NOT_HEATING_MINUTES = 45.0
 # A hall probe that cannot be reading the room (v1.50.6). The four hall Rointes
 # share one room, so a probe well under the median of three or more readable
 # ones (PROBE_IMPLAUSIBLE_BELOW, below) is a broken reading, not a cold corner,
@@ -663,6 +680,16 @@ COOL_FREEZE_FLAT_MINUTES = 90.0
 # two hours after a session is audited, not pushed — the hall has contacts, and
 # the office's standing fix is a contact (Q19).
 COOL_ALARM_SETTLE_MIN = 120.0
+# The opening ALARM judges against a baseline of at least this (fraction/h)
+# (v1.51.4). The office's slow-phase k sank to 1.9–2.1 %/h on long cold nights,
+# so 3× it is 6 %/h, inside its own post-session fast phase: three false
+# "window or door open?" pushes at 2.3–2.4 h after the ice edge (2026-11-17
+# 00:17Z 9.5 %/h, 01:40Z 7.4; 11-18 23:15Z 7.6) with the building armed and
+# shut, exactly the CLAUDE.md decision rule ("the office baseline is too low for
+# a cold fabric, not the line"). 3 × 4 % = 12 %/h still catches the July
+# open-window samples (~24 %/h); the hall (k ~9) is unaffected. The fold is
+# unchanged: an out-of-family sample is still rejected from k.
+OPENING_ALARM_MIN_K = 0.04
 # A reading that blinks out is not the room changing (v1.51.0). The Rointe
 # integration drops every heater for one poll most nights (2026-10-26 → 10-31: six
 # ~30-s losses at 06:28, 00:37, 06:01, 04:24, 01:36 and 04:06Z, all mid-cool-off).
@@ -1120,6 +1147,10 @@ class ScoutController:
         # uploaded to the Rointe cloud for HEATER_SILENT_MINUTES, and since when
         # (their last upload, by the trusted sync clock).
         self._heaters_silent_since: dict[str, datetime] = {}
+        # Not-heating watch (v1.51.4): heaters meeting the condition since when,
+        # and which have been alerted.
+        self._not_heating_since: dict[str, datetime] = {}
+        self._not_heating_alerted: set[str] = set()
         # Implausible hall probes (v1.50.6): since when each has read far below
         # its siblings, and which have been alerted.
         self._probe_implausible_since: dict[str, datetime] = {}
@@ -3239,7 +3270,14 @@ class ScoutController:
             and settled_min is not None
             and settled_min < COOL_ALARM_SETTLE_MIN
         )
-        if quality_ok and not frozen and not transient:
+        # Out-of-family against k but not against the alarm's floored baseline:
+        # rejected from k as before, and the latch is left as it was.
+        below_alarm = (
+            outlier
+            and observed is not None
+            and observed <= COOL_OUTLIER_RATIO * max(k, OPENING_ALARM_MIN_K)
+        )
+        if quality_ok and not frozen and not transient and not below_alarm:
             self._opening_inferred[zone] = outlier
         self.audit.record(
             "cooloff_sample",
@@ -3252,6 +3290,7 @@ class ScoutController:
             outlier=outlier,
             frozen=frozen,
             transient=transient,
+            below_alarm=below_alarm,
             settled_min=None if settled_min is None else round(settled_min, 1),
             over_warm=over_warm,
             old_pct=current,
@@ -3907,6 +3946,12 @@ class ScoutController:
                 # not listening and not reporting.
                 "heaters_silent": {
                     c: _iso(t) for c, t in self._heaters_silent_since.items()
+                },
+                # Heaters in a heating preset, well under their setpoint, whose
+                # panel stayed cold for HEATER_NOT_HEATING_MINUTES (v1.51.4).
+                "heaters_not_heating": {
+                    c: _iso(self._not_heating_since.get(c))
+                    for c in sorted(self._not_heating_alerted)
                 },
                 # Hall probes reading far below their siblings (v1.50.6), and
                 # since when: left out of the hall temperature; the radiator
@@ -4943,6 +4988,7 @@ class ScoutController:
                 ("openings", self._evaluate_openings),
                 ("heaters_offline", self._update_heaters_offline),
                 ("heater_silence", self._update_heater_silence),
+                ("heater_not_heating", self._update_heater_not_heating),
                 ("probe_plausibility", self._update_probe_plausibility),
                 ("outdoor_watch", self._update_outdoor_watch),
                 ("booking_edges", self._record_booking_edges),
@@ -5130,6 +5176,15 @@ class ScoutController:
         values = [v for v in values if v is not None]
         return round(sum(values) / len(values), 2) if values else None
 
+    def _hall_surface_min(self) -> float | None:
+        """The coldest hall panel surface, or None."""
+        values = [
+            self._num_state(self._heater_sensor(climate, "surface"))
+            for climate in self._as_list(self.config.get(ZONE_CLIMATES[ZONE_A]))
+        ]
+        values = [v for v in values if v is not None]
+        return min(values) if values else None
+
     def _sample_trace(self) -> None:
         """Append a point to the rolling temperature/wattage trace.
 
@@ -5173,6 +5228,9 @@ class ScoutController:
             # Independent probe: the Rointe surface temperature, to compare against
             # the freeze-then-jump `current_temperature` the `floor` is built from.
             hall_surface=self._hall_surface_temp(),
+            # The coldest hall panel (v1.51.4): with the average alone a cold
+            # radiator among three hot ones read only as a lower mean (2026-11-18).
+            hall_surface_min=self._hall_surface_min(),
             # The stalest hall heater's upload age on a trusted sync clock
             # (v1.45.0) — the overnight sync-gap measurement the findings lacked.
             hall_sync=self._hall_sync_age_max(),
@@ -5361,7 +5419,11 @@ class ScoutController:
         # pre-heat is naturally reduced or skipped).
         if zone == ZONE_A:
             self._clear_hall_pause("booking_end")
-        self._arrived_short.pop(zone, None)
+        # The short-start latch is NOT cleared here (v1.51.4): the room is still
+        # short and usually still occupied. 2026-11-16 20:01Z and 11-18 18:30:38Z,
+        # 37 s after the end edge: easings on halls at 18.5 that had started their
+        # bookings 2.38 and 3.25 short, both rise 0.0. It clears when the average
+        # reaches target or at the next booking start.
 
     def _booking_began(self, zone: str, handover: bool) -> None:
         # The title is otherwise refreshed every five minutes; at a handover it
@@ -7462,6 +7524,100 @@ class ScoutController:
         )
         persistent_notification.async_create(
             self.hass, message, title=title, notification_id=NOTIFY_HEATER_SILENT
+        )
+        if new:
+            await self._push_companion(
+                title, message, icon="mdi:radiator-off", channel="Scout Hut alerts"
+            )
+
+    def _heater_not_heating_now(self, climate: str) -> bool:
+        """Is this heater, right now, asked to heat hard and visibly not doing so?
+
+        In a heating preset, reachable and reporting, its probe at least
+        ``HEATER_NOT_HEATING_DEFICIT_C`` under its own live setpoint (a Rointe
+        that far short runs at full power), and its panel within
+        ``PROBE_PANEL_AGREES_C`` of the probe (cold: a firing panel is tens of
+        degrees above it). Any unknown makes it False.
+        """
+        zones = [z for z in (ZONE_A, ZONE_B, *self._rooms()) if climate in self._climates_of(z)]
+        if not zones or not any(
+            self.applied.get(z) in (PRESET_COMFORT, PRESET_ECO) for z in zones
+        ):
+            return False
+        if not self._climate_online(climate) or self._probe_dark(climate):
+            return False
+        state = self.hass.states.get(climate)
+        if state is None:
+            return False
+        try:
+            probe = float(state.attributes.get("current_temperature"))
+            setpoint = float(state.attributes.get("temperature"))
+        except (TypeError, ValueError):
+            return False
+        if setpoint - probe < HEATER_NOT_HEATING_DEFICIT_C:
+            return False
+        return self._panel_agrees(climate, probe)
+
+    async def _update_heater_not_heating(self) -> None:
+        """Surface a radiator that is asked to heat and is not (v1.51.4).
+
+        See ``HEATER_NOT_HEATING_MINUTES``. ``heater_not_heating`` (zone,
+        heater, reading, surface, setpoint, minutes) on the rising edge, one
+        persistent notification listing every such heater, a companion push on
+        each new one; ``heater_heating`` when its panel warms (or the zone stops
+        asking). The heater's honest cold reading stays in the room average,
+        which errs warm. Notification only: nothing is withheld or re-sent.
+        """
+        now = self._now()
+        new: list[str] = []
+        current: set[str] = set()
+        for climate in sorted(set(self._climates_of(ZONE_A)) | set(self._climates_of(ZONE_B))
+                              | {c for r in self._rooms() for c in self._climates_of(r)}):
+            if not self._heater_not_heating_now(climate):
+                self._not_heating_since.pop(climate, None)
+                continue
+            since = self._not_heating_since.setdefault(climate, now)
+            if (now - since).total_seconds() / 60 < HEATER_NOT_HEATING_MINUTES:
+                continue
+            current.add(climate)
+            if climate in self._not_heating_alerted:
+                continue
+            self._not_heating_alerted.add(climate)
+            new.append(climate)
+            state = self.hass.states.get(climate)
+            surface_id = self._heater_sensor(climate, "surface")
+            self.audit.record(
+                "heater_not_heating",
+                now,
+                zone=next(
+                    (z for z in (ZONE_A, ZONE_B, *self._rooms()) if climate in self._climates_of(z)),
+                    None,
+                ),
+                heater=climate,
+                reading=state.attributes.get("current_temperature") if state else None,
+                setpoint=state.attributes.get("temperature") if state else None,
+                surface=self._num_state(surface_id) if surface_id else None,
+                minutes=round((now - since).total_seconds() / 60, 1),
+            )
+        cleared = [c for c in self._not_heating_alerted if c not in current]
+        for climate in cleared:
+            self._not_heating_alerted.discard(climate)
+            self.audit.record("heater_heating", now, heater=climate)
+        if not new and not cleared:
+            return
+        if not self._not_heating_alerted:
+            persistent_notification.async_dismiss(self.hass, NOTIFY_HEATER_NOT_HEATING)
+            return
+        title = "🏕 Scout Hut – Radiator not heating"
+        names = ", ".join(self._heater_label(c) for c in sorted(self._not_heating_alerted))
+        message = (
+            f"Asked to heat but its panel is cold: {names}. It is online and "
+            "reporting a temperature well below its setpoint, so it should be at "
+            "full power. Check it is switched on at the wall and nothing is "
+            "covering it; the rest of the room is heating without it."
+        )
+        persistent_notification.async_create(
+            self.hass, message, title=title, notification_id=NOTIFY_HEATER_NOT_HEATING
         )
         if new:
             await self._push_companion(
